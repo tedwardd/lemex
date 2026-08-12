@@ -28,11 +28,15 @@ pub struct FeedQuery {
 }
 
 impl FeedQuery {
+    /// The web UI default; large enough to fill a typical terminal without
+    /// requiring an immediate next-page flip.
+    pub const DEFAULT_LIMIT: u32 = 20;
+
     pub fn home() -> Self {
         Self {
             sort: "Active".into(),
             page: None,
-            limit: None,
+            limit: Some(Self::DEFAULT_LIMIT),
             community: None,
             search: None,
         }

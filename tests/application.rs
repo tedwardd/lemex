@@ -1186,6 +1186,91 @@ async fn opening_post_fetches_detail_and_thread_comments() {
     assert_eq!(api.comments_calls.load(Ordering::SeqCst), 1);
 }
 
+#[derive(Clone, Default)]
+struct PagedFeedApi {
+    second_page_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LemmyApi for PagedFeedApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>> {
+        if query.page == Some(2) {
+            self.second_page_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Page {
+                items: vec![post_view(2, "second page post")],
+                next_page: None,
+            })
+        } else {
+            Ok(Page {
+                items: vec![post_view(1, "first page post")],
+                next_page: Some(2),
+            })
+        }
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn next_page_command_appends_the_following_feed_page() {
+    let api = Arc::new(PagedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "first page post")];
+    app.state.view.next_page = Some(2);
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.posts.len(),
+        2,
+        "the next page is appended to the feed"
+    );
+    assert_eq!(app.state.view.posts[1].id, PostId(2));
+    assert!(app.state.view.next_page.is_none());
+    assert!(app.state.status.message.contains("more posts loaded"));
+    assert_eq!(api.second_page_calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn startup_feed_command_loads_the_home_feed() {
+    let api = Arc::new(lemmy::api::fixtures::fixture_api("feed.json"));
+    let mut app = App::new(
+        api,
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    // This is the exact dispatch the configured `startup` action performs
+    // before the event loop draws its first frame.
+    app.dispatch(AppAction::Input(Command::SubmitLine("feed".into())))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.posts.len(),
+        2,
+        "the startup feed action loads the home feed"
+    );
+    assert!(app.state.status.message.contains("feed loaded"));
+}
+
 #[tokio::test]
 async fn detail_scroll_commands_move_and_clamp_the_offset() {
     let api = Arc::new(ThreadApi::default());

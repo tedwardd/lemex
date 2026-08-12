@@ -54,6 +54,8 @@ pub struct AppConfig {
     pub media: MediaConfig,
     pub cache: CacheConfig,
     pub logging: LogConfig,
+    /// Action run once at launch (for example `feed`); empty means none.
+    pub startup: String,
 }
 
 impl AppConfig {
@@ -101,12 +103,14 @@ impl AppConfig {
             });
         }
 
+        let startup = validate_startup(&raw.startup)?;
         Ok(Self {
             profiles,
             keymaps: raw.keymaps,
             media: raw.media.into_config(),
             cache: raw.cache.into_config(),
             logging: raw.logging.into_config(),
+            startup,
         })
     }
 
@@ -152,6 +156,7 @@ impl AppConfig {
             media: RawMediaConfig::from_config(&self.media),
             cache: RawCacheConfig::from_config(&self.cache),
             logging: RawLogConfig::from_config(&self.logging),
+            startup: self.startup.clone(),
         };
         toml::to_string_pretty(&raw)
             .map_err(|error| AppError::Configuration(format!("cannot encode TOML: {error}")))
@@ -183,6 +188,35 @@ struct RawConfig {
     cache: RawCacheConfig,
     #[serde(default)]
     logging: RawLogConfig,
+    #[serde(default)]
+    startup: String,
+}
+
+/// Startup actions the client will run once at launch. Empty means the
+/// client starts with the default (cache-hydrated, empty) view.
+///
+/// Accepted forms (a leading `:` is optional): `feed`, `search <query>`,
+/// `community <id>`. Anything else is a configuration error so a typo never
+/// silently launches with the wrong view.
+fn validate_startup(value: &str) -> Result<String> {
+    let trimmed = value.trim().strip_prefix(':').unwrap_or(value.trim());
+    if trimmed.is_empty() {
+        return Ok(String::new());
+    }
+    let mut parts = trimmed.split_whitespace();
+    let command = parts.next();
+    let has_arg = parts.next().is_some();
+    let valid = matches!(
+        (command, has_arg),
+        (Some("feed"), false) | (Some("search"), true) | (Some("community"), true)
+    );
+    if valid {
+        Ok(trimmed.to_owned())
+    } else {
+        Err(AppError::Configuration(format!(
+            "invalid startup action {value:?}: expected \"feed\", \"search <query>\", or \"community <id>\""
+        )))
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]

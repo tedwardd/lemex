@@ -51,14 +51,16 @@ pub fn run_terminal(
     terminal: DefaultTerminal,
     runtime: &tokio::runtime::Runtime,
     keymaps: &HashMap<String, String>,
+    startup: &str,
 ) -> Result<()> {
-    runtime.block_on(run_terminal_async(app, terminal, keymaps))
+    runtime.block_on(run_terminal_async(app, terminal, keymaps, startup))
 }
 
 async fn run_terminal_async(
     app: App,
     mut terminal: DefaultTerminal,
     keymaps: &HashMap<String, String>,
+    startup: &str,
 ) -> Result<()> {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Result<Event>>();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
@@ -93,6 +95,15 @@ async fn run_terminal_async(
         let mut input = crate::input::InputEngine::new().with_keymaps(keymaps);
         let mut ticks = tokio::time::interval(Duration::from_millis(100));
         let mut app = Some(app);
+        // Run the configured startup action (for example `feed`) before the
+        // first draw, so the launch view is the one the user asked for.
+        if !startup.is_empty() {
+            let action = AppAction::Input(Command::SubmitLine(startup.to_owned()));
+            app.as_mut()
+                .expect("application is present")
+                .dispatch(action)
+                .await?;
+        }
         let mut model = app.as_ref().expect("application is present").render_model();
         let mut action_task: Option<tokio::task::JoinHandle<(App, Result<()>)>> = None;
         let mut queued_actions = VecDeque::new();
@@ -322,6 +333,7 @@ impl App {
         let is_network = matches!(
             action,
             AppAction::Input(Command::Refresh)
+                | AppAction::Input(Command::NextPage)
                 | AppAction::OpenCommunity(_)
                 | AppAction::LoadMore
                 | AppAction::Mutate(_)
@@ -445,6 +457,12 @@ impl App {
                     return self.downloads_action(DownloadsAction::Retry).await;
                 }
                 self.refresh_feed().await
+            }
+            Command::NextPage => {
+                if self.state.view.downloads_active() {
+                    return Ok(());
+                }
+                self.load_more().await
             }
             Command::MoveDown { count } => {
                 self.move_selection(count as isize);

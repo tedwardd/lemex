@@ -134,6 +134,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: ">",
+        description: "load the next feed page",
+        group: "navigation",
+    },
+    HelpEntry {
         command: "Esc",
         description: "back / cancel",
         group: "navigation",

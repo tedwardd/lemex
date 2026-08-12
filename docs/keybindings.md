@@ -27,6 +27,7 @@ command/search line.
 | `l` | move right | move selection right |
 | `Enter` | open | open the selected post (or download) |
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
+| `>` | next page | load the next feed page and append it |
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |
@@ -100,8 +101,8 @@ cancels the pending action.
 Configure `[keymaps]` in the config file (see
 [Configuration](configuration.md)) or use `:set keymap <name> <keys>`, where
 `<name>` is a documented command name such as `down`, `up`, `open`,
-`refresh`, `insert`, `visual`, `command`, `search`, `search-backward`,
-`back`, `quit`, `scroll-detail-down`, `scroll-detail-up`, `confirm`, or
-`cancel`. The new sequence replaces the
+`refresh`, `next-page`, `insert`, `visual`, `command`, `search`,
+`search-backward`, `back`, `quit`, `scroll-detail-down`,
+`scroll-detail-up`, `confirm`, or `cancel`. The new sequence replaces the
 command's default binding, and multi-key sequences (for example `jk`)
 participate in prefix matching. Keymaps take effect on the next launch.

@@ -47,6 +47,22 @@ in URLs are rejected at load time. If the OS credential store is unavailable
 (no secret service in a headless session), the client starts anonymous;
 `:login` will then surface the credential-store error.
 
+## Startup action
+
+`startup` runs one command automatically once the client opens. It is
+optional and unset by default, which keeps the launch view empty (cache-only)
+until you act. A leading `:` is optional.
+
+```toml
+startup = "feed"            # show the home feed on launch
+# startup = "search rust"   # run a search on launch
+# startup = "community 123" # open a community on launch
+```
+
+Accepted values are `feed`, `search <query>`, and `community <id>`. Anything
+else is rejected at load time so a typo never launches into an unexpected
+view.
+
 ## Keymaps
 
 ```toml

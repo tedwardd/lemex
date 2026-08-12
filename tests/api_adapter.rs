@@ -6,6 +6,15 @@ use lemmy::api::fixtures::{
 use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
 use lemmy::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
 
+#[test]
+fn home_feed_requests_twenty_posts() {
+    assert_eq!(
+        FeedQuery::home().limit,
+        Some(FeedQuery::DEFAULT_LIMIT),
+        "the home feed must request a full screen of posts by default"
+    );
+}
+
 #[tokio::test]
 async fn client_sends_descriptive_user_agent() {
     let (api, user_agent) = fixture_api_recording_user_agent("{}");

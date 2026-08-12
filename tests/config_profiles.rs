@@ -118,6 +118,36 @@ fn temporary_directory() -> PathBuf {
 }
 
 #[test]
+fn startup_action_round_trips_and_normalizes_colon() {
+    let source =
+        "startup = ':feed'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert_eq!(config.startup, "feed");
+    let encoded = config.to_toml().unwrap();
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap().startup, "feed");
+    let search = "startup = 'search rust'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    assert_eq!(AppConfig::from_toml(search).unwrap().startup, "search rust");
+}
+
+#[test]
+fn empty_startup_action_is_allowed_and_invalid_ones_are_rejected() {
+    let empty = "startup = ''\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    assert_eq!(AppConfig::from_toml(empty).unwrap().startup, "");
+    for bad in ["bogus", "feed extra", "search", "community"] {
+        let source = format!(
+            "startup = '{bad}'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n"
+        );
+        assert!(
+            matches!(
+                AppConfig::from_toml(&source),
+                Err(AppError::Configuration(_))
+            ),
+            "startup {bad:?} must be rejected"
+        );
+    }
+}
+
+#[test]
 fn config_round_trips_non_secret_profile_metadata() {
     let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\naccount_label = 'primary'\n";
     let config = AppConfig::from_toml(source).unwrap();

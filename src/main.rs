@@ -28,7 +28,7 @@ fn init_logging(config: &AppConfig) {
     let _ = tracing_subscriber::fmt().with_max_level(level).try_init();
 }
 
-async fn build_app() -> Result<(App, HashMap<String, String>)> {
+async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     let path = config_path();
     let config = if path.exists() {
         AppConfig::load(&path)?
@@ -75,6 +75,7 @@ async fn build_app() -> Result<(App, HashMap<String, String>)> {
             media,
         ),
         keymaps,
+        config.startup,
     ))
 }
 
@@ -117,9 +118,9 @@ fn main() -> Result<()> {
         .enable_all()
         .build()
         .map_err(|error| AppError::Terminal(format!("could not start Tokio runtime: {error}")))?;
-    let (app, keymaps) = runtime.block_on(build_app())?;
+    let (app, keymaps, startup) = runtime.block_on(build_app())?;
     let terminal = ratatui::init();
-    let result = run_terminal(app, terminal, &runtime, &keymaps);
+    let result = run_terminal(app, terminal, &runtime, &keymaps, &startup);
     ratatui::restore();
     result
 }
