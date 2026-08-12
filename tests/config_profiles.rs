@@ -2,6 +2,8 @@ use std::{fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
 use lemmy::{AppConfig, AppError, ProfileId, SecretString, Session, UserId};
 use lemmy::profiles::{CredentialStore, MemoryCredentialStore};
+#[cfg(not(target_os = "linux"))]
+use lemmy::profiles::KeyringCredentialStore;
 use secrecy::ExposeSecret;
 
 fn session(token: &str) -> Session {
@@ -43,6 +45,23 @@ async fn sessions_are_keyed_by_profile_id() {
             .expose_secret(),
         "token-two"
     );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn keyring_store_refuses_unsupported_targets_without_memory_fallback() {
+    let store = KeyringCredentialStore::default();
+    let profile = ProfileId::from("unsupported-target");
+
+    for error in [
+        store.put_session(&profile, &session("must-not-be-stored")).await.unwrap_err(),
+        store.get_session(&profile).await.unwrap_err(),
+        store.delete_session(&profile).await.unwrap_err(),
+    ] {
+        let message = format!("{error}");
+        assert!(message.contains("unsupported target"), "unexpected error: {message}");
+        assert!(!message.contains("must-not-be-stored"));
+    }
 }
 
 #[test]
