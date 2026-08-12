@@ -648,6 +648,36 @@ fn mailcap_is_default_and_kitty_is_opt_in() {
     );
 }
 
+/// MIME probing: Lemmy media URLs are often extension-less (`image_proxy`
+/// rewrites), so the open path must resolve the MIME from the resource's
+/// Content-Type header before choosing a handler. A probed image served by
+/// the loopback server must reach the handler decision instead of degrading
+/// to an "unknown" metadata-only result.
+#[test]
+fn extensionless_media_url_is_probed_for_its_mime_type() {
+    let port = spawn_http_server(b"fixture media bytes".to_vec(), "image/png");
+    let media_url = Url::parse(&format!("http://127.0.0.1:{port}/noext")).unwrap();
+    let mut app = FixtureApp::new("media-probe");
+    let mut engine = InputEngine::new();
+    app.app.state.view.posts = vec![post_view(1, "Media post", Some(media_url))];
+    app.app.state.view.selected = Some(0);
+    // Mailcap stays off so the handler decision is observable without
+    // spawning an external viewer.
+    app.command(&mut engine, "set media mailcap off")
+        .expect("disable mailcap");
+    app.command(&mut engine, "media").expect("open media");
+    assert!(
+        app.app.state.status.message.contains("image/png"),
+        "the extension-less URL must be probed to image/png, got {:?}",
+        app.app.state.status.message
+    );
+    assert!(
+        app.app.state.status.message.contains("metadata only"),
+        "with mailcap off the probed media is still metadata-only, got {:?}",
+        app.app.state.status.message
+    );
+}
+
 /// Media download and history inspection: `:download-media` fetches through a
 /// loopback server, the session downloads panel shows the completed record
 /// and filters it, a confirmed delete removes the local file, and quitting

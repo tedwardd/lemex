@@ -1431,6 +1431,20 @@ impl App {
     /// Open media through the selected handler. `local` is the downloaded file
     /// when reopening a record; otherwise the source URL is passed.
     async fn open_media(&mut self, media: MediaRef, local: Option<PathBuf>) -> Result<()> {
+        // Lemmy media URLs often carry no file extension (`image_proxy`
+        // rewrites), so the MIME type must come from the resource itself.
+        // Probe the Content-Type header, exactly like the download path
+        // does, before choosing a handler.
+        let mut media = media;
+        if media.mime_type.is_none() {
+            match crate::media::probe_content_type(&media.url).await {
+                Ok(Some(mime)) => media.mime_type = Some(mime),
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "media MIME probe failed; falling back to filename");
+                }
+            }
+        }
         let handler = self
             .media_policy
             .select(&media, &self.terminal_capabilities);

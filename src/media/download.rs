@@ -21,8 +21,35 @@ use crate::{
 
 use super::{
     mailcap::{is_temporary_name, remove_temporary, temporary_path},
-    mime::{extension_for_mime, resolve_mime},
+    mime::{extension_for_mime, mime_from_content_type, resolve_mime},
 };
+
+/// Resolve a media URL's MIME type from its HTTP `Content-Type` header, the
+/// same way downloads do. Lemmy media URLs frequently carry no file
+/// extension (`image_proxy` rewrites), so the filename fallback cannot
+/// identify them and the open path would degrade to metadata-only.
+///
+/// The probe is unauthenticated: media hosts must never receive session
+/// credentials, and the descriptive User-Agent is sent because at least one
+/// public Lemmy edge resets connections that carry none.
+pub async fn probe_content_type(url: &url::Url) -> Result<Option<String>> {
+    let client = reqwest::Client::builder()
+        .use_rustls_tls()
+        .timeout(Duration::from_secs(5))
+        .user_agent(concat!("lemmy-client/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|error| AppError::Media(format!("could not build media probe client: {error}")))?;
+    let response = client
+        .get(url.clone())
+        .send()
+        .await
+        .map_err(|error| AppError::Media(format!("media probe failed: {error}")))?;
+    Ok(response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .and_then(mime_from_content_type))
+}
 
 /// How to handle a download whose target file already exists.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
