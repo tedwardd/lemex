@@ -1,11 +1,12 @@
 use std::{sync::{atomic::{AtomicUsize, Ordering}, Arc}, time::Duration};
+use tokio::sync::Notify;
 
 use async_trait::async_trait;
 use lemmy::{
     api::{fixtures::{fixture_api, fixture_api_with_status_count, timeout_fixture_api}, CommentView, FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView, SiteInfo},
-    app::{actions::{ApiResult, AppAction, ProfileCommand, RequestIdentity}, App, Repository},
+    app::{actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity}, App, Repository},
     cache::{CacheStore, CachedFeed, FeedKey, MemoryCache},
-    domain::{ActiveProfile, Mutation, PostId, Profile, ProfileContext, ProfileId},
+    domain::{Mutation, PostId, Profile, ProfileContext, ProfileId},
     error::{AppError, Result},
     profiles::{MemoryCredentialStore, ProfileStore},
 };
@@ -94,6 +95,8 @@ async fn delete_is_staged_until_confirmed_and_cancelled_once() {
 #[tokio::test]
 async fn stale_same_profile_post_result_is_rejected_by_request_token() {
     let mut app = fixture_app();
+    app.state.view.posts = vec![post_view(1, "selected")];
+    app.state.select(PostId(1));
     let old = app.begin_request(RequestIdentity::Post(PostId(1)));
     let current = app.begin_request(RequestIdentity::Post(PostId(1)));
     let detail = |title| PostDetail { post: PostView { id: PostId(1), title, body: None, url: None, community_id: lemmy::CommunityId(1), creator_id: lemmy::UserId(1), score: 0, comments: 0, published: None }, comments: Vec::new() };
@@ -120,6 +123,109 @@ async fn back_invalidates_inflight_post_result() {
     let detail = PostDetail { post: post_view(1, "stale"), comments: Vec::new() };
     app.dispatch(AppAction::ApiResult(ApiResult::Post { profile: ProfileId::from("fixture"), request, result: Ok(detail) })).await.unwrap();
     assert!(app.state.view.detail.is_none());
+}
+
+#[tokio::test]
+async fn post_result_requires_current_selected_post_context() {
+    let mut app = fixture_app();
+    app.state.view.posts = vec![post_view(1, "one"), post_view(2, "two")];
+    app.state.select(PostId(1));
+    let request = app.begin_request(RequestIdentity::Post(PostId(1)));
+    app.state.select(PostId(2));
+    app.dispatch(AppAction::ApiResult(ApiResult::Post { profile: ProfileId::from("fixture"), request, result: Ok(PostDetail { post: post_view(1, "stale"), comments: Vec::new() }) })).await.unwrap();
+    assert!(app.state.view.detail.is_none());
+}
+
+#[tokio::test]
+async fn back_invalidates_inflight_comments_result() {
+    let mut app = fixture_app();
+    app.state.view.posts = vec![post_view(1, "one")];
+    app.state.select(PostId(1));
+    app.state.view.detail = Some(PostDetail { post: post_view(1, "one"), comments: Vec::new() });
+    let request = app.begin_request(RequestIdentity::Comments(PostId(1)));
+    app.dispatch(AppAction::Back).await.unwrap();
+    app.state.view.detail = Some(PostDetail { post: post_view(1, "reopened"), comments: Vec::new() });
+    let comment = CommentView { id: lemmy::CommentId(1), post_id: PostId(1), content: "stale".into(), creator_id: lemmy::UserId(1), score: 0 };
+    app.dispatch(AppAction::ApiResult(ApiResult::Comments { profile: ProfileId::from("fixture"), request, post: PostId(1), result: Ok(vec![comment]) })).await.unwrap();
+    assert!(app.state.selected_comments().is_empty());
+}
+
+#[tokio::test]
+async fn async_feed_refresh_updates_state_without_reinserting_confirmed_delete() {
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    let cached = CachedFeed::new(json!({ "items": [{ "id": 1, "title": "target", "body": null, "url": null, "community_id": 1, "creator_id": 1, "score": 1, "comments": 0, "published": null }], "next_page": null }), 1, false);
+    cache.write_feed(&context.profile.id, &FeedKey::from("home"), &cached).unwrap();
+    let api = Arc::new(RefreshRaceApi::default());
+    let mut app = App::new(api.clone(), cache, context, Arc::new(MemoryCredentialStore::default()));
+    app.state.view.posts = vec![post_view(1, "target")];
+    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh)).await.unwrap();
+    api.started.notified().await;
+    app.dispatch(AppAction::DeletePost(PostId(1))).await.unwrap();
+    app.dispatch(AppAction::Confirm).await.unwrap();
+    api.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    app.dispatch(AppAction::Tick).await.unwrap();
+    assert_eq!(app.state.view.posts.iter().map(|post| post.id).collect::<Vec<_>>(), vec![PostId(2)]);
+    assert_eq!(app.state.view.posts[0].title, "refreshed");
+}
+
+#[tokio::test]
+async fn logout_invalidates_pending_results() {
+    let mut app = fixture_app();
+    let request = app.begin_request(RequestIdentity::Feed);
+    app.dispatch(AppAction::Profile(ProfileCommand::Logout)).await.unwrap();
+    app.dispatch(AppAction::ApiResult(ApiResult::Feed { profile: ProfileId::from("fixture"), request, result: Ok(Page { items: vec![post_view(1, "stale")], next_page: None }), stale: false })).await.unwrap();
+    assert!(app.state.view.posts.is_empty());
+}
+
+#[tokio::test]
+async fn new_profile_invalidates_pending_results_and_persists_metadata() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-new-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let mut app = App::with_profile_store(Arc::new(fixture_api("feed.json")), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()), store.clone());
+    let request = app.begin_request(RequestIdentity::Feed);
+    let draft = ProfileDraft { id: ProfileId::from("new-profile"), instance_url: Url::parse("https://new.example/lemmy").unwrap(), account_label: Some("New account".into()) };
+    app.dispatch(AppAction::Profile(ProfileCommand::New(draft))).await.unwrap();
+    app.dispatch(AppAction::ApiResult(ApiResult::Feed { profile: ProfileId::from("fixture"), request, result: Ok(Page { items: vec![post_view(1, "stale")], next_page: None }), stale: false })).await.unwrap();
+    let profiles = store.load().unwrap();
+    assert_eq!(profiles, vec![Profile { id: ProfileId::from("new-profile"), instance_url: Url::parse("https://new.example/lemmy").unwrap(), account_label: Some("New account".into()) }]);
+    assert!(app.state.view.posts.is_empty());
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn comment_submission_without_selected_post_fails_before_request() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(Arc::new(api), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    let draft = app.state.begin_comment_draft();
+    app.dispatch(AppAction::SubmitDraft(draft.id)).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(app.state.status.error.as_deref(), Some("select a post before submitting a comment"));
+}
+
+#[derive(Default)]
+struct RefreshRaceApi {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl LemmyApi for RefreshRaceApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(Page { items: vec![post_view(1, "deleted from refresh"), post_view(2, "refreshed")], next_page: None })
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        match mutation {
+            Mutation::DeletePost(id) => Ok(MutationResult { success: true, post: Some(post_view(id.0, "returned")), comment: None, message: None }),
+            _ => Err(AppError::Network("unexpected mutation".into())),
+        }
+    }
 }
 
 #[tokio::test]

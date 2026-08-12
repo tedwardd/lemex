@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashSet, sync::{Arc, Mutex}};
 
 use serde_json::{json, Value};
 
@@ -22,33 +22,46 @@ pub struct Repository {
     pub api: Arc<dyn LemmyApi>,
     pub cache: Arc<dyn CacheStore>,
     pub credentials: Arc<dyn CredentialStore>,
+    deleted_posts: Arc<Mutex<HashSet<(crate::ProfileId, crate::PostId)>>>,
 }
 
 impl Repository {
     pub fn new(api: Arc<dyn LemmyApi>, cache: Arc<dyn CacheStore>, credentials: Arc<dyn CredentialStore>) -> Self {
-        Self { api, cache, credentials }
+        Self { api, cache, credentials, deleted_posts: Arc::new(Mutex::new(HashSet::new())) }
+    }
+
+    fn filter_deleted(&self, profile: &crate::ProfileId, page: &mut Page<PostView>) {
+        let deleted = self.deleted_posts.lock().expect("deleted post set poisoned");
+        page.items.retain(|post| !deleted.contains(&(profile.clone(), post.id)));
     }
 
     pub async fn feed(&self, context: &ProfileContext, query: FeedQuery) -> Result<CachedRead<Page<PostView>>> {
         let key = FeedKey::new(feed_key(&query));
         let Some(mut cached) = self.cache.read_feed(&context.profile.id, &key)? else {
-            let page = self.api.feed(context, query).await?;
+            let mut page = self.api.feed(context, query).await?;
+            self.filter_deleted(&context.profile.id, &mut page);
             self.cache.write_feed(&context.profile.id, &key, &CachedFeed::new(page_to_value(&page), unix_now(), false))?;
             return Ok(CachedRead { value: page, stale: false, refresh_error: None });
         };
-        let page = page_from_value(&cached.entity)?;
+        let mut page = page_from_value(&cached.entity)?;
+        self.filter_deleted(&context.profile.id, &mut page);
+        cached.entity = page_to_value(&page);
         cached.stale = true;
         self.cache.write_feed(&context.profile.id, &key, &cached)?;
         let api = self.api.clone();
         let cache = self.cache.clone();
+        let deleted_posts = self.deleted_posts.clone();
         let context = context.clone();
         tokio::spawn(async move {
-            if let Ok(page) = api.feed(&context, query).await {
+            if let Ok(mut page) = api.feed(&context, query).await {
+                let deleted = deleted_posts.lock().expect("deleted post set poisoned");
+                page.items.retain(|post| !deleted.contains(&(context.profile.id.clone(), post.id)));
                 let _ = cache.write_feed(&context.profile.id, &key, &CachedFeed::new(page_to_value(&page), unix_now(), false));
             }
         });
         Ok(CachedRead { value: page, stale: true, refresh_error: None })
     }
+
 
     pub fn cached_feed(&self, context: &ProfileContext, query: &FeedQuery) -> Result<Option<CachedRead<Page<PostView>>>> {
         let key = FeedKey::new(feed_key(query));
@@ -65,6 +78,9 @@ impl Repository {
         let deleted_post = match &mutation { Mutation::DeletePost(id) => Some(*id), _ => None };
         let result = self.api.mutate(context, mutation).await?;
         if !result.success { return Ok(result); }
+        if let Some(id) = deleted_post {
+            self.deleted_posts.lock().expect("deleted post set poisoned").insert((context.profile.id.clone(), id));
+        }
         let key = FeedKey::new("home");
         if let Ok(Some(mut cached)) = self.cache.read_feed(&context.profile.id, &key) {
             if let Ok(mut page) = page_from_value(&cached.entity) {

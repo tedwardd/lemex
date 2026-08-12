@@ -93,3 +93,34 @@ Output:
 ```text
 cargo test: 11 passed (1 suite, 0.10s)
 ```
+
+## Task 7 final state and context fixes
+
+### Changed files
+
+- `src/app/mod.rs`: Required post results (including errors) to match the currently selected post; invalidated post and comments requests on Back; polled completed asynchronous feed refreshes into `AppState`; invalidated all requests on Logout, New, and profile switches; persisted New profile metadata through `ProfileStore`/`AppConfig`; and rejected comment/reply drafts without a selected post before creating a mutation.
+- `src/app/repository.rs`: Added profile/post deletion tombstones shared with asynchronous refresh tasks, filtering confirmed deletions before refresh cache writes so a late feed response cannot reinsert a deleted post.
+- `tests/application.rs`: Added regressions for selected-post result guards, Back/comments invalidation, refresh/delete races plus AppState refresh application, Logout/New stale-result isolation, New profile persistence, and comment validation without a selected post; updated the existing post-token regression to establish active selection.
+- `.superpowers/sdd/task-7-report.md`: Appended this final-fix evidence.
+
+### Fix details
+
+- A matching request token is insufficient for post results: success and failure handling now requires the request's post ID to remain selected. This prevents opening another post or changing selection from allowing an older result to replace detail or change status.
+- Back removes both `Post` and `Comments` request identities. Logout, New, and profile switching clear the entire request map before changing authentication/profile context.
+- New profile metadata is upserted into the loaded `AppConfig` and atomically saved through `ProfileStore` before activating the new context.
+- Confirmed deletion records a profile-scoped tombstone. Refresh tasks hold the tombstone set while filtering and writing fresh feed data, serializing deletion and refresh cache updates. `Tick` applies a completed fresh cache read to the active `AppState`.
+- Comment and reply drafts with no selected post now report `select a post before submitting a comment`, preserve the draft, and do not invoke the adapter or construct `PostId(0)`.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 17 passed (1 suite, 0.10s)
+```
