@@ -113,6 +113,46 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_detail() {
 }
 
 #[tokio::test]
+async fn back_invalidates_inflight_post_result() {
+    let mut app = fixture_app();
+    let request = app.begin_request(RequestIdentity::Post(PostId(1)));
+    app.dispatch(AppAction::Back).await.unwrap();
+    let detail = PostDetail { post: post_view(1, "stale"), comments: Vec::new() };
+    app.dispatch(AppAction::ApiResult(ApiResult::Post { profile: ProfileId::from("fixture"), request, result: Ok(detail) })).await.unwrap();
+    assert!(app.state.view.detail.is_none());
+}
+
+#[tokio::test]
+async fn confirmed_delete_removes_target_from_feed_and_cache() {
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    let before = CachedFeed::new(json!({ "items": [
+        { "id": 1, "title": "target", "body": null, "url": null, "community_id": 1, "creator_id": 1, "score": 1, "comments": 0, "published": null },
+        { "id": 2, "title": "survivor", "body": null, "url": null, "community_id": 1, "creator_id": 1, "score": 1, "comments": 0, "published": null }
+    ], "next_page": null }), 1, false);
+    cache.write_feed(&context.profile.id, &FeedKey::from("home"), &before).unwrap();
+    let mut app = App::new(Arc::new(ConfirmedDeleteApi), cache.clone(), context, Arc::new(MemoryCredentialStore::default()));
+    app.state.view.posts = vec![post_view(1, "target"), post_view(2, "survivor")];
+    app.dispatch(AppAction::DeletePost(PostId(1))).await.unwrap();
+    app.dispatch(AppAction::Confirm).await.unwrap();
+    assert_eq!(app.state.view.posts.iter().map(|post| post.id).collect::<Vec<_>>(), vec![PostId(2)]);
+    let cached = cache.read_feed(&ProfileId::from("fixture"), &FeedKey::from("home")).unwrap().unwrap();
+    assert_eq!(cached.entity["items"].as_array().unwrap().iter().map(|post| post["id"].as_i64().unwrap()).collect::<Vec<_>>(), vec![2]);
+}
+
+#[tokio::test]
+async fn stale_comments_error_for_inactive_post_does_not_change_status() {
+    let mut app = fixture_app();
+    app.state.view.detail = Some(PostDetail { post: post_view(2, "active"), comments: Vec::new() });
+    app.state.status.success("active detail");
+    let old = app.begin_request(RequestIdentity::Comments(PostId(1)));
+    let _current = app.begin_request(RequestIdentity::Comments(PostId(2)));
+    app.dispatch(AppAction::ApiResult(ApiResult::Comments { profile: ProfileId::from("fixture"), request: old, post: PostId(1), result: Err(AppError::Network("stale comments".into())) })).await.unwrap();
+    assert_eq!(app.state.status.message, "active detail");
+    assert!(app.state.status.error.is_none());
+}
+
+#[tokio::test]
 async fn switch_profile_uses_destination_store_metadata() {
     let path = std::env::temp_dir().join(format!("lemmy-application-{}.toml", std::process::id()));
     let store = ProfileStore::new(&path);
@@ -153,6 +193,25 @@ async fn unsuccessful_mutation_does_not_update_cached_post() {
 fn fixture_context() -> ProfileContext {
     ProfileContext { profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) }, session: None }
 }
+
+fn post_view(id: i64, title: &str) -> PostView {
+    PostView { id: PostId(id), title: title.into(), body: None, url: None, community_id: lemmy::CommunityId(1), creator_id: lemmy::UserId(1), score: 0, comments: 0, published: None }
+}
+
+struct ConfirmedDeleteApi;
+
+#[async_trait]
+impl LemmyApi for ConfirmedDeleteApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> { Err(AppError::Network("unused".into())) }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        let Mutation::DeletePost(id) = mutation else { return Err(AppError::Network("unexpected mutation".into())); };
+        Ok(MutationResult { success: true, post: Some(post_view(id.0, "returned target")), comment: None, message: None })
+    }
+}
+ 
 
 struct UnconfirmedApi;
 

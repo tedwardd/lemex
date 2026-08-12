@@ -64,3 +64,32 @@ Output:
 ```text
 cargo test: 8 passed (1 suite, 0.10s)
 ```
+
+## Task 7 re-review correctness fixes
+
+### Changed files
+
+- `src/app/mod.rs`: Back navigation now invalidates all active post request tokens before clearing detail; confirmed DeletePost removes the target from the in-memory feed and detail state; comments results require both the active post identity and current request identity for success and error handling.
+- `src/app/repository.rs`: Confirmed DeletePost removes the target post ID from the cached home feed, regardless of an optional returned post; non-delete mutation replacement behavior is preserved.
+- `tests/application.rs`: Added focused regressions for stale post results after Back, confirmed deletion from feed and cache, and stale comments errors from an inactive post.
+- `.superpowers/sdd/task-7-report.md`: Appended this re-review fix evidence.
+
+### Fix details
+
+- Back and `Command::Back` remove `RequestIdentity::Post` entries from the request-token map before clearing detail, so a late result cannot reopen stale detail.
+- A successful `Mutation::DeletePost(id)` now retains every cached and in-memory feed item except `id`; matching open detail and out-of-range selection are cleared or adjusted. Returned post payloads no longer reinsert deleted posts.
+- Comments results are ignored unless their request token is current, its identity matches the reported post, and that post is still active in detail. This applies to both successful comments and error results.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 11 passed (1 suite, 0.10s)
+```

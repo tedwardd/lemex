@@ -62,7 +62,7 @@ impl App {
             AppAction::Profile(command) => self.dispatch_profile(command).await,
             AppAction::SubmitDraft(id) => self.submit_draft(id).await,
             AppAction::OpenSelected => self.open_selected().await,
-            AppAction::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
+            AppAction::Back => { self.invalidate_post_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
             AppAction::DeletePost(id) => self.delete_post(id).await,
             AppAction::Confirm => self.confirm_pending().await,
             AppAction::Cancel => { self.cancel_pending(); Ok(()) }
@@ -75,7 +75,7 @@ impl App {
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Open => self.open_selected().await,
-            Command::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
+            Command::Back => { self.invalidate_post_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
             Command::Quit => { self.quit = true; Ok(()) }
             Command::Refresh => self.refresh_feed().await,
             Command::MoveDown { count } => { self.move_selection(count as isize); Ok(()) }
@@ -170,6 +170,10 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
         if self.state.status.pending { self.state.status.pending = false; self.state.status.success("cancelled"); }
     }
 
+    fn invalidate_post_requests(&mut self) {
+        self.requests.retain(|identity, _| !matches!(identity, RequestIdentity::Post(_)));
+    }
+
     async fn submit_draft(&mut self, id: crate::cache::DraftId) -> Result<()> {
         let Some(draft) = self.state.draft(id.clone()) else { return Ok(()); };
         let mutation = mutation_for_draft(&draft, self.state.selected_post());
@@ -196,8 +200,25 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
         match result {
             ApiResult::Feed { result, stale, .. } => match result { Ok(page) => { self.state.view.posts = page.items; self.state.view.stale = stale; self.state.status.stale = stale; self.state.status.success("feed loaded"); }, Err(error) => self.state.status.failure(error.to_string()) },
             ApiResult::Post { request, result, .. } => match result { Ok(detail) if matches!(request.identity, RequestIdentity::Post(id) if id == detail.post.id) => { self.state.view.detail = Some(detail); self.state.mode = Mode::Normal; self.state.status.success("post loaded"); }, Ok(_) => {}, Err(error) => self.state.status.failure(error.to_string()) },
-            ApiResult::Mutation { request, mutation, result, draft, .. } => if request.identity != RequestIdentity::Mutation(mutation) { } else { match result { Ok(MutationResult { success: true, post, .. }) => { if let Some(post) = post { if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post; } } if let Some(id) = draft { self.state.drafts.mark_completed(id); } self.state.status.success("saved"); }, Ok(_) => self.state.status.failure("mutation was not confirmed"), Err(error) => self.state.status.failure(error.to_string()) } },
-            ApiResult::Comments { request, post, result, .. } => match result { Ok(comments) if matches!(request.identity, RequestIdentity::Comments(id) if id == post) && self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == post) => { if let Some(detail) = &mut self.state.view.detail { detail.comments = comments; } self.state.status.success("comments loaded"); }, Ok(_) => {}, Err(error) => self.state.status.failure(error.to_string()) },
+            ApiResult::Mutation { request, mutation, result, draft, .. } => if request.identity != RequestIdentity::Mutation(mutation.clone()) { } else { match result {
+                Ok(MutationResult { success: true, post, .. }) => {
+                    if let Mutation::DeletePost(id) = mutation {
+                        self.state.view.posts.retain(|candidate| candidate.id != id);
+                        if self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == id) { self.state.view.detail = None; self.state.mode = Mode::Normal; }
+                        self.state.view.selected = self.state.view.selected.and_then(|selected| if self.state.view.posts.is_empty() { None } else { Some(selected.min(self.state.view.posts.len() - 1)) });
+                    } else if let Some(post) = post {
+                        if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post; }
+                    }
+                    if let Some(id) = draft { self.state.drafts.mark_completed(id); }
+                    self.state.status.success("saved");
+                },
+                Ok(_) => self.state.status.failure("mutation was not confirmed"),
+                Err(error) => self.state.status.failure(error.to_string()),
+            } },
+            ApiResult::Comments { request, post, result, .. } => if request.identity != RequestIdentity::Comments(post) || !self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == post) { } else { match result {
+                Ok(comments) => { if let Some(detail) = &mut self.state.view.detail { detail.comments = comments; } self.state.status.success("comments loaded"); },
+                Err(error) => self.state.status.failure(error.to_string()),
+            } },
         }
     }
 }

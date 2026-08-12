@@ -62,17 +62,20 @@ impl Repository {
     }
 
     pub async fn mutate(&self, context: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        let deleted_post = match &mutation { Mutation::DeletePost(id) => Some(*id), _ => None };
         let result = self.api.mutate(context, mutation).await?;
         if !result.success { return Ok(result); }
-        if let Some(post) = &result.post {
-            let key = FeedKey::new("home");
-            if let Ok(Some(mut cached)) = self.cache.read_feed(&context.profile.id, &key) {
-                if let Ok(mut page) = page_from_value(&cached.entity) {
+        let key = FeedKey::new("home");
+        if let Ok(Some(mut cached)) = self.cache.read_feed(&context.profile.id, &key) {
+            if let Ok(mut page) = page_from_value(&cached.entity) {
+                if let Some(id) = deleted_post {
+                    page.items.retain(|candidate| candidate.id != id);
+                } else if let Some(post) = &result.post {
                     if let Some(found) = page.items.iter_mut().find(|candidate| candidate.id == post.id) { *found = post.clone(); } else { page.items.push(post.clone()); }
-                    cached.entity = page_to_value(&page);
-                    cached.stale = false;
-                    self.cache.write_feed(&context.profile.id, &key, &cached)?;
                 }
+                cached.entity = page_to_value(&page);
+                cached.stale = false;
+                self.cache.write_feed(&context.profile.id, &key, &cached)?;
             }
         }
         Ok(result)
