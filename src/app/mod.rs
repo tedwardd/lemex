@@ -210,15 +210,16 @@ impl App {
     pub fn is_quit(&self) -> bool { self.quit }
 
     fn prepare_action(&mut self, action: &AppAction) {
-        if matches!(action, AppAction::Input(Command::Refresh))
-            || (matches!(action, AppAction::Confirm) && self.state.pending.is_some())
-            || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some())
-        {
-            if matches!(action, AppAction::Confirm) {
-                self.state.status.confirmation_pending = false;
-            }
-            self.state.status.pending = true;
+        let is_confirm = matches!(action, AppAction::Confirm) && self.state.pending.is_some();
+        let is_network = matches!(action, AppAction::Input(Command::Refresh))
+            || is_confirm
+            || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some());
+        if !is_network { return; }
+        if !is_confirm {
+            self.state.pending = None;
+            self.state.status.confirmation_pending = false;
         }
+        self.state.status.pending = true;
     }
 
     pub async fn dispatch(&mut self, action: AppAction) -> Result<()> {
@@ -522,6 +523,11 @@ mod tests {
         app.dispatch(AppAction::DeletePost(crate::PostId(1))).await.unwrap();
         let confirmation = app.render_model();
         assert!(confirmation.status.confirmation_pending);
+        app.prepare_action(&AppAction::Input(Command::Refresh));
+        let network = app.render_model();
+        assert!(app.state.pending.is_none());
+        assert!(!network.status.confirmation_pending);
+        assert!(network.status.pending);
         assert!(!confirmation.status.pending);
 
         let request = app.begin_request(RequestIdentity::Feed);

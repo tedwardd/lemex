@@ -74,4 +74,7 @@
 - Cached refreshes now retain network `pending` after returning stale data while the repository's detached background refresh is still running; fresh completion clears it through the existing tick path.
 - `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
 - `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `src/app/mod.rs`: starting Refresh or a selected Open now clears any staged destructive confirmation before publishing network-pending state; regression verifies no render snapshot shows both indicators.
+- `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
 
