@@ -1,15 +1,10 @@
-use std::{
-    collections::HashMap,
-    fmt::Display,
-    path::Path,
-    sync::Mutex,
-};
+use std::{collections::HashMap, fmt::Display, path::Path, sync::Mutex};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use crate::{error::AppError, ProfileId, Result};
 use super::{CacheStore, CachedFeed, Draft, DraftId, DraftStore, FeedKey};
+use crate::{ProfileId, Result, error::AppError};
 
 fn storage_error(error: impl Display) -> AppError {
     AppError::Storage(error.to_string())
@@ -35,7 +30,10 @@ impl SqliteCacheStore {
 
     /// Open (or create) a persistent SQLite database at `path`, enforcing a
     /// total feed-payload byte cap on every write.
-    pub fn open_with_size_limit(path: impl AsRef<Path>, max_size_bytes: Option<u64>) -> Result<Self> {
+    pub fn open_with_size_limit(
+        path: impl AsRef<Path>,
+        max_size_bytes: Option<u64>,
+    ) -> Result<Self> {
         let connection = Connection::open(path).map_err(storage_error)?;
         Self::from_connection(connection, max_size_bytes)
     }

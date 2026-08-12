@@ -1,5 +1,12 @@
-use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicU64, Ordering}, Arc}};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
+use super::actions::PendingAction;
 use crate::{
     api::{CommentView, PostDetail, PostView},
     cache::{CacheStore, Draft, DraftId},
@@ -7,7 +14,6 @@ use crate::{
     error::Result,
     input::Mode,
 };
-use super::actions::PendingAction;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct View {
@@ -33,13 +39,26 @@ pub struct DownloadsPanel {
 
 impl Default for View {
     fn default() -> Self {
-        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new(), downloads: None, help: None }
+        Self {
+            posts: Vec::new(),
+            detail: None,
+            selected: None,
+            compose: String::new(),
+            stale: false,
+            next_page: None,
+            feed_query: crate::api::FeedQuery::home(),
+            search: String::new(),
+            downloads: None,
+            help: None,
+        }
     }
 }
 
 impl View {
     pub fn selected_post(&self) -> Option<PostId> {
-        self.selected.and_then(|index| self.posts.get(index)).map(|post| post.id)
+        self.selected
+            .and_then(|index| self.posts.get(index))
+            .map(|post| post.id)
     }
 
     pub fn clear_profile_transient(&mut self) {
@@ -55,7 +74,10 @@ impl View {
     }
 
     pub fn selected_comments(&self) -> &[CommentView] {
-        self.detail.as_ref().map(|detail| detail.comments.as_slice()).unwrap_or_default()
+        self.detail
+            .as_ref()
+            .map(|detail| detail.comments.as_slice())
+            .unwrap_or_default()
     }
 
     pub fn downloads_active(&self) -> bool {
@@ -75,7 +97,9 @@ impl View {
     }
 
     pub fn move_download_selection(&mut self, delta: isize, ids: &[DownloadId]) {
-        let Some(panel) = &mut self.downloads else { return };
+        let Some(panel) = &mut self.downloads else {
+            return;
+        };
         if ids.is_empty() {
             panel.selected = None;
             return;
@@ -110,15 +134,25 @@ impl Status {
             stale: false,
             pending: false,
             confirmation_pending: false,
-            profile_name: context.profile.account_label.clone().unwrap_or_else(|| context.profile.id.to_string()),
+            profile_name: context
+                .profile
+                .account_label
+                .clone()
+                .unwrap_or_else(|| context.profile.id.to_string()),
             instance_url: context.profile.instance_url.to_string(),
         }
     }
 
-    pub fn is_retryable(&self) -> bool { self.retryable }
+    pub fn is_retryable(&self) -> bool {
+        self.retryable
+    }
 
     pub fn set_context(&mut self, context: &ProfileContext) {
-        self.profile_name = context.profile.account_label.clone().unwrap_or_else(|| context.profile.id.to_string());
+        self.profile_name = context
+            .profile
+            .account_label
+            .clone()
+            .unwrap_or_else(|| context.profile.id.to_string());
         self.instance_url = context.profile.instance_url.to_string();
     }
 
@@ -149,48 +183,107 @@ pub struct DraftStore {
 
 impl DraftStore {
     pub fn new(backend: Arc<dyn CacheStore>, profile: ProfileId) -> Self {
-        Self { backend, profile, sequence: Arc::new(AtomicU64::new(1)), completed: Arc::new(std::sync::Mutex::new(HashMap::new())) }
+        Self {
+            backend,
+            profile,
+            sequence: Arc::new(AtomicU64::new(1)),
+            completed: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        }
     }
 
-    pub fn profile(&self) -> &ProfileId { &self.profile }
+    pub fn profile(&self) -> &ProfileId {
+        &self.profile
+    }
 
     pub fn set_profile(&mut self, profile: ProfileId) {
         self.profile = profile;
     }
-    pub fn begin_comment_draft(&self) -> Draft { self.begin_draft("create_comment", "comment".into()) }
+    pub fn begin_comment_draft(&self) -> Draft {
+        self.begin_draft("create_comment", "comment".into())
+    }
 
-    pub fn begin_post_draft(&self) -> Draft { self.begin_draft("create_post", "Untitled".into()) }
+    pub fn begin_post_draft(&self) -> Draft {
+        self.begin_draft("create_post", "Untitled".into())
+    }
 
-    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft { self.begin_draft("edit_post", id.0.to_string()) }
+    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft {
+        self.begin_draft("edit_post", id.0.to_string())
+    }
 
-    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft { self.begin_draft("edit_comment", id.0.to_string()) }
+    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
+        self.begin_draft("edit_comment", id.0.to_string())
+    }
 
     fn begin_draft(&self, operation: &str, content: String) -> Draft {
-        let id = DraftId::new(format!("{}-{}", operation, self.sequence.fetch_add(1, Ordering::Relaxed)));
+        let id = DraftId::new(format!(
+            "{}-{}",
+            operation,
+            self.sequence.fetch_add(1, Ordering::Relaxed)
+        ));
         let draft = Draft::new(id, self.profile.clone(), operation, content);
         let _ = self.backend.save_draft(draft.clone());
         draft
     }
 
     pub fn validate(&self, draft: &Draft) -> Result<()> {
-        if draft.profile != self.profile { return Err(crate::error::AppError::Authorization("draft belongs to another profile".into())); }
+        if draft.profile != self.profile {
+            return Err(crate::error::AppError::Authorization(
+                "draft belongs to another profile".into(),
+            ));
+        }
         match draft.operation.as_str() {
-            "create_post" => if draft.content.lines().next().is_none_or(|title| title.trim().is_empty()) { Err(crate::error::AppError::InvalidCommand("post title is required".into())) } else { Ok(()) },
-            "create_comment" | "reply" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) },
+            "create_post" => {
+                if draft
+                    .content
+                    .lines()
+                    .next()
+                    .is_none_or(|title| title.trim().is_empty())
+                {
+                    Err(crate::error::AppError::InvalidCommand(
+                        "post title is required".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
+            "create_comment" | "reply" => {
+                if draft.content.trim().is_empty() {
+                    Err(crate::error::AppError::InvalidCommand(
+                        "comment content is required".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            }
             "edit_comment" => {
                 // The first line is the object id; the extracted content is the rest.
                 let mut lines = draft.content.lines();
                 let _ = lines.next();
                 let content = lines.collect::<Vec<_>>().join("\n");
-                if content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) }
+                if content.trim().is_empty() {
+                    Err(crate::error::AppError::InvalidCommand(
+                        "comment content is required".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
             }
             "edit_post" => {
                 // The first line is the object id; the extracted title is the next line.
                 let mut lines = draft.content.lines();
                 let _ = lines.next();
-                if lines.next().is_none_or(|title| title.trim().is_empty()) { Err(crate::error::AppError::InvalidCommand("post title is required".into())) } else { Ok(()) }
+                if lines.next().is_none_or(|title| title.trim().is_empty()) {
+                    Err(crate::error::AppError::InvalidCommand(
+                        "post title is required".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
             }
-            _ => Err(crate::error::AppError::InvalidCommand(format!("unsupported draft operation: {}", draft.operation))),
+            _ => Err(crate::error::AppError::InvalidCommand(format!(
+                "unsupported draft operation: {}",
+                draft.operation
+            ))),
         }
     }
 
@@ -199,22 +292,50 @@ impl DraftStore {
     }
 
     pub fn update(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
-        let mut draft = self.draft(id).ok_or_else(|| crate::error::AppError::Storage("draft not found".into()))?;
+        let mut draft = self
+            .draft(id)
+            .ok_or_else(|| crate::error::AppError::Storage("draft not found".into()))?;
         draft.content = content.into();
         self.save(draft)
     }
 
     pub fn draft(&self, id: &DraftId) -> Option<Draft> {
-        if self.completed.lock().ok().is_some_and(|completed| completed.get(&self.profile).is_some_and(|ids| ids.contains(id))) { return None; }
-        self.backend.load_drafts(&self.profile).ok()?.into_iter().find(|draft| &draft.id == id)
+        if self.completed.lock().ok().is_some_and(|completed| {
+            completed
+                .get(&self.profile)
+                .is_some_and(|ids| ids.contains(id))
+        }) {
+            return None;
+        }
+        self.backend
+            .load_drafts(&self.profile)
+            .ok()?
+            .into_iter()
+            .find(|draft| &draft.id == id)
     }
 
     pub fn all(&self) -> Vec<Draft> {
-        self.backend.load_drafts(&self.profile).unwrap_or_default().into_iter().filter(|draft| !self.completed.lock().ok().is_some_and(|completed| completed.get(&self.profile).is_some_and(|ids| ids.contains(&draft.id)))).collect()
+        self.backend
+            .load_drafts(&self.profile)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|draft| {
+                !self.completed.lock().ok().is_some_and(|completed| {
+                    completed
+                        .get(&self.profile)
+                        .is_some_and(|ids| ids.contains(&draft.id))
+                })
+            })
+            .collect()
     }
 
     pub fn mark_completed(&self, id: DraftId) {
-        if let Ok(mut completed) = self.completed.lock() { completed.entry(self.profile.clone()).or_default().insert(id); }
+        if let Ok(mut completed) = self.completed.lock() {
+            completed
+                .entry(self.profile.clone())
+                .or_default()
+                .insert(id);
+        }
     }
 }
 
@@ -230,25 +351,58 @@ pub struct AppState {
 impl AppState {
     pub fn new(active: ProfileContext, cache: Arc<dyn CacheStore>) -> Self {
         let drafts = DraftStore::new(cache, active.profile.id.clone());
-        Self { mode: Mode::Normal, status: Status::ready(&active), active, view: View::default(), drafts, pending: None }
+        Self {
+            mode: Mode::Normal,
+            status: Status::ready(&active),
+            active,
+            view: View::default(),
+            drafts,
+            pending: None,
+        }
     }
 
     pub fn select(&mut self, post: PostId) {
-        self.view.selected = self.view.posts.iter().position(|candidate| candidate.id == post);
-        if self.view.posts.is_empty() { self.view.selected = None; }
+        self.view.selected = self
+            .view
+            .posts
+            .iter()
+            .position(|candidate| candidate.id == post);
+        if self.view.posts.is_empty() {
+            self.view.selected = None;
+        }
     }
 
-    pub fn select_index(&mut self, index: usize) { self.view.selected = (index < self.view.posts.len()).then_some(index); }
-    pub fn selected_index(&self) -> usize { self.view.selected.unwrap_or_default() }
-    pub fn selected_post(&self) -> Option<PostId> { self.view.selected_post() }
-    pub fn selected_comments(&self) -> &[CommentView] { self.view.selected_comments() }
-    pub fn begin_comment_draft(&self) -> Draft { self.drafts.begin_comment_draft() }
-    pub fn begin_post_draft(&self) -> Draft { self.drafts.begin_post_draft() }
-    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft { self.drafts.begin_edit_post_draft(id) }
-    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft { self.drafts.begin_edit_comment_draft(id) }
-    pub fn draft(&self, id: DraftId) -> Option<Draft> { self.drafts.draft(&id) }
+    pub fn select_index(&mut self, index: usize) {
+        self.view.selected = (index < self.view.posts.len()).then_some(index);
+    }
+    pub fn selected_index(&self) -> usize {
+        self.view.selected.unwrap_or_default()
+    }
+    pub fn selected_post(&self) -> Option<PostId> {
+        self.view.selected_post()
+    }
+    pub fn selected_comments(&self) -> &[CommentView] {
+        self.view.selected_comments()
+    }
+    pub fn begin_comment_draft(&self) -> Draft {
+        self.drafts.begin_comment_draft()
+    }
+    pub fn begin_post_draft(&self) -> Draft {
+        self.drafts.begin_post_draft()
+    }
+    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft {
+        self.drafts.begin_edit_post_draft(id)
+    }
+    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
+        self.drafts.begin_edit_comment_draft(id)
+    }
+    pub fn draft(&self, id: DraftId) -> Option<Draft> {
+        self.drafts.draft(&id)
+    }
 
-    pub fn update_draft(&self, id: &DraftId, content: impl Into<String>) -> Result<()> { self.drafts.update(id, content) }
+    pub fn update_draft(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
+        self.drafts.update(id, content)
+    }
 
     pub fn switch_context(&mut self, context: ProfileContext) {
         self.active = context;

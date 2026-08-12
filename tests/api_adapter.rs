@@ -1,7 +1,7 @@
 use lemmy::api::fixtures::{
     anonymous_context, authenticated_context, fixture_api, fixture_api_with_body,
-    fixture_api_with_status, fixture_api_with_status_count, login_fixture_api,
-    timeout_fixture_api, truncated_body_fixture_api,
+    fixture_api_with_status, fixture_api_with_status_count, login_fixture_api, timeout_fixture_api,
+    truncated_body_fixture_api,
 };
 use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
 use lemmy::{AppError, Mutation, PostId, SecretString, UserId};
@@ -44,14 +44,18 @@ async fn truncated_success_body_is_a_network_error() {
 async fn empty_success_body_is_not_treated_as_success() {
     let api = fixture_api_with_body("");
     let result = api.feed(&anonymous_context(), FeedQuery::home()).await;
-    assert!(matches!(result, Err(AppError::Network(message)) if message.contains("empty response body")));
+    assert!(
+        matches!(result, Err(AppError::Network(message)) if message.contains("empty response body"))
+    );
 }
 
 #[tokio::test]
 async fn missing_endpoint_reports_actionable_unsupported_error() {
     let api = fixture_api_with_status("/api/v3/post/list", 404);
     let result = api.feed(&anonymous_context(), FeedQuery::home()).await;
-    assert!(matches!(result, Err(AppError::Authorization(message)) if message.contains("unsupported")));
+    assert!(
+        matches!(result, Err(AppError::Authorization(message)) if message.contains("unsupported"))
+    );
 }
 
 #[tokio::test]
@@ -68,7 +72,10 @@ async fn negative_scores_and_comments_are_preserved() {
     let api = fixture_api_with_body(
         r#"{"posts":[{"post":{"id":1,"name":"negative","community_id":1,"creator_id":1,"score":-4,"comments":-3},"counts":{"score":-2,"comments":-5}}]}"#,
     );
-    let page = api.feed(&anonymous_context(), FeedQuery::home()).await.unwrap();
+    let page = api
+        .feed(&anonymous_context(), FeedQuery::home())
+        .await
+        .unwrap();
     assert_eq!(page.items[0].score, -2);
     assert_eq!(page.items[0].comments, -5);
 }
@@ -79,7 +86,13 @@ async fn mutation_comment_uses_response_post_id_and_negative_score() {
         r#"{"comment_view":{"comment":{"id":2,"post_id":42,"content":"negative","creator_id":1},"counts":{"score":-3}}}"#,
     );
     let result = api
-        .mutate(&authenticated_context(), Mutation::VoteComment { id: lemmy::CommentId(2), score: -1 })
+        .mutate(
+            &authenticated_context(),
+            Mutation::VoteComment {
+                id: lemmy::CommentId(2),
+                score: -1,
+            },
+        )
         .await
         .unwrap();
     let comment = result.comment.unwrap();

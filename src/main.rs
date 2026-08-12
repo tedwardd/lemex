@@ -2,9 +2,9 @@ use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use lemmy::{
     api::HttpLemmyApi,
-    app::{run_terminal, App},
+    app::{App, run_terminal},
     cache::SqliteCacheStore,
-    config::{cache_dir, config_path, AppConfig},
+    config::{AppConfig, cache_dir, config_path},
     domain::ProfileContext,
     error::{AppError, Result},
     profiles::{CredentialStore, KeyringCredentialStore},
@@ -30,18 +30,24 @@ fn init_logging(config: &AppConfig) {
 
 async fn build_app() -> Result<(App, HashMap<String, String>)> {
     let path = config_path();
-    let config = if path.exists() { AppConfig::load(&path)? } else { AppConfig::default() };
+    let config = if path.exists() {
+        AppConfig::load(&path)?
+    } else {
+        AppConfig::default()
+    };
     init_logging(&config);
     let media = config.media.clone();
     let keymaps = config.keymaps.clone();
-    let profile = config
-        .profiles
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::Configuration(format!("no profiles configured in {}", path.display())))?;
+    let profile = config.profiles.into_iter().next().ok_or_else(|| {
+        AppError::Configuration(format!("no profiles configured in {}", path.display()))
+    })?;
     let cache_root = config.cache.directory.unwrap_or_else(cache_dir);
-    fs::create_dir_all(&cache_root)
-        .map_err(|error| AppError::Storage(format!("cannot create cache directory {}: {error}", cache_root.display())))?;
+    fs::create_dir_all(&cache_root).map_err(|error| {
+        AppError::Storage(format!(
+            "cannot create cache directory {}: {error}",
+            cache_root.display()
+        ))
+    })?;
     let cache = SqliteCacheStore::open_with_size_limit(
         cache_root.join(PathBuf::from("cache.sqlite3")),
         config.cache.max_size_bytes,
@@ -72,7 +78,38 @@ async fn build_app() -> Result<(App, HashMap<String, String>)> {
     ))
 }
 
+/// Non-interactive usage text printed for `lemmy --help`. The interactive
+/// default (no arguments) starts the terminal client unchanged.
+const USAGE: &str = "\
+lemmy — a terminal client for Lemmy
+
+Usage:
+  lemmy            start the interactive terminal client
+  lemmy --help     show this help and exit
+
+The interactive client is a Vim-like modal TUI. Run :help inside the client
+for the full command index; a summary follows.";
+
+fn print_help() {
+    println!("{USAGE}");
+    println!();
+    println!("Commands:");
+    for entry in lemmy::app::help::HelpIndex::default().search("") {
+        println!("  {:<30} {}", entry.command, entry.description);
+    }
+}
+
 fn main() -> Result<()> {
+    // The help path must exit successfully without entering the TUI (no
+    // config load, no runtime, no alternate screen), so it is checked before
+    // anything else runs.
+    if std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
+        print_help();
+        return Ok(());
+    }
     // One runtime for the whole process: startup session restoration and the
     // terminal event loop share it, so application state is never handed
     // between two runtimes and blocking work stays on the multi-thread pool.

@@ -38,13 +38,13 @@ impl IntoKeySequence for Vec<KeyCode> {
     }
 }
 
-impl<'a> IntoKeySequence for &'a [KeyCode] {
+impl IntoKeySequence for &[KeyCode] {
     fn into_key_sequence(self) -> Vec<KeyCode> {
         self.to_vec()
     }
 }
 
-impl<'a> IntoKeySequence for &'a [char] {
+impl IntoKeySequence for &[char] {
     fn into_key_sequence(self) -> Vec<KeyCode> {
         self.iter().copied().map(KeyCode::Char).collect()
     }
@@ -100,7 +100,8 @@ impl MappingTable {
         S: IntoKeySequence,
     {
         let sequence = sequence.into_key_sequence();
-        self.longest_complete(sequence.as_slice()).map(|(_, command)| command)
+        self.longest_complete(sequence.as_slice())
+            .map(|(_, command)| command)
     }
 
     pub fn longest_complete<S>(&self, sequence: S) -> Option<(usize, Command)>
@@ -120,9 +121,9 @@ impl MappingTable {
         S: IntoKeySequence,
     {
         let sequence = sequence.into_key_sequence();
-        self.mappings
-            .keys()
-            .any(|mapping| mapping.starts_with(sequence.as_slice()) && mapping.len() > sequence.len())
+        self.mappings.keys().any(|mapping| {
+            mapping.starts_with(sequence.as_slice()) && mapping.len() > sequence.len()
+        })
     }
 
     pub fn classify<S>(&self, sequence: S) -> MappingMatch

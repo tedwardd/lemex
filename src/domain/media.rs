@@ -57,7 +57,10 @@ pub enum DownloadStatus {
 
 impl DownloadStatus {
     pub fn is_terminal(&self) -> bool {
-        matches!(self, DownloadStatus::Completed | DownloadStatus::Cancelled | DownloadStatus::Failed(_))
+        matches!(
+            self,
+            DownloadStatus::Completed | DownloadStatus::Cancelled | DownloadStatus::Failed(_)
+        )
     }
 }
 
@@ -65,8 +68,14 @@ impl fmt::Display for DownloadStatus {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             DownloadStatus::Pending => formatter.write_str("pending"),
-            DownloadStatus::Downloading { received, total: Some(total) } => write!(formatter, "downloading {received}/{total}"),
-            DownloadStatus::Downloading { received, total: None } => write!(formatter, "downloading {received} bytes"),
+            DownloadStatus::Downloading {
+                received,
+                total: Some(total),
+            } => write!(formatter, "downloading {received}/{total}"),
+            DownloadStatus::Downloading {
+                received,
+                total: None,
+            } => write!(formatter, "downloading {received} bytes"),
             DownloadStatus::Prompting => formatter.write_str("prompting"),
             DownloadStatus::Completed => formatter.write_str("completed"),
             DownloadStatus::Cancelled => formatter.write_str("cancelled"),

@@ -4,8 +4,8 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -116,7 +116,11 @@ impl SessionDownloadHistory {
     /// All records in insertion order.
     pub fn all(&self) -> Vec<DownloadRecord> {
         let inner = self.inner.state.lock();
-        inner.order.iter().filter_map(|id| inner.records.get(id).cloned()).collect()
+        inner
+            .order
+            .iter()
+            .filter_map(|id| inner.records.get(id).cloned())
+            .collect()
     }
 
     /// Records matching a query, newest first. Empty query returns everything.
@@ -164,7 +168,9 @@ impl SessionDownloadHistory {
         next: impl FnOnce(&DownloadRecord) -> DownloadStatus,
     ) -> bool {
         let mut inner = self.inner.state.lock();
-        let Some(record) = inner.records.get_mut(&id) else { return false; };
+        let Some(record) = inner.records.get_mut(&id) else {
+            return false;
+        };
         if record.status.is_terminal() {
             return false;
         }
@@ -176,11 +182,11 @@ impl SessionDownloadHistory {
 
     pub(crate) fn set_mime(&self, id: DownloadId, mime: Option<String>) {
         let mut changed = false;
-        if let Some(record) = self.inner.state.lock().records.get_mut(&id) {
-            if record.mime_type != mime {
-                record.mime_type = mime;
-                changed = true;
-            }
+        if let Some(record) = self.inner.state.lock().records.get_mut(&id)
+            && record.mime_type != mime
+        {
+            record.mime_type = mime;
+            changed = true;
         }
         if changed {
             self.notify();
@@ -189,11 +195,11 @@ impl SessionDownloadHistory {
 
     pub(crate) fn set_path(&self, id: DownloadId, path: PathBuf) {
         let mut changed = false;
-        if let Some(record) = self.inner.state.lock().records.get_mut(&id) {
-            if record.local_path != path {
-                record.local_path = path;
-                changed = true;
-            }
+        if let Some(record) = self.inner.state.lock().records.get_mut(&id)
+            && record.local_path != path
+        {
+            record.local_path = path;
+            changed = true;
         }
         if changed {
             self.notify();
@@ -202,7 +208,9 @@ impl SessionDownloadHistory {
 
     pub(crate) fn reset(&self, id: DownloadId, request: &DownloadRequest) {
         let mut inner = self.inner.state.lock();
-        let Some(record) = inner.records.get_mut(&id) else { return; };
+        let Some(record) = inner.records.get_mut(&id) else {
+            return;
+        };
         record.media = request.media.clone();
         record.filename = filename_for(&request.media);
         record.mime_type = resolve_mime(&request.media, None);
@@ -218,11 +226,11 @@ impl SessionDownloadHistory {
 
     pub fn mark_file_deleted(&self, id: DownloadId) {
         let mut changed = false;
-        if let Some(record) = self.inner.state.lock().records.get_mut(&id) {
-            if !record.local_file_deleted {
-                record.local_file_deleted = true;
-                changed = true;
-            }
+        if let Some(record) = self.inner.state.lock().records.get_mut(&id)
+            && !record.local_file_deleted
+        {
+            record.local_file_deleted = true;
+            changed = true;
         }
         if changed {
             self.notify();
@@ -233,7 +241,12 @@ impl SessionDownloadHistory {
 fn record_matches(record: &DownloadRecord, query: &str) -> bool {
     record.filename.to_lowercase().contains(query)
         || record.media.url.as_str().to_lowercase().contains(query)
-        || record.mime_type.as_deref().unwrap_or_default().to_lowercase().contains(query)
+        || record
+            .mime_type
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase()
+            .contains(query)
         || record.status.to_string().contains(query)
         || record.profile.0.to_lowercase().contains(query)
         || record.instance_url.as_str().to_lowercase().contains(query)
@@ -329,7 +342,11 @@ impl DownloadManager {
             None
         };
         self.inner.history.insert(DownloadRecord {
-            status: if needs_prompt { DownloadStatus::Prompting } else { DownloadStatus::Pending },
+            status: if needs_prompt {
+                DownloadStatus::Prompting
+            } else {
+                DownloadStatus::Pending
+            },
             ..record
         });
         self.inner.requests.lock().insert(id, request.clone());
@@ -341,9 +358,17 @@ impl DownloadManager {
 
     /// Cancel an in-flight download. Completed/failed downloads reject the call.
     pub async fn cancel(&self, id: DownloadId) -> Result<()> {
-        let record = self.history().get(id).ok_or_else(|| AppError::Media(format!("download {id} not found")))?;
-        if record.status == DownloadStatus::Completed || matches!(record.status, DownloadStatus::Failed(_)) {
-            return Err(AppError::Media(format!("download {id} is already {status}", status = record.status)));
+        let record = self
+            .history()
+            .get(id)
+            .ok_or_else(|| AppError::Media(format!("download {id} not found")))?;
+        if record.status == DownloadStatus::Completed
+            || matches!(record.status, DownloadStatus::Failed(_))
+        {
+            return Err(AppError::Media(format!(
+                "download {id} is already {status}",
+                status = record.status
+            )));
         }
         if let Some(flag) = self.inner.cancel_flags.lock().get(&id) {
             flag.store(true, Ordering::SeqCst);
@@ -359,12 +384,9 @@ impl DownloadManager {
 
     /// Resolve a pending collision prompt (policy "prompt") with a decision.
     pub async fn resolve_collision(&self, id: DownloadId, overwrite: bool) -> Result<()> {
-        let sender = self
-            .inner
-            .prompts
-            .lock()
-            .remove(&id)
-            .ok_or_else(|| AppError::Media(format!("download {id} has no pending collision prompt")))?;
+        let sender = self.inner.prompts.lock().remove(&id).ok_or_else(|| {
+            AppError::Media(format!("download {id} has no pending collision prompt"))
+        })?;
         let _ = sender.send(overwrite);
         Ok(())
     }
@@ -428,7 +450,11 @@ impl DownloadManager {
     pub async fn wait_for(&self, id: DownloadId) -> DownloadStatus {
         let mut receiver = self.history().subscribe();
         loop {
-            let status = self.history().get(id).map(|record| record.status).unwrap_or(DownloadStatus::Cancelled);
+            let status = self
+                .history()
+                .get(id)
+                .map(|record| record.status)
+                .unwrap_or(DownloadStatus::Cancelled);
             if status.is_terminal() {
                 return status;
             }
@@ -474,20 +500,33 @@ impl DownloadManager {
     ) {
         let inner = self.inner.clone();
         let handle = tokio::spawn(async move {
-            run_download(inner, id, request, target, needs_prompt, flag, prompt_receiver).await;
+            run_download(
+                inner,
+                id,
+                request,
+                target,
+                needs_prompt,
+                flag,
+                prompt_receiver,
+            )
+            .await;
         });
         self.inner.tasks.lock().insert(id, handle);
     }
-
 }
 
 fn validate_request(request: &DownloadRequest) -> Result<()> {
     let url = &request.media.url;
     if !matches!(url.scheme(), "http" | "https") {
-        return Err(AppError::Media(format!("unsupported download scheme: {}", url.scheme())));
+        return Err(AppError::Media(format!(
+            "unsupported download scheme: {}",
+            url.scheme()
+        )));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err(AppError::Media("refusing to download a URL containing embedded credentials".into()));
+        return Err(AppError::Media(
+            "refusing to download a URL containing embedded credentials".into(),
+        ));
     }
     if url.host_str().is_none() {
         return Err(AppError::Media("download URL must include a host".into()));
@@ -501,18 +540,17 @@ pub fn filename_for(media: &MediaRef) -> String {
     let candidate = media
         .url
         .path_segments()
-        .and_then(|segments| segments.last())
+        .and_then(|mut segments| segments.next_back())
         .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..");
     let mut name = candidate
-        .map(|segment| sanitize_name(segment))
+        .map(sanitize_name)
         .unwrap_or_else(|| "download".to_owned());
-    if !name.contains('.') {
-        if let Some(mime) = resolve_mime(media, None) {
-            if let Some(extension) = extension_for_mime(&mime) {
-                name.push('.');
-                name.push_str(extension);
-            }
-        }
+    if !name.contains('.')
+        && let Some(mime) = resolve_mime(media, None)
+        && let Some(extension) = extension_for_mime(&mime)
+    {
+        name.push('.');
+        name.push_str(extension);
     }
     name
 }
@@ -532,8 +570,14 @@ fn uniquify(path: &Path) -> PathBuf {
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let stem = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_else(|| "download".into());
-    let extension = path.extension().map(|extension| format!(".{}", extension.to_string_lossy())).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "download".into());
+    let extension = path
+        .extension()
+        .map(|extension| format!(".{}", extension.to_string_lossy()))
+        .unwrap_or_default();
     for index in 1..1000u32 {
         let candidate = parent.join(format!("{stem}-{index}{extension}"));
         if !candidate.exists() {
@@ -544,7 +588,9 @@ fn uniquify(path: &Path) -> PathBuf {
 }
 
 fn cleanup_stale_temporaries(directory: &Path) {
-    let Ok(entries) = fs::read_dir(directory) else { return };
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
     for entry in entries.flatten() {
         // Only the exact `.{name}.part-{numeric id}` pattern is a stale
         // temporary; completed downloads and user files containing ".part-"
@@ -585,13 +631,19 @@ async fn run_download(
         return;
     }
     history.set_path(id, target.clone());
-    history.transition(id, |_| DownloadStatus::Downloading { received: 0, total: None });
+    history.transition(id, |_| DownloadStatus::Downloading {
+        received: 0,
+        total: None,
+    });
 
     let mut response = match inner.client.get(request.media.url.clone()).send().await {
         Ok(response) => response,
         Err(error) => {
             history.transition(id, |_| DownloadStatus::Failed(error.to_string()));
-            inner.events.lock().push(DownloadEvent::Failed(id, error.to_string()));
+            inner
+                .events
+                .lock()
+                .push(DownloadEvent::Failed(id, error.to_string()));
             return;
         }
     };

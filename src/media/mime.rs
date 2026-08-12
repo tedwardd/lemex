@@ -4,7 +4,7 @@ use url::Url;
 
 use crate::domain::MediaRef;
 
-use super::mailcap::{find_entry, MailcapEntry};
+use super::mailcap::{MailcapEntry, find_entry};
 
 /// Capabilities reported by the terminal that the client runs in.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -73,7 +73,9 @@ impl MediaPolicyConfig {
             return MediaHandler::KittyInline;
         }
         if let Some(command) = self.handlers.get(&mime) {
-            return MediaHandler::External { command: command.clone() };
+            return MediaHandler::External {
+                command: command.clone(),
+            };
         }
         if self.mailcap_enabled && !mime.is_empty() {
             let command = find_entry(&self.mailcap_entries, &mime)
@@ -88,7 +90,12 @@ impl MediaPolicyConfig {
 /// Resolve a MIME type in precedence order: server metadata on the media
 /// reference, the HTTP response `Content-Type` header, then the URL filename.
 pub fn resolve_mime(media: &MediaRef, content_type: Option<&str>) -> Option<String> {
-    if let Some(metadata) = media.mime_type.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(metadata) = media
+        .mime_type
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         return Some(metadata.to_owned());
     }
     if let Some(header) = content_type.and_then(mime_from_content_type) {
@@ -105,7 +112,7 @@ pub fn mime_from_content_type(header: &str) -> Option<String> {
 
 /// Guess a MIME type from the URL path's final extension.
 pub fn mime_from_filename(url: &Url) -> Option<String> {
-    let name = url.path_segments()?.last()?;
+    let name = url.path_segments()?.next_back()?;
     let extension = name.rsplit('.').next()?;
     if extension == name && !name.contains('.') {
         return None;

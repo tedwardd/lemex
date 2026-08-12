@@ -75,10 +75,16 @@ fn normal_maps_motions_open_refresh_search_and_quit() {
     assert_eq!(engine.handle(key('l')), Command::MoveRight { count: 1 });
     assert_eq!(engine.handle(key('r')), Command::Refresh);
     assert_eq!(engine.handle(enter()), Command::Open);
-    assert_eq!(engine.handle(key('/')), Command::EnterSearch { backward: false });
+    assert_eq!(
+        engine.handle(key('/')),
+        Command::EnterSearch { backward: false }
+    );
     assert_eq!(engine.mode(), Mode::SearchForward);
     assert_eq!(engine.handle(escape()), Command::Back);
-    assert_eq!(engine.handle(key('?')), Command::EnterSearch { backward: true });
+    assert_eq!(
+        engine.handle(key('?')),
+        Command::EnterSearch { backward: true }
+    );
     assert_eq!(engine.mode(), Mode::SearchBackward);
     assert_eq!(engine.handle(escape()), Command::Back);
     assert_eq!(engine.handle(key('q')), Command::Quit);
@@ -98,10 +104,16 @@ fn insert_emits_printable_text() {
 fn search_submits_and_backspace_updates_line() {
     let mut engine = InputEngine::default();
 
-    assert_eq!(engine.handle(key('/')), Command::EnterSearch { backward: false });
+    assert_eq!(
+        engine.handle(key('/')),
+        Command::EnterSearch { backward: false }
+    );
     assert_eq!(engine.handle(key('a')), Command::Text("a".into()));
     assert_eq!(engine.handle(key('b')), Command::Text("b".into()));
-    assert_eq!(engine.handle(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)), Command::Noop);
+    assert_eq!(
+        engine.handle(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        Command::Noop
+    );
     assert_eq!(engine.handle(enter()), Command::SubmitLine("a".into()));
     assert_eq!(engine.mode(), Mode::Normal);
 }
@@ -121,7 +133,10 @@ fn mappings_choose_longest_complete_sequence_without_waiting() {
 
     assert_eq!(mappings.resolve("gg"), Some(Command::Open));
     assert_eq!(mappings.resolve("ggx"), Some(Command::Open));
-    assert_eq!(mappings.classify("g"), MappingMatch::Complete(Command::Refresh));
+    assert_eq!(
+        mappings.classify("g"),
+        MappingMatch::Complete(Command::Refresh)
+    );
     assert_eq!(mappings.classify("x"), MappingMatch::NoMatch);
 }
 
@@ -147,5 +162,9 @@ fn persisted_keymaps_bind_documented_commands_at_startup() {
     // alone because `jk` is a prefix.
     assert_eq!(engine.handle(key('j')), Command::Noop);
     assert_eq!(engine.handle(key('k')), Command::MoveDown { count: 1 });
-    assert_eq!(engine.handle(key('x')), Command::Noop, "unknown command names must be skipped");
+    assert_eq!(
+        engine.handle(key('x')),
+        Command::Noop,
+        "unknown command names must be skipped"
+    );
 }

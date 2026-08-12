@@ -46,9 +46,18 @@ pub struct EditCommentRequest {
 /// A user-visible mutation independent of Lemmy API-version request shapes.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Mutation {
-    VotePost { id: PostId, score: i8 },
-    VoteComment { id: CommentId, score: i8 },
-    SavePost { id: PostId, saved: bool },
+    VotePost {
+        id: PostId,
+        score: i8,
+    },
+    VoteComment {
+        id: CommentId,
+        score: i8,
+    },
+    SavePost {
+        id: PostId,
+        saved: bool,
+    },
     Subscribe {
         community: CommunityId,
         subscribed: bool,

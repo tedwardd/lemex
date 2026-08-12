@@ -60,11 +60,15 @@ impl ExposeSecret<str> for SecretString {
 pub struct ProfileId(pub String);
 
 impl From<String> for ProfileId {
-    fn from(value: String) -> Self { Self(value) }
+    fn from(value: String) -> Self {
+        Self(value)
+    }
 }
 
 impl From<&str> for ProfileId {
-    fn from(value: &str) -> Self { Self(value.to_owned()) }
+    fn from(value: &str) -> Self {
+        Self(value.to_owned())
+    }
 }
 
 impl std::fmt::Display for ProfileId {

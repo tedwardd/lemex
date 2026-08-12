@@ -1,12 +1,15 @@
-use std::{collections::HashMap, sync::{Arc, RwLock}};
+use std::{
+    collections::HashMap,
+    sync::{Arc, RwLock},
+};
 
 use async_trait::async_trait;
 #[cfg(target_os = "linux")]
 use keyring::Entry;
 
 use crate::{
-    domain::{ProfileId, Session, UserId},
     AppError, Result,
+    domain::{ProfileId, Session, UserId},
 };
 
 /// Secure storage boundary for authentication sessions.
@@ -68,7 +71,9 @@ pub struct KeyringCredentialStore {
 
 impl KeyringCredentialStore {
     pub fn new(service: impl Into<String>) -> Self {
-        Self { service: service.into() }
+        Self {
+            service: service.into(),
+        }
     }
 
     #[cfg(target_os = "linux")]

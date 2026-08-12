@@ -67,7 +67,10 @@ impl InputEngine {
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> Command {
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             return Command::Noop;
         }
 
@@ -121,7 +124,8 @@ impl InputEngine {
         }
 
         self.pending.push(key);
-        let Some((_length, command)) = self.mappings.longest_complete(self.pending.as_slice()) else {
+        let Some((_length, command)) = self.mappings.longest_complete(self.pending.as_slice())
+        else {
             if !self.mappings.has_prefix(self.pending.as_slice()) {
                 self.pending.clear();
             }

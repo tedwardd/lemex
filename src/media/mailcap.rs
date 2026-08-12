@@ -24,8 +24,8 @@ pub fn parse_mailcap(source: &str) -> Vec<MailcapEntry> {
         if line.trim_start().starts_with('#') && current.is_empty() {
             continue;
         }
-        if line.ends_with('\\') {
-            current.push_str(&line[..line.len() - 1]);
+        if let Some(stripped) = line.strip_suffix('\\') {
+            current.push_str(stripped);
             continue;
         }
         current.push_str(line);
@@ -34,10 +34,10 @@ pub fn parse_mailcap(source: &str) -> Vec<MailcapEntry> {
         }
         current.clear();
     }
-    if !current.trim().is_empty() {
-        if let Some(entry) = parse_mailcap_line(&current) {
-            entries.push(entry);
-        }
+    if !current.trim().is_empty()
+        && let Some(entry) = parse_mailcap_line(&current)
+    {
+        entries.push(entry);
     }
     entries
 }
@@ -94,7 +94,9 @@ pub fn find_entry<'a>(entries: &'a [MailcapEntry], mime: &str) -> Option<&'a Mai
         return Some(entry);
     }
     let mtype = mime.split_once('/').map(|(mtype, _)| mtype)?;
-    entries.iter().find(|entry| entry.mime_type == format!("{mtype}/*"))
+    entries
+        .iter()
+        .find(|entry| entry.mime_type == format!("{mtype}/*"))
 }
 
 /// Load mailcap entries from `$MAILCAPS` or the standard `~/.mailcap` and
@@ -102,7 +104,10 @@ pub fn find_entry<'a>(entries: &'a [MailcapEntry], mime: &str) -> Option<&'a Mai
 pub fn load_entries() -> Vec<MailcapEntry> {
     let mut paths = Vec::new();
     if let Ok(configured) = std::env::var("MAILCAPS") {
-        for candidate in configured.split(':').filter(|candidate| !candidate.is_empty()) {
+        for candidate in configured
+            .split(':')
+            .filter(|candidate| !candidate.is_empty())
+        {
             paths.push(PathBuf::from(candidate));
         }
     } else {
@@ -200,8 +205,12 @@ fn tokenize(template: &str) -> Vec<String> {
 /// sweep uses this so completed downloads and user files whose names merely
 /// contain `.part-` are never mistaken for stale temporaries.
 pub(crate) fn is_temporary_name(name: &str) -> bool {
-    let Some(rest) = name.strip_prefix('.') else { return false };
-    let Some((stem, id)) = rest.rsplit_once(".part-") else { return false };
+    let Some(rest) = name.strip_prefix('.') else {
+        return false;
+    };
+    let Some((stem, id)) = rest.rsplit_once(".part-") else {
+        return false;
+    };
     !stem.is_empty() && !id.is_empty() && id.chars().all(|character| character.is_ascii_digit())
 }
 

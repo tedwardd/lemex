@@ -10,8 +10,8 @@ use std::{
 use lemmy::{
     domain::{DownloadStatus, MediaRef, ProfileId},
     media::{
-        build_argv, find_entry, parse_mailcap, resolve_mime, CollisionPolicy, DownloadManager,
-        DownloadRequest, MediaHandler, MediaPolicyConfig, TerminalCapabilities,
+        CollisionPolicy, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig,
+        TerminalCapabilities, build_argv, find_entry, parse_mailcap, resolve_mime,
     },
 };
 use url::Url;
@@ -52,7 +52,10 @@ fn slow_download_request() -> DownloadRequest {
         LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
-    LISTENERS.lock().unwrap().push(listener.try_clone().unwrap());
+    LISTENERS
+        .lock()
+        .unwrap()
+        .push(listener.try_clone().unwrap());
     std::thread::spawn(move || {
         if let Ok((mut stream, _)) = listener.accept() {
             let mut buffer = [0u8; 512];
@@ -97,7 +100,10 @@ fn mailcap_is_default_even_when_kitty_is_available() {
 
 #[test]
 fn kitty_is_selected_only_when_enabled_and_supported() {
-    let policy = MediaPolicyConfig { kitty_enabled: true, ..Default::default() };
+    let policy = MediaPolicyConfig {
+        kitty_enabled: true,
+        ..Default::default()
+    };
     let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: true });
     assert_eq!(handler, MediaHandler::KittyInline);
 }
@@ -107,12 +113,18 @@ async fn cancelled_download_is_recorded_in_session_history() {
     let manager = test_download_manager();
     let id = manager.start(slow_download_request()).await.unwrap();
     manager.cancel(id).await.unwrap();
-    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Cancelled);
+    assert_eq!(
+        manager.history().get(id).unwrap().status,
+        DownloadStatus::Cancelled
+    );
 }
 
 #[test]
 fn kitty_requires_terminal_support_even_when_enabled() {
-    let policy = MediaPolicyConfig { kitty_enabled: true, ..Default::default() };
+    let policy = MediaPolicyConfig {
+        kitty_enabled: true,
+        ..Default::default()
+    };
     let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: false });
     assert!(matches!(handler, MediaHandler::Mailcap { .. }));
 }
@@ -120,9 +132,16 @@ fn kitty_requires_terminal_support_even_when_enabled() {
 #[test]
 fn explicit_handler_configuration_wins_over_mailcap() {
     let mut policy = MediaPolicyConfig::default();
-    policy.handlers.insert("image/png".into(), "custom-viewer %s".into());
+    policy
+        .handlers
+        .insert("image/png".into(), "custom-viewer %s".into());
     let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: false });
-    assert_eq!(handler, MediaHandler::External { command: "custom-viewer %s".into() });
+    assert_eq!(
+        handler,
+        MediaHandler::External {
+            command: "custom-viewer %s".into()
+        }
+    );
 }
 
 #[test]
@@ -137,11 +156,17 @@ fn unsupported_types_return_metadata_only() {
 fn mime_resolution_prefers_metadata_then_header_then_filename() {
     let mut media = MediaRef::new(Url::parse("https://example.com/photo.png").unwrap());
     media.mime_type = Some("image/gif".into());
-    assert_eq!(resolve_mime(&media, Some("image/jpeg")), Some("image/gif".into()));
+    assert_eq!(
+        resolve_mime(&media, Some("image/jpeg")),
+        Some("image/gif".into())
+    );
     assert_eq!(resolve_mime(&media, None), Some("image/gif".into()));
 
     let media = MediaRef::new(Url::parse("https://example.com/photo.png").unwrap());
-    assert_eq!(resolve_mime(&media, Some("image/jpeg")), Some("image/jpeg".into()));
+    assert_eq!(
+        resolve_mime(&media, Some("image/jpeg")),
+        Some("image/jpeg".into())
+    );
     assert_eq!(resolve_mime(&media, None), Some("image/png".into()));
 }
 
@@ -196,7 +221,10 @@ application/pdf; zathura %s; description="PDF reader"
 
     // A template without %s appends the file as the final argument.
     let argv = build_argv("xdg-open", "/tmp/f", "text/plain");
-    assert_eq!(argv, vec![OsString::from("xdg-open"), OsString::from("/tmp/f")]);
+    assert_eq!(
+        argv,
+        vec![OsString::from("xdg-open"), OsString::from("/tmp/f")]
+    );
 }
 
 #[tokio::test]
@@ -221,7 +249,7 @@ async fn download_completes_and_renames_atomically() {
     assert_eq!(std::fs::read(&destination).unwrap(), body);
     assert!(record.status.is_terminal());
 
-    let leftovers = std::fs::read_dir(&test_dir())
+    let leftovers = std::fs::read_dir(test_dir())
         .unwrap()
         .filter_map(|entry| entry.ok())
         .filter(|entry| entry.file_name().to_string_lossy().contains(".part-"))
@@ -245,7 +273,10 @@ async fn unique_name_collision_appends_suffix() {
     assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
     let record = manager.history().get(id).unwrap();
     assert_ne!(record.local_path, destination);
-    assert_eq!(record.local_path.file_name().unwrap().to_string_lossy(), "notes-1.txt");
+    assert_eq!(
+        record.local_path.file_name().unwrap().to_string_lossy(),
+        "notes-1.txt"
+    );
     assert_eq!(std::fs::read(&record.local_path).unwrap(), body);
     assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
 }
@@ -264,7 +295,10 @@ async fn prompt_collision_waits_for_resolution() {
         CollisionPolicy::Prompt,
     );
     let keep_id = manager.start(request).await.unwrap();
-    assert_eq!(manager.history().get(keep_id).unwrap().status, DownloadStatus::Prompting);
+    assert_eq!(
+        manager.history().get(keep_id).unwrap().status,
+        DownloadStatus::Prompting
+    );
     manager.resolve_collision(keep_id, false).await.unwrap();
     assert_eq!(manager.wait_for(keep_id).await, DownloadStatus::Cancelled);
     assert_eq!(std::fs::read(&destination).unwrap(), b"existing");
@@ -276,7 +310,10 @@ async fn prompt_collision_waits_for_resolution() {
     );
     let overwrite_id = manager.start(request).await.unwrap();
     manager.resolve_collision(overwrite_id, true).await.unwrap();
-    assert_eq!(manager.wait_for(overwrite_id).await, DownloadStatus::Completed);
+    assert_eq!(
+        manager.wait_for(overwrite_id).await,
+        DownloadStatus::Completed
+    );
     assert_eq!(std::fs::read(&destination).unwrap(), b"prompted");
 }
 
@@ -316,7 +353,10 @@ async fn download_records_profile_instance_and_timestamp() {
     assert_eq!(record.profile, ProfileId::from("fixture"));
     assert_eq!(record.instance_url.as_str(), "http://127.0.0.1/");
     assert!(record.requested_at > 0);
-    assert_eq!(record.media.url.as_str(), format!("http://127.0.0.1:{port}/meta.txt"));
+    assert_eq!(
+        record.media.url.as_str(),
+        format!("http://127.0.0.1:{port}/meta.txt")
+    );
 }
 
 #[tokio::test]
@@ -344,7 +384,10 @@ async fn retry_removes_stale_temp_before_reusing_temp_path() {
     manager.retry(id).await.unwrap();
     assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
     assert_eq!(std::fs::read(&destination).unwrap(), body);
-    assert!(!stale.exists(), "stale temp must be removed before the temp path is reused");
+    assert!(
+        !stale.exists(),
+        "stale temp must be removed before the temp path is reused"
+    );
 }
 
 #[test]
@@ -372,8 +415,14 @@ fn stale_temp_cleanup_matches_exact_pattern_only() {
     let _manager = DownloadManager::new(dir.clone());
 
     assert!(!exact.exists(), "exact temp pattern must be reclaimed");
-    assert!(completed.exists(), "completed downloads must survive the sweep");
-    assert!(mid_name.exists(), "files merely containing .part- must survive");
+    assert!(
+        completed.exists(),
+        "completed downloads must survive the sweep"
+    );
+    assert!(
+        mid_name.exists(),
+        "files merely containing .part- must survive"
+    );
     assert!(dot_alpha.exists(), "non-numeric .part- names must survive");
     assert!(dot_date.exists(), "non-numeric .part- names must survive");
 }
@@ -391,7 +440,10 @@ async fn retry_prompt_collision_parks_record_in_prompting() {
         CollisionPolicy::Prompt,
     );
     let id = manager.start(request).await.unwrap();
-    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    assert_eq!(
+        manager.history().get(id).unwrap().status,
+        DownloadStatus::Prompting
+    );
     manager.resolve_collision(id, false).await.unwrap();
     assert_eq!(manager.wait_for(id).await, DownloadStatus::Cancelled);
     assert_eq!(std::fs::read(&destination).unwrap(), b"pre-existing");
@@ -400,7 +452,10 @@ async fn retry_prompt_collision_parks_record_in_prompting() {
     // Prompting synchronously, exactly like start() does, so the UI can
     // surface the collision prompt instead of a silent pending state.
     manager.retry(id).await.unwrap();
-    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    assert_eq!(
+        manager.history().get(id).unwrap().status,
+        DownloadStatus::Prompting
+    );
     manager.resolve_collision(id, true).await.unwrap();
     assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
     assert_eq!(std::fs::read(&destination).unwrap(), b"retried prompt");
@@ -419,20 +474,29 @@ async fn collision_prompt_wait_parks_instead_of_spinning() {
         CollisionPolicy::Prompt,
     );
     let id = manager.start(request).await.unwrap();
-    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    assert_eq!(
+        manager.history().get(id).unwrap().status,
+        DownloadStatus::Prompting
+    );
 
     // The prompt wait must park on a timer, not busy-spin a CPU core: many
     // poll intervals elapse without the wait resolving or the record leaving
     // Prompting, and timer-driven tasks stay responsive meanwhile.
     tokio::time::advance(Duration::from_millis(500)).await;
-    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    assert_eq!(
+        manager.history().get(id).unwrap().status,
+        DownloadStatus::Prompting
+    );
 
     let ticker = tokio::spawn(async {
         tokio::time::sleep(Duration::from_millis(100)).await;
         true
     });
     tokio::time::advance(Duration::from_millis(100)).await;
-    assert!(ticker.await.unwrap(), "executor must stay responsive while the prompt waits");
+    assert!(
+        ticker.await.unwrap(),
+        "executor must stay responsive while the prompt waits"
+    );
 
     // hyper/reqwest drives its request lifecycle on real timers, so restore
     // real time before the download performs its network request.

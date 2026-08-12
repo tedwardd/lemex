@@ -1,5 +1,5 @@
-mod http;
 pub mod fixtures;
+mod http;
 
 pub use http::HttpLemmyApi;
 
@@ -29,7 +29,13 @@ pub struct FeedQuery {
 
 impl FeedQuery {
     pub fn home() -> Self {
-        Self { sort: "Active".into(), page: None, limit: None, community: None, search: None }
+        Self {
+            sort: "Active".into(),
+            page: None,
+            limit: None,
+            community: None,
+            search: None,
+        }
     }
 }
 

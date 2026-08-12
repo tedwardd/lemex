@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use crate::{AppConfig, Result};
 use crate::domain::{Profile, ProfileId};
+use crate::{AppConfig, Result};
 
 /// Persistence boundary for non-secret profile metadata.
 #[derive(Clone, Debug)]
@@ -14,7 +14,9 @@ impl ProfileStore {
         Self { path: path.into() }
     }
 
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     pub fn load(&self) -> Result<Vec<Profile>> {
         load(&self.path)
@@ -40,7 +42,11 @@ impl ProfileStore {
     /// here (the caller owns credential-store lifecycle).
     pub fn create(&self, profile: Profile) -> Result<()> {
         let mut config = self.load_config()?;
-        if let Some(existing) = config.profiles.iter_mut().find(|existing| existing.id == profile.id) {
+        if let Some(existing) = config
+            .profiles
+            .iter_mut()
+            .find(|existing| existing.id == profile.id)
+        {
             *existing = profile;
         } else {
             config.profiles.push(profile);
@@ -53,7 +59,9 @@ impl ProfileStore {
         self.load()?
             .into_iter()
             .find(|profile| profile.id == *id)
-            .ok_or_else(|| crate::error::AppError::Configuration(format!("profile {id} is not configured")))
+            .ok_or_else(|| {
+                crate::error::AppError::Configuration(format!("profile {id} is not configured"))
+            })
     }
 }
 

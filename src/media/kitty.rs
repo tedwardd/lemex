@@ -17,7 +17,8 @@ pub fn detect_support() -> bool {
 /// the Kitty graphics protocol. The file is read, base64-encoded, chunked into
 /// `a=T` transmissions, and finally placed with `a=p`.
 pub fn render_file(path: &Path) -> Result<Vec<u8>> {
-    let bytes = fs::read(path).map_err(|error| AppError::Media(format!("cannot read {}: {error}", path.display())))?;
+    let bytes = fs::read(path)
+        .map_err(|error| AppError::Media(format!("cannot read {}: {error}", path.display())))?;
     if bytes.is_empty() {
         return Err(AppError::Media("cannot render an empty media file".into()));
     }
@@ -31,7 +32,7 @@ pub fn render_file(path: &Path) -> Result<Vec<u8>> {
         let more = if end < encoded.len() { 1 } else { 0 };
         out.extend_from_slice(b"\x1b_G");
         out.extend_from_slice(format!("a=T,f={format},m={more};").as_bytes());
-        out.extend_from_slice(encoded[offset..end].as_bytes());
+        out.extend_from_slice(&encoded.as_bytes()[offset..end]);
         out.extend_from_slice(b"\x1b\\");
         offset = end;
     }

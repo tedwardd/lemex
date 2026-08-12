@@ -23,9 +23,19 @@ pub struct RequestToken {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
-    DeletePost { profile: ProfileId, id: PostId },
-    Mutation { profile: ProfileId, mutation: Mutation, draft: Option<DraftId> },
-    DeleteDownload { id: DownloadId, path: std::path::PathBuf },
+    DeletePost {
+        profile: ProfileId,
+        id: PostId,
+    },
+    Mutation {
+        profile: ProfileId,
+        mutation: Mutation,
+        draft: Option<DraftId>,
+    },
+    DeleteDownload {
+        id: DownloadId,
+        path: std::path::PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,10 +58,30 @@ pub enum ProfileCommand {
 
 #[derive(Debug)]
 pub enum ApiResult {
-    Feed { profile: ProfileId, request: RequestToken, result: Result<Page<PostView>>, stale: bool },
-    Post { profile: ProfileId, request: RequestToken, result: Result<PostDetail> },
-    Mutation { profile: ProfileId, request: RequestToken, draft: Option<DraftId>, mutation: Mutation, result: Result<MutationResult> },
-    Comments { profile: ProfileId, request: RequestToken, post: PostId, result: Result<Vec<CommentView>> },
+    Feed {
+        profile: ProfileId,
+        request: RequestToken,
+        result: Result<Page<PostView>>,
+        stale: bool,
+    },
+    Post {
+        profile: ProfileId,
+        request: RequestToken,
+        result: Result<PostDetail>,
+    },
+    Mutation {
+        profile: ProfileId,
+        request: RequestToken,
+        draft: Option<DraftId>,
+        mutation: Mutation,
+        result: Box<Result<MutationResult>>,
+    },
+    Comments {
+        profile: ProfileId,
+        request: RequestToken,
+        post: PostId,
+        result: Result<Vec<CommentView>>,
+    },
 }
 
 #[derive(Debug)]
@@ -81,7 +111,7 @@ pub enum AppAction {
     Mutate(Mutation),
     Confirm,
     Cancel,
-    ApiResult(ApiResult),
+    ApiResult(Box<ApiResult>),
     Media,
     DownloadMedia,
     ShowDownloads,
@@ -91,7 +121,9 @@ pub enum AppAction {
 }
 
 impl From<Command> for AppAction {
-    fn from(command: Command) -> Self { Self::Input(command) }
+    fn from(command: Command) -> Self {
+        Self::Input(command)
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

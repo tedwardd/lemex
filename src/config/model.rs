@@ -1,10 +1,14 @@
-use std::{collections::{HashMap, HashSet}, fs, path::{Path, PathBuf}};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::{Path, PathBuf},
+};
 
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::{AppError, Result};
 use crate::domain::{Profile, ProfileId};
+use crate::{AppError, Result};
 
 use super::paths;
 
@@ -29,57 +33,27 @@ impl Default for MediaConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CacheConfig {
     pub directory: Option<PathBuf>,
     pub max_size_bytes: Option<u64>,
 }
 
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            directory: None,
-            max_size_bytes: None,
-        }
-    }
-}
-
 /// Opt-in diagnostic logging policy. Logs redact credentials, tokens,
 /// private content, and sensitive profile values; disabled by default.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct LogConfig {
     pub enabled: bool,
     pub level: Option<String>,
 }
 
-impl Default for LogConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            level: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AppConfig {
     pub profiles: Vec<Profile>,
     pub keymaps: HashMap<String, String>,
     pub media: MediaConfig,
     pub cache: CacheConfig,
     pub logging: LogConfig,
-}
-
-impl Default for AppConfig {
-    fn default() -> Self {
-        Self {
-            profiles: Vec::new(),
-            keymaps: HashMap::new(),
-            media: MediaConfig::default(),
-            cache: CacheConfig::default(),
-            logging: LogConfig::default(),
-        }
-    }
 }
 
 impl AppConfig {
@@ -91,26 +65,40 @@ impl AppConfig {
         let mut profiles = Vec::with_capacity(raw.profiles.len());
         for profile in raw.profiles {
             if profile.id.trim().is_empty() {
-                return Err(AppError::Configuration("profile id must not be empty".to_owned()));
+                return Err(AppError::Configuration(
+                    "profile id must not be empty".to_owned(),
+                ));
             }
             let id = ProfileId(profile.id);
             if !ids.insert(id.clone()) {
-                return Err(AppError::Configuration(format!("duplicate profile id: {}", id.0)));
+                return Err(AppError::Configuration(format!(
+                    "duplicate profile id: {}",
+                    id.0
+                )));
             }
-            let instance_url = Url::parse(&profile.instance_url)
-                .map_err(|error| AppError::Configuration(format!("invalid instance URL: {error}")))?;
+            let instance_url = Url::parse(&profile.instance_url).map_err(|error| {
+                AppError::Configuration(format!("invalid instance URL: {error}"))
+            })?;
             if !matches!(instance_url.scheme(), "http" | "https") {
-                return Err(AppError::Configuration("instance URL must use http or https".to_owned()));
+                return Err(AppError::Configuration(
+                    "instance URL must use http or https".to_owned(),
+                ));
             }
             if instance_url.host_str().is_none() {
-                return Err(AppError::Configuration("instance URL must include a host".to_owned()));
+                return Err(AppError::Configuration(
+                    "instance URL must include a host".to_owned(),
+                ));
             }
             if !instance_url.username().is_empty() || instance_url.password().is_some() {
                 return Err(AppError::Configuration(
                     "instance URL must not contain credentials".to_owned(),
                 ));
             }
-            profiles.push(Profile { id, instance_url, account_label: profile.account_label });
+            profiles.push(Profile {
+                id,
+                instance_url,
+                account_label: profile.account_label,
+            });
         }
 
         Ok(Self {
@@ -126,13 +114,20 @@ impl AppConfig {
         let mut ids = HashSet::with_capacity(self.profiles.len());
         for profile in &self.profiles {
             if profile.id.0.trim().is_empty() {
-                return Err(AppError::Configuration("profile id must not be empty".to_owned()));
+                return Err(AppError::Configuration(
+                    "profile id must not be empty".to_owned(),
+                ));
             }
             if !ids.insert(profile.id.clone()) {
-                return Err(AppError::Configuration(format!("duplicate profile id: {}", profile.id)));
+                return Err(AppError::Configuration(format!(
+                    "duplicate profile id: {}",
+                    profile.id
+                )));
             }
             if !matches!(profile.instance_url.scheme(), "http" | "https") {
-                return Err(AppError::Configuration("instance URL must use http or https".to_owned()));
+                return Err(AppError::Configuration(
+                    "instance URL must use http or https".to_owned(),
+                ));
             }
             if profile.instance_url.host_str().is_none()
                 || !profile.instance_url.username().is_empty()
@@ -144,11 +139,15 @@ impl AppConfig {
             }
         }
         let raw = RawConfig {
-            profiles: self.profiles.iter().map(|profile| RawProfile {
-                id: profile.id.0.clone(),
-                instance_url: profile.instance_url.to_string(),
-                account_label: profile.account_label.clone(),
-            }).collect(),
+            profiles: self
+                .profiles
+                .iter()
+                .map(|profile| RawProfile {
+                    id: profile.id.0.clone(),
+                    instance_url: profile.instance_url.to_string(),
+                    account_label: profile.account_label.clone(),
+                })
+                .collect(),
             keymaps: self.keymaps.clone(),
             media: RawMediaConfig::from_config(&self.media),
             cache: RawCacheConfig::from_config(&self.cache),
@@ -159,8 +158,9 @@ impl AppConfig {
     }
 
     pub fn load(path: &Path) -> Result<Self> {
-        let source = fs::read_to_string(path)
-            .map_err(|error| AppError::Storage(format!("cannot read {}: {error}", path.display())))?;
+        let source = fs::read_to_string(path).map_err(|error| {
+            AppError::Storage(format!("cannot read {}: {error}", path.display()))
+        })?;
         Self::from_toml(&source)
     }
 
@@ -221,8 +221,12 @@ impl Default for RawMediaConfig {
     }
 }
 
-fn default_mailcap_enabled() -> bool { true }
-fn default_collision_policy() -> String { "prompt".to_owned() }
+fn default_mailcap_enabled() -> bool {
+    true
+}
+fn default_collision_policy() -> String {
+    "prompt".to_owned()
+}
 
 impl RawMediaConfig {
     fn into_config(self) -> MediaConfig {
@@ -257,11 +261,17 @@ struct RawCacheConfig {
 
 impl RawCacheConfig {
     fn into_config(self) -> CacheConfig {
-        CacheConfig { directory: self.directory, max_size_bytes: self.max_size_bytes }
+        CacheConfig {
+            directory: self.directory,
+            max_size_bytes: self.max_size_bytes,
+        }
     }
 
     fn from_config(config: &CacheConfig) -> Self {
-        Self { directory: config.directory.clone(), max_size_bytes: config.max_size_bytes }
+        Self {
+            directory: config.directory.clone(),
+            max_size_bytes: config.max_size_bytes,
+        }
     }
 }
 
@@ -276,11 +286,17 @@ struct RawLogConfig {
 
 impl RawLogConfig {
     fn into_config(self) -> LogConfig {
-        LogConfig { enabled: self.enabled, level: self.level }
+        LogConfig {
+            enabled: self.enabled,
+            level: self.level,
+        }
     }
 
     fn from_config(config: &LogConfig) -> Self {
-        Self { enabled: config.enabled, level: config.level.clone() }
+        Self {
+            enabled: config.enabled,
+            level: config.level.clone(),
+        }
     }
 }
 
@@ -290,10 +306,14 @@ impl AppConfig {
     /// launch.
     pub fn set_keymap(&mut self, name: String, sequence: String) -> Result<()> {
         if name.trim().is_empty() {
-            return Err(AppError::Configuration("keymap name must not be empty".to_owned()));
+            return Err(AppError::Configuration(
+                "keymap name must not be empty".to_owned(),
+            ));
         }
         if sequence.trim().is_empty() {
-            return Err(AppError::Configuration(format!("keymap {name}: key sequence must not be empty")));
+            return Err(AppError::Configuration(format!(
+                "keymap {name}: key sequence must not be empty"
+            )));
         }
         if sequence.chars().any(char::is_whitespace) {
             return Err(AppError::Configuration(format!(
@@ -319,7 +339,9 @@ impl AppConfig {
     pub fn set_download_directory(&mut self, directory: Option<PathBuf>) -> Result<()> {
         if let Some(path) = &directory {
             if path.as_os_str().is_empty() {
-                return Err(AppError::Configuration("download directory must not be empty".to_owned()));
+                return Err(AppError::Configuration(
+                    "download directory must not be empty".to_owned(),
+                ));
             }
             if path.exists() && !path.is_dir() {
                 return Err(AppError::Configuration(format!(
@@ -348,20 +370,24 @@ impl AppConfig {
     }
 
     pub fn set_cache_directory(&mut self, directory: Option<PathBuf>) -> Result<()> {
-        if let Some(path) = &directory {
-            if path.as_os_str().is_empty() {
-                return Err(AppError::Configuration("cache directory must not be empty".to_owned()));
-            }
+        if let Some(path) = &directory
+            && path.as_os_str().is_empty()
+        {
+            return Err(AppError::Configuration(
+                "cache directory must not be empty".to_owned(),
+            ));
         }
         self.cache.directory = directory;
         Ok(())
     }
 
     pub fn set_cache_size(&mut self, max_size_bytes: Option<u64>) -> Result<()> {
-        if let Some(size) = max_size_bytes {
-            if size == 0 {
-                return Err(AppError::Configuration("cache size must be a positive byte count".to_owned()));
-            }
+        if let Some(size) = max_size_bytes
+            && size == 0
+        {
+            return Err(AppError::Configuration(
+                "cache size must be a positive byte count".to_owned(),
+            ));
         }
         self.cache.max_size_bytes = max_size_bytes;
         Ok(())
@@ -371,13 +397,11 @@ impl AppConfig {
     /// (trace, debug, info, warn, error). Logs always redact secrets.
     pub fn set_logging(&mut self, enabled: bool, level: Option<String>) -> Result<()> {
         if let Some(level) = &level {
-            level
-                .parse::<tracing::Level>()
-                .map_err(|_| {
-                    AppError::Configuration(format!(
-                        "log level must be one of trace, debug, info, warn, error; got {level}"
-                    ))
-                })?;
+            level.parse::<tracing::Level>().map_err(|_| {
+                AppError::Configuration(format!(
+                    "log level must be one of trace, debug, info, warn, error; got {level}"
+                ))
+            })?;
         }
         self.logging = LogConfig { enabled, level };
         Ok(())
