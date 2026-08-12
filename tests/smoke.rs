@@ -4,8 +4,10 @@
 //! engine, command parsing, dispatch, fixture-backed HTTP adapter, SQLite
 //! cache, credential store, and download manager — plus the compiled binary
 //! itself for the non-interactive `--help` path and a PTY-backed launch/quit
-//! cycle. They run serially (`--test-threads=1`) because `FixtureApp` briefly
-//! redirects the process XDG environment while constructing the application.
+//! cycle. `FixtureApp` redirects the process XDG environment while
+//! constructing each app; that window is serialized process-wide by a static
+//! mutex in the harness, so the suite is safe to run in parallel (CI runs it
+//! serially for deterministic ordering).
 
 mod support;
 
@@ -564,6 +566,14 @@ fn mailcap_is_default_and_kitty_is_opt_in() {
             .media
             .mailcap_enabled,
         "the mailcap toggle must persist to the config file"
+    );
+    // Pin the binding to the harness's scratch config: the toggle must land
+    // in the file the harness resolved (never the real user config), which
+    // also guards against any future env-resolution regression.
+    let persisted = std::fs::read_to_string(&app.config_path).expect("read harness config");
+    assert!(
+        persisted.contains("mailcap_enabled = false"),
+        "the mailcap toggle must persist to the scratch config, got:\n{persisted}"
     );
     app.command(&mut engine, "media")
         .expect("open media with mailcap disabled");

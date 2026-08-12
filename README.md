@@ -38,8 +38,9 @@ the TUI.
 ## Quick start
 
 1. Configure at least one profile in your config file
-   (see [Configuration](docs/configuration.md)) or create one from inside the
-   client with `:profile-new <id> <instance-url>`.
+   (see [Configuration](docs/configuration.md)) — the client refuses to
+   start with zero profiles. Once running, `:profile-new <id> <instance-url>`
+   adds further profiles.
 2. Launch `lemmy`.
 3. `:feed` loads the home feed; `j`/`k` move, `Enter` opens a post, `Esc`
    goes back.

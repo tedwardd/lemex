@@ -4,15 +4,16 @@
 //! a fixture-backed HTTP adapter, a SQLite cache/draft store, temporary XDG
 //! config/cache/downloads directories, and an in-memory credential store —
 //! so the smoke scenarios exercise integration seams rather than unit
-//! boundaries. The smoke suite runs serially (`--test-threads=1`) because
-//! `FixtureApp` briefly redirects the process XDG environment while it
-//! constructs the application.
+//! boundaries. `FixtureApp` briefly redirects the process XDG environment
+//! while it constructs the application; that window is serialized
+//! process-wide by a static mutex, so the suite is safe to run in parallel
+//! (CI runs it serially for deterministic ordering).
 
 use std::{
     io::{Read, Write},
     net::TcpListener,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -74,6 +75,14 @@ pub struct FixtureApp {
     /// owns it (`in_scratch`). Held only for its drop side effect.
     _scratch: Option<ScratchDir>,
 }
+
+/// Serializes the XDG redirect-and-construct window in `FixtureApp::build`.
+///
+/// `std::env::set_var` is not thread-safe, and parallel smoke runs (the
+/// all-targets CI step) would otherwise race each other's redirects: a
+/// clobbered restore could make `App` resolve its profile store against the
+/// real `~/.config/lemmy` and write scenario config there.
+static XDG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 impl FixtureApp {
     /// Default harness: the fixture feed API, an anonymous fixture profile,
@@ -158,13 +167,18 @@ impl FixtureApp {
 
         // Redirect the XDG locations while the application resolves its
         // default profile store and cache, so `App` never touches the real
-        // user configuration. The smoke suite runs single-threaded, and the
-        // environment is restored immediately after construction (paths are
-        // captured at that point).
+        // user configuration. The window is serialized process-wide by
+        // `XDG_ENV_LOCK` and the environment is restored before the guard is
+        // dropped (paths are captured during the redirect).
+        let _xdg_guard = XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let previous_config = std::env::var("XDG_CONFIG_HOME").ok();
         let previous_cache = std::env::var("XDG_CACHE_HOME").ok();
-        // SAFETY: single-threaded test process; the previous values are
-        // restored immediately below.
+        // SAFETY: the XDG redirect-and-construct window is serialized by
+        // `XDG_ENV_LOCK`, so no other thread reads or mutates these
+        // variables while they are redirected; the previous values are
+        // restored before the guard is dropped.
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", &config_home);
             std::env::set_var("XDG_CACHE_HOME", &cache_home);
@@ -186,8 +200,8 @@ impl FixtureApp {
             },
         );
 
-        // SAFETY: restoring values that were read above; see the comment on
-        // the matching set_var calls.
+        // SAFETY: still holding `XDG_ENV_LOCK`; the values were read under
+        // the same lock above. See the comment on the matching set_var calls.
         unsafe {
             match previous_config {
                 Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),

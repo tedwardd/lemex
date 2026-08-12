@@ -40,5 +40,9 @@ jobs:
       - name: Verify non-interactive help path
         run: cargo run -- --help
 
+      # The all-targets step above runs the smoke scenarios in parallel; that
+      # is safe because FixtureApp serializes its XDG redirect-and-construct
+      # window with a process-wide static mutex. This step re-runs the smoke
+      # suite serially for deterministic ordering.
       - name: Run end-to-end smoke scenarios serially
         run: cargo test --test smoke -- --test-threads=1
