@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Format, lint, test, and smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Lint with clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run all tests
+        run: cargo test --all-targets --all-features
+
+      - name: Verify non-interactive help path
+        run: cargo run -- --help
+
+      # The all-targets step above runs the smoke scenarios in parallel; that
+      # is safe because FixtureApp serializes its XDG redirect-and-construct
+      # window with a process-wide static mutex. This step re-runs the smoke
+      # suite serially for deterministic ordering.
+      - name: Run end-to-end smoke scenarios serially
+        run: cargo test --test smoke -- --test-threads=1

@@ -1,0 +1,87 @@
+# lemmy — a terminal client for Lemmy
+
+A Linux-first, Vim-like terminal client for [Lemmy](https://join-lemmy.org/).
+Browse feeds, open posts and threads, manage multiple instance/account
+profiles, interact with your account, and view or download media — all from a
+ratatui terminal shell.
+
+## Features
+
+- **Modal Vim-like interaction** — normal / insert / visual / command /
+  search modes with `hjkl` navigation, counted motions, and a command line.
+- **Multiple profiles** — one profile per instance/account pair; switch with
+  `:profile <id>`. Non-secret profile metadata lives in your config file;
+  sessions live only in the OS credential store.
+- **Authenticated interaction** — `:login`, `:logout`, `:whoami`, voting,
+  saving, subscribing, replying, editing, and deleting — each destructive
+  action requires confirmation.
+- **Cache and drafts** — profile-scoped SQLite cache and drafts survive
+  restarts; failed submissions keep your draft.
+- **Media** — mailcap is the default media handler, Kitty graphics rendering
+  is an explicit opt-in, and `:download-media` fetches asynchronously with
+  per-session download history.
+- **Resilience** — bounded retries on transient network failures, stale-cache
+  reads while refreshing, and clean terminal restoration on every exit path.
+
+## Building and running
+
+Requires a stable Rust toolchain (see `rust-toolchain.toml`).
+
+```sh
+cargo build --release
+./target/release/lemmy
+```
+
+`lemmy --help` prints usage and the command index and exits without starting
+the TUI.
+
+## Quick start
+
+1. Configure at least one profile in your config file
+   (see [Configuration](docs/configuration.md)) — the client refuses to
+   start with zero profiles. Once running, `:profile-new <id> <instance-url>`
+   adds further profiles.
+2. Launch `lemmy`.
+3. `:feed` loads the home feed; `j`/`k` move, `Enter` opens a post, `Esc`
+   goes back.
+4. `:login <username> <password>` signs in; the session is stored in the OS
+   credential store.
+5. `:help` (or `:help <topic>`) shows the searchable command index.
+6. `q` quits and restores the terminal.
+
+## Documentation
+
+- [Configuration](docs/configuration.md) — config file, profiles, cache,
+  keymaps, media settings, logging, troubleshooting.
+- [Keybindings](docs/keybindings.md) — modes, keys, commands, and remapping.
+- [Media](docs/media.md) — mailcap precedence, Kitty opt-in, downloads, and
+  current-session history.
+
+## Command summary
+
+| Command | Purpose |
+| --- | --- |
+| `:feed`, `:community [<id>]`, `:search <query>` | navigate content |
+| `j`/`k`, `Enter`, `Esc`, `r` | move, open, back, refresh |
+| `:profile`, `:profile <id>`, `:profile-new`, `:profile-delete` | manage profiles |
+| `:login`, `:logout`, `:whoami` | authentication |
+| `:vote <score>`, `:save`, `:subscribe`, `:reply`, `:edit`, `:delete` | interact |
+| `y` / `n`, `:confirm`, `:yes`, `:cancel` | confirm / cancel destructive actions |
+| `:media`, `:download-media`, `:downloads` | view and download media |
+| `:set ...`, `:help`, `:quit` | configuration, help, exit |
+
+Run `lemmy --help` or `:help` inside the client for the complete list.
+
+## Development
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --all-features
+cargo test --test smoke -- --test-threads=1   # end-to-end smoke scenarios
+```
+
+The smoke suite drives the real application through its public seams against
+fixture-backed HTTP servers, temporary XDG config/cache directories, and the
+compiled binary (see `tests/support/mod.rs`). The `script(1)`-based launch
+scenario requires a Linux system with util-linux.

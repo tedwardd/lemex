@@ -1,0 +1,265 @@
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    sync::atomic::{AtomicBool, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
+};
+
+use async_trait::async_trait;
+#[cfg(not(target_os = "linux"))]
+use lemmy::profiles::KeyringCredentialStore;
+use lemmy::{
+    AppConfig, AppError, ProfileId, SecretString, Session, UserId,
+    api::{
+        FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo,
+    },
+    domain::{Mutation, PostId, Profile, ProfileContext},
+    profiles::{CredentialStore, MemoryCredentialStore, ProfileStore, login, logout},
+};
+use url::Url;
+
+fn session(token: &str) -> Session {
+    Session {
+        token: SecretString::from(token),
+        user_id: UserId(1),
+    }
+}
+
+#[tokio::test]
+async fn sessions_are_keyed_by_profile_id() {
+    let store = MemoryCredentialStore::default();
+    store
+        .put_session(&ProfileId::from("one"), &session("token-one"))
+        .await
+        .unwrap();
+    store
+        .put_session(&ProfileId::from("two"), &session("token-two"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .get_session(&ProfileId::from("one"))
+            .await
+            .unwrap()
+            .unwrap()
+            .token
+            .expose_secret(),
+        "token-one"
+    );
+    assert_eq!(
+        store
+            .get_session(&ProfileId::from("two"))
+            .await
+            .unwrap()
+            .unwrap()
+            .token
+            .expose_secret(),
+        "token-two"
+    );
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tokio::test]
+async fn keyring_store_refuses_unsupported_targets_without_memory_fallback() {
+    let store = KeyringCredentialStore::default();
+    let profile = ProfileId::from("unsupported-target");
+
+    for error in [
+        store
+            .put_session(&profile, &session("must-not-be-stored"))
+            .await
+            .unwrap_err(),
+        store.get_session(&profile).await.unwrap_err(),
+        store.delete_session(&profile).await.unwrap_err(),
+    ] {
+        let message = format!("{error}");
+        assert!(
+            message.contains("unsupported target"),
+            "unexpected error: {message}"
+        );
+        assert!(!message.contains("must-not-be-stored"));
+    }
+}
+
+#[test]
+fn session_debug_output_does_not_include_token() {
+    let value = format!("{:?}", session("do-not-log").token);
+    assert!(!value.contains("do-not-log"));
+    let display = format!("{}", session("do-not-log").token);
+    assert!(!display.contains("do-not-log"));
+}
+
+struct CurrentDirGuard(PathBuf);
+
+impl CurrentDirGuard {
+    fn enter(path: &Path) -> Self {
+        let previous = std::env::current_dir().unwrap();
+        std::env::set_current_dir(path).unwrap();
+        Self(previous)
+    }
+}
+
+impl Drop for CurrentDirGuard {
+    fn drop(&mut self) {
+        std::env::set_current_dir(&self.0).unwrap();
+    }
+}
+
+fn temporary_directory() -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!("lemmy-config-profiles-{unique}"));
+    fs::create_dir(&path).unwrap();
+    path
+}
+
+#[test]
+fn config_round_trips_non_secret_profile_metadata() {
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\naccount_label = 'primary'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    let encoded = config.to_toml().unwrap();
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap(), config);
+}
+
+#[test]
+fn duplicate_profile_ids_are_rejected() {
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://one.test'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://two.test'\n";
+    assert!(matches!(
+        AppConfig::from_toml(source),
+        Err(AppError::Configuration(_))
+    ));
+}
+
+#[test]
+fn credential_like_fields_are_rejected() {
+    let source =
+        "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\npassword = 'secret'\n";
+    assert!(matches!(
+        AppConfig::from_toml(source),
+        Err(AppError::Configuration(_))
+    ));
+}
+
+#[test]
+fn profile_only_config_preserves_media_defaults() {
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+
+    assert!(config.media.mailcap_enabled);
+    assert_eq!(config.media.collision_policy, "prompt");
+}
+
+#[test]
+fn relative_config_path_writes_and_reloads() {
+    let directory = temporary_directory();
+    {
+        let _current_directory = CurrentDirGuard::enter(&directory);
+        let path = Path::new("config.toml");
+        let config = AppConfig::from_toml(
+            "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n",
+        )
+        .unwrap();
+
+        config.write_atomic(path).unwrap();
+
+        assert_eq!(AppConfig::load(path).unwrap(), config);
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+fn profile(id: &str) -> Profile {
+    Profile {
+        id: ProfileId::from(id),
+        instance_url: Url::parse("https://example.test/").unwrap(),
+        account_label: Some(id.into()),
+    }
+}
+
+fn login_request() -> LoginRequest {
+    LoginRequest {
+        profile: ProfileId::from("main"),
+        instance_url: Url::parse("https://example.test/").unwrap(),
+        username: "alice".into(),
+        password: SecretString::from("hunter2"),
+    }
+}
+
+#[derive(Default)]
+struct FailOnceLoginApi {
+    failed: AtomicBool,
+}
+
+impl FailOnceLoginApi {
+    fn fail_login_once(&self) {
+        self.failed.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl LemmyApi for FailOnceLoginApi {
+    async fn site(&self, _: &ProfileContext) -> lemmy::Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> lemmy::Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn login(&self, _: LoginRequest) -> lemmy::Result<Session> {
+        if self.failed.swap(false, Ordering::SeqCst) {
+            Err(AppError::Authentication("invalid credentials".into()))
+        } else {
+            Ok(session("ok"))
+        }
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> lemmy::Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+fn login_test_dependencies() -> (FailOnceLoginApi, MemoryCredentialStore) {
+    (
+        FailOnceLoginApi::default(),
+        MemoryCredentialStore::default(),
+    )
+}
+
+#[tokio::test]
+async fn login_stores_session_only_after_api_success() {
+    let (api, credentials) = login_test_dependencies();
+    api.fail_login_once();
+    let result = login(&api, &credentials, login_request()).await;
+    assert!(result.is_err());
+    assert!(credentials.all().is_empty());
+}
+
+fn profile_test_dependencies() -> (ProfileStore, MemoryCredentialStore) {
+    let path = std::env::temp_dir().join(format!("lemmy-logout-{}.toml", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    (ProfileStore::new(path), MemoryCredentialStore::default())
+}
+
+#[tokio::test]
+async fn logout_removes_session_and_keeps_non_secret_profile_metadata() {
+    let (profiles, credentials) = profile_test_dependencies();
+    profiles.create(profile("main")).unwrap();
+    credentials
+        .put_session(&ProfileId::from("main"), &session("secret"))
+        .await
+        .unwrap();
+    logout(&profiles, &credentials, &ProfileId::from("main"))
+        .await
+        .unwrap();
+    assert!(
+        credentials
+            .get_session(&ProfileId::from("main"))
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(profiles.get(&ProfileId::from("main")).is_ok());
+}

@@ -1,0 +1,29 @@
+[package]
+name = "lemmy"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "lemmy"
+path = "src/main.rs"
+
+[dependencies]
+async-trait = "0.1"
+crossterm = "0.29"
+keyring = { version = "3", features = ["linux-native-sync-persistent"] }
+parking_lot = "0.12"
+ratatui = "0.30"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+secrecy = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "net", "time", "io-util"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["test-util"] }
