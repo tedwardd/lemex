@@ -171,7 +171,7 @@ struct RawProfile {
     account_label: Option<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawMediaConfig {
     #[serde(default)]
@@ -184,6 +184,18 @@ struct RawMediaConfig {
     collision_policy: String,
     #[serde(default)]
     handlers: HashMap<String, String>,
+}
+
+impl Default for RawMediaConfig {
+    fn default() -> Self {
+        Self {
+            kitty_enabled: false,
+            mailcap_enabled: default_mailcap_enabled(),
+            download_directory: None,
+            collision_policy: default_collision_policy(),
+            handlers: HashMap::new(),
+        }
+    }
 }
 
 fn default_mailcap_enabled() -> bool { true }
