@@ -32,6 +32,22 @@ pub fn environment_has_display(display: Option<&str>, wayland_display: Option<&s
         || wayland_display.is_some_and(|value| !value.is_empty())
 }
 
+/// Whether the client runs inside an SSH login session. `sshd` sets these
+/// variables for interactive sessions, and tmux inherits them from the
+/// session that started the server, so a tmux-over-SSH setup is detected.
+/// Media handlers then run on the remote host, which the user should be
+/// told about.
+pub fn environment_is_ssh(
+    ssh_connection: Option<&str>,
+    ssh_client: Option<&str>,
+    ssh_tty: Option<&str>,
+) -> bool {
+    [ssh_connection, ssh_client, ssh_tty]
+        .into_iter()
+        .flatten()
+        .any(|value| !value.is_empty())
+}
+
 /// Produce the escape sequences that transmit and place a raster file through
 /// the Kitty graphics protocol. The file is read, base64-encoded, chunked into
 /// `a=T` transmissions, and finally placed with `a=p`.
@@ -102,7 +118,20 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_support_in, environment_has_display};
+    use super::{detect_support_in, environment_has_display, environment_is_ssh};
+
+    #[test]
+    fn ssh_session_is_detected_from_sshd_environment() {
+        assert!(environment_is_ssh(
+            Some("192.168.1.5 51234 10.0.0.2 22"),
+            None,
+            None
+        ));
+        assert!(environment_is_ssh(None, Some("192.168.1.5 51234 22"), None));
+        assert!(environment_is_ssh(None, None, Some("/dev/pts/3")));
+        assert!(!environment_is_ssh(None, None, None));
+        assert!(!environment_is_ssh(Some(""), Some(""), None));
+    }
 
     #[test]
     fn kitty_is_unsupported_inside_tmux_even_with_a_kitty_term() {

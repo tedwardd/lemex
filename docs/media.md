@@ -63,6 +63,9 @@ your local machine:
     client refuses to spawn the handler and reports
     `no display on this host; … use :download-media and view the file
     locally` instead of silently doing nothing.
+  - When the client detects an SSH session (any of `$SSH_CONNECTION`,
+    `$SSH_CLIENT`, or `$SSH_TTY` set), the success status adds a note that
+    the handler runs on the host running lemmy, not on your local terminal.
 - **Kitty inline rendering** cannot work through tmux at all (see above).
   Over a plain SSH session into a local Kitty terminal it can work, but only
   when no tmux is in the middle.

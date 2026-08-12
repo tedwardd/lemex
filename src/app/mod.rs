@@ -1457,17 +1457,27 @@ impl App {
                         .failure("refusing to open a media URL containing credentials");
                     return Ok(());
                 }
-                // Over plain SSH without X11 forwarding there is no display on
-                // the host running the client; a spawned `xdg-open` would
-                // fail invisibly. Say so instead of reporting success.
+                // Over plain SSH without X11 forwarding there is no display
+                // on the host running the client; a spawned `xdg-open` would
+                // fail invisibly. Say so instead of reporting success, and
+                // when the session is SSH tell the user the handler runs on
+                // the remote host either way.
+                let is_ssh = crate::media::kitty::environment_is_ssh(
+                    std::env::var("SSH_CONNECTION").ok().as_deref(),
+                    std::env::var("SSH_CLIENT").ok().as_deref(),
+                    std::env::var("SSH_TTY").ok().as_deref(),
+                );
                 let has_display = crate::media::kitty::environment_has_display(
                     std::env::var("DISPLAY").ok().as_deref(),
                     std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
                 );
                 if !has_display {
-                    self.state.status.failure(
-                        "no display on this host; external media handlers cannot open windows here — use :download-media and view the file locally",
-                    );
+                    let hint = if is_ssh {
+                        "SSH session without X11 forwarding: no display on this host — external media handlers cannot open windows here; use :download-media and view the file locally"
+                    } else {
+                        "no display on this host; external media handlers cannot open windows here — use :download-media and view the file locally"
+                    };
+                    self.state.status.failure(hint);
                     return Ok(());
                 }
                 let mime = crate::media::resolve_mime(&media, None).unwrap_or_default();
@@ -1476,6 +1486,9 @@ impl App {
                     None => OsStr::new(media.url.as_str()).to_os_string(),
                 };
                 match spawn_detached(&command, &source, &mime) {
+                    Ok(()) if is_ssh => self.state.status.success(
+                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal)",
+                    ),
                     Ok(()) => self
                         .state
                         .status
