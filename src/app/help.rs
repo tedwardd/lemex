@@ -134,8 +134,8 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
-        command: ">",
-        description: "load the next feed page",
+        command: "> / <",
+        description: "flip to the next / previous feed page",
         group: "navigation",
     },
     HelpEntry {

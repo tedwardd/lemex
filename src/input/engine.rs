@@ -26,6 +26,7 @@ impl InputEngine {
         mappings.insert('l', Command::MoveRight { count: 1 });
         mappings.insert('r', Command::Refresh);
         mappings.insert('>', Command::NextPage);
+        mappings.insert('<', Command::PreviousPage);
         mappings.insert('q', Command::Quit);
         mappings.insert('y', Command::Confirm);
         mappings.insert('n', Command::Cancel);

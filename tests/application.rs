@@ -1188,6 +1188,7 @@ async fn opening_post_fetches_detail_and_thread_comments() {
 
 #[derive(Clone, Default)]
 struct PagedFeedApi {
+    first_page_calls: Arc<AtomicUsize>,
     second_page_calls: Arc<AtomicUsize>,
 }
 
@@ -1204,6 +1205,7 @@ impl LemmyApi for PagedFeedApi {
                 next_page: None,
             })
         } else {
+            self.first_page_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Page {
                 items: vec![post_view(1, "first page post")],
                 next_page: Some("2".to_owned()),
@@ -1225,7 +1227,7 @@ impl LemmyApi for PagedFeedApi {
 }
 
 #[tokio::test]
-async fn next_page_command_appends_the_following_feed_page() {
+async fn next_and_previous_page_flip_the_feed() {
     let api = Arc::new(PagedFeedApi::default());
     let mut app = App::new(
         api.clone(),
@@ -1240,13 +1242,40 @@ async fn next_page_command_appends_the_following_feed_page() {
         .unwrap();
     assert_eq!(
         app.state.view.posts.len(),
-        2,
-        "the next page is appended to the feed"
+        1,
+        "the next page replaces the current list"
     );
-    assert_eq!(app.state.view.posts[1].id, PostId(2));
+    assert_eq!(app.state.view.posts[0].id, PostId(2));
     assert!(app.state.view.next_page.is_none());
-    assert!(app.state.status.message.contains("more posts loaded"));
+    assert_eq!(app.state.view.feed_query.page.as_deref(), Some("2"));
+    assert!(app.state.status.message.contains("next page loaded"));
     assert_eq!(api.second_page_calls.load(Ordering::SeqCst), 1);
+
+    app.dispatch(AppAction::Input(Command::PreviousPage))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.posts.len(),
+        1,
+        "the previous page replaces the current list"
+    );
+    assert_eq!(app.state.view.posts[0].id, PostId(1));
+    assert_eq!(app.state.view.next_page.as_deref(), Some("2"));
+    assert_eq!(app.state.view.feed_query.page, None);
+    assert!(app.state.status.message.contains("previous page loaded"));
+    assert_eq!(api.first_page_calls.load(Ordering::SeqCst), 1);
+
+    // At the first page, `<` is a no-op that makes no request.
+    app.dispatch(AppAction::Input(Command::PreviousPage))
+        .await
+        .unwrap();
+    assert_eq!(api.first_page_calls.load(Ordering::SeqCst), 1);
+    assert!(
+        app.state
+            .status
+            .message
+            .contains("already on the first page")
+    );
 }
 
 #[tokio::test]

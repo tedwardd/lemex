@@ -125,7 +125,7 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
         post_rows.push(Row::new(vec![
             Cell::from("…"),
             Cell::from(""),
-            Cell::from("more posts available (load more)"),
+            Cell::from("more posts available (> next page)"),
         ]));
     }
     let table = Table::new(

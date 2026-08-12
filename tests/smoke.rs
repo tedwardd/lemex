@@ -179,11 +179,12 @@ fn feed_loads_through_fixture_and_vim_keys_navigate() {
     assert_eq!(engine.mode(), lemmy::input::Mode::Normal);
 }
 
-/// Pagination: the first page carries an opaque `next_page` cursor, and
-/// `>` sends it back as `page_cursor` to append the following page (the
-/// Lemmy 0.19+ cursor protocol).
+/// Pagination: the first page carries an opaque `next_page` cursor, `>`
+/// sends it back as `page_cursor` to replace the list with the following
+/// page, and `<` restores the previous page (the Lemmy 0.19+ cursor
+/// protocol).
 #[test]
-fn next_page_cursor_appends_the_following_page() {
+fn page_flips_replace_the_list_and_go_back() {
     let runtime = support::runtime();
     let first = r#"{"posts":[{"post":{"id":1,"name":"First page","body":null,"community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":"P2"}"#;
     let next = r#"{"posts":[{"post":{"id":2,"name":"Second page","body":null,"community_id":1,"creator_id":1,"published":"2026-01-02T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":null}"#;
@@ -207,18 +208,38 @@ fn next_page_cursor_appends_the_following_page() {
         "the opaque next_page cursor must survive normalization"
     );
 
-    app.press(&mut engine, key('>')).expect("flip pages");
+    app.press(&mut engine, key('>')).expect("flip forward");
     assert_eq!(
         app.app.state.view.posts.len(),
-        2,
-        "the next page is appended to the feed"
+        1,
+        "the next page replaces the current list"
     );
-    assert_eq!(app.app.state.view.posts[1].id, PostId(2));
+    assert_eq!(app.app.state.view.posts[0].id, PostId(2));
     assert!(
         app.app.state.view.next_page.is_none(),
         "the last page carries no further cursor"
     );
-    assert!(app.app.state.status.message.contains("more posts loaded"));
+    assert!(app.app.state.status.message.contains("next page loaded"));
+
+    app.press(&mut engine, key('<')).expect("flip backward");
+    assert_eq!(
+        app.app.state.view.posts.len(),
+        1,
+        "the previous page replaces the current list"
+    );
+    assert_eq!(app.app.state.view.posts[0].id, PostId(1));
+    assert_eq!(
+        app.app.state.view.next_page.as_deref(),
+        Some("P2"),
+        "back on the first page the forward cursor is available again"
+    );
+    assert!(
+        app.app
+            .state
+            .status
+            .message
+            .contains("previous page loaded")
+    );
 }
 
 /// Post/thread opening: opening a selected post fetches the post detail and

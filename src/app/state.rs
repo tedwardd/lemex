@@ -23,6 +23,9 @@ pub struct View {
     pub compose: String,
     pub stale: bool,
     pub next_page: Option<String>,
+    /// Cursors of the pages behind the current one, oldest first; `None`
+    /// marks the first page. `<` pops the most recent entry to go back.
+    pub page_history: Vec<Option<String>>,
     pub feed_query: crate::api::FeedQuery,
     pub search: String,
     pub downloads: Option<DownloadsPanel>,
@@ -48,6 +51,7 @@ impl Default for View {
             compose: String::new(),
             stale: false,
             next_page: None,
+            page_history: Vec::new(),
             feed_query: crate::api::FeedQuery::home(),
             search: String::new(),
             downloads: None,
@@ -71,6 +75,7 @@ impl View {
         self.compose.clear();
         self.stale = false;
         self.next_page = None;
+        self.page_history.clear();
         self.feed_query = crate::api::FeedQuery::home();
         self.search.clear();
         self.help = None;

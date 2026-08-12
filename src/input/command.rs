@@ -14,8 +14,10 @@ pub enum Command {
     },
     Open,
     Refresh,
-    /// Load the next feed page and append it (default key: `>`).
+    /// Flip to the next feed page, replacing the list (default key: `>`).
     NextPage,
+    /// Flip back to the previous feed page (default key: `<`).
+    PreviousPage,
     EnterInsert,
     EnterVisual,
     EnterCommand,
@@ -55,6 +57,7 @@ impl Command {
             "open" => Some(Command::Open),
             "refresh" => Some(Command::Refresh),
             "next-page" | "load-more" => Some(Command::NextPage),
+            "previous-page" => Some(Command::PreviousPage),
             "insert" => Some(Command::EnterInsert),
             "visual" => Some(Command::EnterVisual),
             "command" => Some(Command::EnterCommand),

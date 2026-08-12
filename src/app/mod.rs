@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 use url::Url;
 
 use crate::{
-    api::{FeedQuery, LemmyApi, LoginRequest, MutationResult},
+    api::{FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostView},
     cache::Draft,
     config::{AppConfig, MediaConfig},
     domain::{
@@ -334,6 +334,7 @@ impl App {
             action,
             AppAction::Input(Command::Refresh)
                 | AppAction::Input(Command::NextPage)
+                | AppAction::Input(Command::PreviousPage)
                 | AppAction::OpenCommunity(_)
                 | AppAction::LoadMore
                 | AppAction::Mutate(_)
@@ -365,7 +366,7 @@ impl App {
             }
             AppAction::OpenSelected => self.open_selected().await,
             AppAction::OpenCommunity(id) => self.open_community(id).await,
-            AppAction::LoadMore => self.load_more().await,
+            AppAction::LoadMore => self.next_page().await,
             AppAction::Back => {
                 if self.state.view.downloads_active() {
                     self.state.view.close_downloads_panel();
@@ -462,7 +463,13 @@ impl App {
                 if self.state.view.downloads_active() {
                     return Ok(());
                 }
-                self.load_more().await
+                self.next_page().await
+            }
+            Command::PreviousPage => {
+                if self.state.view.downloads_active() {
+                    return Ok(());
+                }
+                self.previous_page().await
             }
             Command::MoveDown { count } => {
                 self.move_selection(count as isize);
@@ -1270,34 +1277,67 @@ impl App {
         self.refresh_feed().await
     }
 
-    async fn load_more(&mut self) -> Result<()> {
+    /// Flip to the next feed page, replacing the current list. The cursor of
+    /// the page we leave is remembered so `<` can come back.
+    async fn next_page(&mut self) -> Result<()> {
         let Some(cursor) = self.state.view.next_page.clone() else {
             self.state.status.success("no more posts to load");
             return Ok(());
         };
+        self.state
+            .view
+            .page_history
+            .push(self.state.view.feed_query.page.clone());
         let mut query = self.state.view.feed_query.clone();
-        query.page = Some(cursor);
+        query.page = Some(cursor.clone());
         let result = self.repository.api.feed(&self.state.active, query).await;
         match result {
-            Ok(next) => {
-                let known = self
-                    .state
-                    .view
-                    .posts
-                    .iter()
-                    .map(|post| post.id)
-                    .collect::<std::collections::HashSet<_>>();
-                self.state.view.posts.extend(
-                    next.items
-                        .into_iter()
-                        .filter(|post| !known.contains(&post.id)),
-                );
-                self.state.view.next_page = next.next_page;
-                self.state.status.success("more posts loaded");
+            Ok(page) => {
+                self.state.view.feed_query.page = Some(cursor);
+                self.apply_page(page);
+                self.state.status.success("next page loaded");
             }
-            Err(error) => self.state.status.failure(error.to_string()),
+            Err(error) => {
+                // The failed flip never happened; keep history intact.
+                self.state.view.page_history.pop();
+                self.state.status.failure(error.to_string());
+            }
         }
         Ok(())
+    }
+
+    /// Flip back to the previous feed page, replacing the current list.
+    async fn previous_page(&mut self) -> Result<()> {
+        let Some(previous) = self.state.view.page_history.pop() else {
+            self.state.status.success("already on the first page");
+            return Ok(());
+        };
+        let mut query = self.state.view.feed_query.clone();
+        query.page = previous.clone();
+        let result = self.repository.api.feed(&self.state.active, query).await;
+        match result {
+            Ok(page) => {
+                self.state.view.feed_query.page = previous;
+                self.apply_page(page);
+                self.state.status.success("previous page loaded");
+            }
+            Err(error) => {
+                self.state.view.page_history.push(previous);
+                self.state.status.failure(error.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Replace the visible feed with a fetched page, keeping the selection
+    /// on the same post when it is still present (otherwise the first row).
+    fn apply_page(&mut self, page: Page<PostView>) {
+        let selected_id = self.state.selected_post();
+        self.state.view.posts = page.items;
+        self.state.view.next_page = page.next_page;
+        self.state.view.selected = selected_id
+            .and_then(|id| self.state.view.posts.iter().position(|post| post.id == id))
+            .or_else(|| (!self.state.view.posts.is_empty()).then_some(0));
     }
 
     async fn open_selected(&mut self) -> Result<()> {
