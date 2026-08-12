@@ -1,6 +1,57 @@
 use std::{fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
 
-use lemmy::{AppConfig, AppError};
+use lemmy::{AppConfig, AppError, ProfileId, SecretString, Session, UserId};
+use lemmy::profiles::{CredentialStore, MemoryCredentialStore};
+use secrecy::ExposeSecret;
+
+fn session(token: &str) -> Session {
+    Session {
+        token: SecretString::from(token),
+        user_id: UserId(1),
+    }
+}
+
+#[tokio::test]
+async fn sessions_are_keyed_by_profile_id() {
+    let store = MemoryCredentialStore::default();
+    store
+        .put_session(&ProfileId::from("one"), &session("token-one"))
+        .await
+        .unwrap();
+    store
+        .put_session(&ProfileId::from("two"), &session("token-two"))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        store
+            .get_session(&ProfileId::from("one"))
+            .await
+            .unwrap()
+            .unwrap()
+            .token
+            .expose_secret(),
+        "token-one"
+    );
+    assert_eq!(
+        store
+            .get_session(&ProfileId::from("two"))
+            .await
+            .unwrap()
+            .unwrap()
+            .token
+            .expose_secret(),
+        "token-two"
+    );
+}
+
+#[test]
+fn session_debug_output_does_not_include_token() {
+    let value = format!("{:?}", session("do-not-log").token);
+    assert!(!value.contains("do-not-log"));
+    let display = format!("{}", session("do-not-log").token);
+    assert!(!display.contains("do-not-log"));
+}
 
 struct CurrentDirGuard(PathBuf);
 

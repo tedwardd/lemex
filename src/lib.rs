@@ -6,8 +6,8 @@ pub mod profiles;
 
 pub use config::{AppConfig, CacheConfig, MediaConfig};
 pub use domain::{
-    ActiveProfile, CommentId, CommunityId, CreateCommentRequest, CreatePostRequest,
-    DownloadRecord, EditCommentRequest, EditPostRequest, MediaRef, Mutation, PostId, Profile,
-    ProfileId, UserId,
+    ActiveProfile, CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, DownloadRecord,
+    EditCommentRequest, EditPostRequest, MediaRef, Mutation, PostId, Profile, ProfileContext,
+    ProfileId, SecretString, Session, UserId,
 };
 pub use error::{AppError, Result};

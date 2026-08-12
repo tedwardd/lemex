@@ -7,4 +7,4 @@ pub use lemmy::{
     EditPostRequest, Mutation, PostId, UserId,
 };
 pub use media::{DownloadRecord, MediaRef};
-pub use profile::{ActiveProfile, Profile, ProfileId};
+pub use profile::{ActiveProfile, Profile, ProfileContext, ProfileId, SecretString, Session};

@@ -1,0 +1,120 @@
+use std::{collections::HashMap, sync::{Arc, RwLock}};
+
+use async_trait::async_trait;
+use keyring::Entry;
+
+use crate::{
+    domain::{ProfileId, Session, UserId},
+    AppError, Result,
+};
+
+/// Secure storage boundary for authentication sessions.
+#[async_trait]
+pub trait CredentialStore: Send + Sync {
+    async fn get_session(&self, profile: &ProfileId) -> Result<Option<Session>>;
+    async fn put_session(&self, profile: &ProfileId, session: &Session) -> Result<()>;
+    async fn delete_session(&self, profile: &ProfileId) -> Result<()>;
+}
+
+/// In-memory credential store for tests and ephemeral application state.
+#[derive(Clone, Default)]
+pub struct MemoryCredentialStore {
+    sessions: Arc<RwLock<HashMap<ProfileId, Session>>>,
+}
+
+#[async_trait]
+impl CredentialStore for MemoryCredentialStore {
+    async fn get_session(&self, profile: &ProfileId) -> Result<Option<Session>> {
+        self.sessions
+            .read()
+            .map_err(|_| AppError::Storage("in-memory credential store lock poisoned".to_owned()))
+            .map(|sessions| sessions.get(profile).cloned())
+    }
+
+    async fn put_session(&self, profile: &ProfileId, session: &Session) -> Result<()> {
+        self.sessions
+            .write()
+            .map_err(|_| AppError::Storage("in-memory credential store lock poisoned".to_owned()))?
+            .insert(profile.clone(), session.clone());
+        Ok(())
+    }
+
+    async fn delete_session(&self, profile: &ProfileId) -> Result<()> {
+        self.sessions
+            .write()
+            .map_err(|_| AppError::Storage("in-memory credential store lock poisoned".to_owned()))?
+            .remove(profile);
+        Ok(())
+    }
+}
+
+/// OS credential-store backed session storage.
+#[derive(Clone, Debug)]
+pub struct KeyringCredentialStore {
+    service: String,
+}
+
+impl KeyringCredentialStore {
+    pub fn new(service: impl Into<String>) -> Self {
+        Self { service: service.into() }
+    }
+
+    fn entry(&self, profile: &ProfileId) -> Result<Entry> {
+        Entry::new(&self.service, &profile.to_string())
+            .map_err(|error| storage_error(profile, "open", error))
+    }
+}
+
+impl Default for KeyringCredentialStore {
+    fn default() -> Self {
+        Self::new("lemmy-client")
+    }
+}
+
+#[async_trait]
+impl CredentialStore for KeyringCredentialStore {
+    async fn get_session(&self, profile: &ProfileId) -> Result<Option<Session>> {
+        let entry = self.entry(profile)?;
+        let encoded = match entry.get_password() {
+            Ok(value) => value,
+            Err(keyring::Error::NoEntry) => return Ok(None),
+            Err(error) => return Err(storage_error(profile, "read", error)),
+        };
+
+        decode_session(&encoded).map(Some).ok_or_else(|| {
+            AppError::Storage(format!(
+                "keyring credential for profile {profile} is malformed; sign in again"
+            ))
+        })
+    }
+
+    async fn put_session(&self, profile: &ProfileId, session: &Session) -> Result<()> {
+        let entry = self.entry(profile)?;
+        let encoded = format!("{}:{}", session.user_id.0, session.token.expose_secret());
+        entry
+            .set_password(&encoded)
+            .map_err(|error| storage_error(profile, "write", error))
+    }
+
+    async fn delete_session(&self, profile: &ProfileId) -> Result<()> {
+        let entry = self.entry(profile)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(error) => Err(storage_error(profile, "delete", error)),
+        }
+    }
+}
+
+fn decode_session(encoded: &str) -> Option<Session> {
+    let (user_id, token) = encoded.split_once(':')?;
+    Some(Session {
+        user_id: UserId(user_id.parse().ok()?),
+        token: token.into(),
+    })
+}
+
+fn storage_error(profile: &ProfileId, operation: &str, error: keyring::Error) -> AppError {
+    AppError::Storage(format!(
+        "unable to {operation} credentials for profile {profile} in the OS credential store: {error}"
+    ))
+}
