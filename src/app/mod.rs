@@ -1,8 +1,14 @@
 pub mod actions;
+pub mod help;
+pub mod render;
 pub mod repository;
 pub mod state;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+
+use crossterm::event::{self, Event, KeyCode};
+use ratatui::DefaultTerminal;
+use tokio::sync::mpsc;
 
 pub use actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
 pub use repository::{CachedRead, Repository};
@@ -15,6 +21,122 @@ use crate::{
     input::{Command, Mode},
     profiles::{default_store, CredentialStore, ProfileStore},
 };
+
+pub fn run_terminal(app: App, terminal: DefaultTerminal) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| crate::error::AppError::Terminal(format!("could not start Tokio runtime: {error}")))?;
+    runtime.block_on(run_terminal_async(app, terminal))
+}
+
+async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<()> {
+    let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Result<Event>>();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let input_thread = thread::spawn(move || {
+        loop {
+            if stop_rx.try_recv().is_ok() { break; }
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => match event::read() {
+                    Ok(event) => {
+                        if input_tx.send(Ok(event)).is_err() { break; }
+                    }
+                    Err(error) => {
+                        let _ = input_tx.send(Err(crate::error::AppError::Terminal(error.to_string())));
+                        break;
+                    }
+                },
+                Ok(false) => {}
+                Err(error) => {
+                    let _ = input_tx.send(Err(crate::error::AppError::Terminal(error.to_string())));
+                    break;
+                }
+            }
+        }
+    });
+
+    let result = async {
+        let mut input = crate::input::InputEngine::new();
+        let mut ticks = tokio::time::interval(Duration::from_millis(100));
+        let mut app = Some(app);
+        let mut model = app.as_ref().expect("application is present").render_model();
+        let mut action_task: Option<tokio::task::JoinHandle<(App, Result<()>)>> = None;
+        let mut redraw = true;
+        let mut quit = false;
+
+        while !quit {
+            if redraw {
+                terminal
+                    .draw(|frame| render::render(frame, &model))
+                    .map_err(|error| crate::error::AppError::Terminal(error.to_string()))?;
+                redraw = false;
+            }
+
+            if let Some(task) = action_task.as_mut() {
+                tokio::select! {
+                    completed = task => {
+                        action_task = None;
+                        let (finished, result) = completed.map_err(|error| crate::error::AppError::Terminal(format!("application task failed: {error}")))?;
+                        app = Some(finished);
+                        result?;
+                        model = app.as_ref().expect("application is present").render_model();
+                        redraw = true;
+                    }
+                    _ = ticks.tick() => redraw = true,
+                    event = input_rx.recv() => match event {
+                        Some(Ok(Event::Key(key))) if input.mode() == crate::input::Mode::Normal && key.code == KeyCode::Char('q') => {
+                            if let Some(task) = action_task.take() { task.abort(); }
+                            quit = true;
+                        }
+                        Some(Ok(_)) => {}
+                        Some(Err(error)) => return Err(error),
+                        None => quit = true,
+                    }
+                }
+                continue;
+            }
+
+            if app.as_ref().is_some_and(App::is_quit) { break; }
+            tokio::select! {
+                _ = ticks.tick() => {
+                    let owned = app.take().expect("application is present");
+                    action_task = Some(tokio::spawn(async move {
+                        let mut app = owned;
+                        let result = app.dispatch(AppAction::Tick).await;
+                        (app, result)
+                    }));
+                }
+                event = input_rx.recv() => match event {
+                    Some(Ok(Event::Key(key))) => {
+                        let command = input.handle(key);
+                        if !matches!(command, crate::input::Command::Noop) {
+                            if matches!(command, crate::input::Command::Quit) {
+                                quit = true;
+                            } else {
+                                let owned = app.take().expect("application is present");
+                                action_task = Some(tokio::spawn(async move {
+                                    let mut app = owned;
+                                    let result = app.dispatch(command.into()).await;
+                                    (app, result)
+                                }));
+                            }
+                        }
+                    }
+                    Some(Ok(Event::Resize(_, _))) => redraw = true,
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => return Err(error),
+                    None => quit = true,
+                }
+            }
+        }
+        Ok::<(), crate::error::AppError>(())
+    }
+    .await;
+
+    let _ = stop_tx.send(());
+    let _ = input_thread.join();
+    result
+}
 
 pub struct App {
     pub state: AppState,

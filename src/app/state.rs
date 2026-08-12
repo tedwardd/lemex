@@ -165,6 +165,7 @@ impl AppState {
 pub struct RenderModel {
     pub mode: Mode,
     pub posts: Vec<PostView>,
+    pub selected: Option<usize>,
     pub detail: Option<PostDetail>,
     pub compose: String,
     pub status: Status,
@@ -172,6 +173,13 @@ pub struct RenderModel {
 
 impl AppState {
     pub fn render_model(&self) -> RenderModel {
-        RenderModel { mode: self.mode, posts: self.view.posts.clone(), detail: self.view.detail.clone(), compose: self.view.compose.clone(), status: self.status.clone() }
+        RenderModel {
+            mode: self.mode,
+            posts: self.view.posts.clone(),
+            selected: self.view.selected,
+            detail: self.view.detail.clone(),
+            compose: self.view.compose.clone(),
+            status: self.status.clone(),
+        }
     }
 }
