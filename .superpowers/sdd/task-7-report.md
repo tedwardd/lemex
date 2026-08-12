@@ -209,3 +209,30 @@ Output:
 ```text
 cargo test: 24 passed (1 suite, 0.11s)
 ```
+
+## Task 7 logout refresh-context fix
+
+### Changed files
+
+- `src/app/mod.rs`: Logout now invalidates the repository's profile context epoch and refresh state after credential deletion succeeds and before replacing the active session with `None`.
+- `tests/application.rs`: Added a deterministic authenticated cached-feed refresh regression that releases an in-flight refresh only after logout and verifies its personalized response cannot overwrite the profile cache.
+- `.superpowers/sdd/task-7-report.md`: Appended this fix evidence.
+
+### Fix details
+
+- Logout calls `Repository::invalidate_profile_context` before `AppState::switch_context`, so in-flight refreshes captured under the authenticated epoch fail the epoch check and cannot write cached data after logout.
+- Feed `ApiResult` application remains guarded by the active request token and profile identity; no late feed result can update state after logout clears the request map.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 25 passed (1 suite, 0.11s)
+```

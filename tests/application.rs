@@ -178,6 +178,29 @@ async fn logout_invalidates_pending_results() {
     app.dispatch(AppAction::ApiResult(ApiResult::Feed { profile: ProfileId::from("fixture"), request, result: Ok(Page { items: vec![post_view(1, "stale")], next_page: None }), stale: false })).await.unwrap();
     assert!(app.state.view.posts.is_empty());
 }
+#[tokio::test]
+async fn logout_invalidates_inflight_authenticated_refresh_before_cache_write() {
+    let cache = Arc::new(MemoryCache::default());
+    let context = ProfileContext { profile: fixture_context().profile, session: Some(lemmy::Session { token: lemmy::SecretString::from("authenticated"), user_id: lemmy::UserId(7) }) };
+    let id = context.profile.id.clone();
+    cache.write_feed(&id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "cached")], "next_page": null }), 1, false)).unwrap();
+    let api = Arc::new(ProfileReplacementRaceApi::default());
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    credentials.put_session(&id, context.session.as_ref().unwrap()).await.unwrap();
+    let mut app = App::new(api.clone(), cache.clone(), context, credentials);
+
+    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh)).await.unwrap();
+    api.started.notified().await;
+    app.dispatch(AppAction::Profile(ProfileCommand::Logout)).await.unwrap();
+    assert!(app.state.active.session.is_none());
+
+    api.release.notify_one();
+    api.finished.notified().await;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached = cache.read_feed(&id, &FeedKey::from("home")).unwrap().unwrap();
+    assert_eq!(cached.entity["items"][0]["title"], "cached");
+}
+
 
 #[tokio::test]
 async fn new_profile_invalidates_pending_results_and_persists_metadata() {
@@ -500,6 +523,7 @@ impl LemmyApi for RefreshMutationRaceApi {
 struct ProfileReplacementRaceApi {
     started: Arc<Notify>,
     release: Arc<Notify>,
+    finished: Arc<Notify>,
 }
 
 #[async_trait]
@@ -508,6 +532,7 @@ impl LemmyApi for ProfileReplacementRaceApi {
     async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
         self.started.notify_one();
         self.release.notified().await;
+        self.finished.notify_one();
         Ok(Page { items: vec![post_view(1, "old refresh")], next_page: None })
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }

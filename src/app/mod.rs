@@ -98,6 +98,7 @@ impl App {
                 if let Err(error) = self.repository.credentials.delete_session(&id).await {
                     self.state.status.failure(error.to_string());
                 } else {
+                    self.repository.invalidate_profile_context(&id);
                     let mut context = self.state.active.clone();
                     context.session = None;
                     self.state.switch_context(context);
