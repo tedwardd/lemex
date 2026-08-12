@@ -50,7 +50,7 @@
 
 - Input handling remains on the event-loop task; only serialized `AppAction` values are queued, so no concurrent mutable access to `App` is introduced. A normal-mode `q` still aborts the in-flight task and exits; other semantic commands, including Escape/Back, are retained and dispatched in FIFO order.
 - The render model is refreshed synchronously before the action `JoinHandle` is spawned, after setting the pending marker for refresh and confirmation actions. Rendering still receives only the cloned read-only `RenderModel`.
-- The existing `status.pending` field also represents delete confirmation, so its existing `[PENDING]` presentation remains unchanged until that separate status-model concern is addressed.
+- Confirmation and network pending states are now distinct in the render model; delete staging no longer appears as network activity.
 
 ## Residual pending-state follow-up
 
@@ -70,4 +70,8 @@
 
 - Delete staging now sets `confirmation_pending` without setting network `pending`; confirmation and cancellation clear the correct state, while confirmed mutation requests set network `pending` before awaiting.
 - `OpenSelected` receives the same pre-spawn pending snapshot treatment as refresh, but only when a post is selected; no-selection open remains a no-op.
+
+- Cached refreshes now retain network `pending` after returning stale data while the repository's detached background refresh is still running; fresh completion clears it through the existing tick path.
+- `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
 

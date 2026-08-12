@@ -414,7 +414,19 @@ impl App {
         if profile != &self.state.active.profile.id || self.requests.get(&request.identity) != Some(request) { return; }
         match result {
             ApiResult::Feed { result, stale, .. } => match result {
-                Ok(page) => { self.state.view.posts = page.items; self.state.view.stale = stale; self.state.status.stale = stale; self.state.status.success("feed loaded"); }
+                Ok(page) => {
+                    self.state.view.posts = page.items;
+                    self.state.view.stale = stale;
+                    self.state.status.stale = stale;
+                    if stale {
+                        self.state.status.message = "stale feed loaded; refreshing".into();
+                        self.state.status.error = None;
+                        self.state.status.retryable = false;
+                        self.state.status.pending = true;
+                    } else {
+                        self.state.status.success("feed loaded");
+                    }
+                }
                 Err(error) => self.state.status.failure(error.to_string()),
             },
             ApiResult::Post { request, result, .. } => match result {
@@ -511,5 +523,15 @@ mod tests {
         let confirmation = app.render_model();
         assert!(confirmation.status.confirmation_pending);
         assert!(!confirmation.status.pending);
+
+        let request = app.begin_request(RequestIdentity::Feed);
+        app.state.status.pending = false;
+        app.apply_api_result(ApiResult::Feed {
+            profile: ProfileId::from("fixture"),
+            request,
+            result: Ok(crate::api::Page { items: Vec::new(), next_page: None }),
+            stale: true,
+        });
+        assert!(app.render_model().status.pending);
     }
 }
