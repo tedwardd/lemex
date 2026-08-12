@@ -194,6 +194,17 @@ fn tokenize(template: &str) -> Vec<String> {
     tokens
 }
 
+/// True when `name` matches the exact temp naming pattern produced by
+/// `temporary_path`: a leading dot, the requested file name, the `.part-`
+/// marker, and a numeric download id (`.{name}.part-{id}`). The startup
+/// sweep uses this so completed downloads and user files whose names merely
+/// contain `.part-` are never mistaken for stale temporaries.
+pub(crate) fn is_temporary_name(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix('.') else { return false };
+    let Some((stem, id)) = rest.rsplit_once(".part-") else { return false };
+    !stem.is_empty() && !id.is_empty() && id.chars().all(|character| character.is_ascii_digit())
+}
+
 /// Best-effort removal of a stale temp file; used by cancellation/cleanup.
 pub(crate) fn remove_temporary(target: &Path, id: crate::domain::DownloadId) {
     let _ = fs::remove_file(temporary_path(target, id));

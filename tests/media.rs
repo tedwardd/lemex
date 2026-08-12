@@ -318,3 +318,126 @@ async fn download_records_profile_instance_and_timestamp() {
     assert!(record.requested_at > 0);
     assert_eq!(record.media.url.as_str(), format!("http://127.0.0.1:{port}/meta.txt"));
 }
+
+#[tokio::test]
+async fn retry_removes_stale_temp_before_reusing_temp_path() {
+    let manager = test_download_manager();
+    let body: &'static [u8] = b"retried body";
+    let port = spawn_http_server(body, "text/plain");
+    let destination = test_dir().join("notes.txt");
+    let request = download_request(
+        Url::parse(&format!("http://127.0.0.1:{port}/notes.txt")).unwrap(),
+        destination.clone(),
+        CollisionPolicy::Overwrite,
+    );
+    let id = manager.start(request).await.unwrap();
+    assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
+
+    // Simulate an attempt aborted mid-stream: aborting a task drops it
+    // without running the cleanup inside the download task, leaving the
+    // `.part-{id}` temp file at the exact path `retry` reuses.
+    let stale = test_dir().join(format!(".notes.txt.part-{}", id.0));
+    std::fs::write(&stale, b"half-written").unwrap();
+
+    // Without the fix the retried task's open_restrictive (create_new) fails
+    // with EEXIST and the download dies with "cannot create temporary file".
+    manager.retry(id).await.unwrap();
+    assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
+    assert_eq!(std::fs::read(&destination).unwrap(), body);
+    assert!(!stale.exists(), "stale temp must be removed before the temp path is reused");
+}
+
+#[test]
+fn stale_temp_cleanup_matches_exact_pattern_only() {
+    let dir = test_dir();
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let exact = dir.join(".photo.bin.part-3"); // .{name}.part-{numeric} -> stale temp
+    let completed = dir.join("photo.bin"); // completed download
+    let mid_name = dir.join("notes.part-1.txt"); // bare substring, no leading dot
+    let dot_alpha = dir.join(".my.part-notes.txt"); // leading dot, non-numeric id
+    let dot_date = dir.join(".report.part-2024-01"); // leading dot, non-numeric id
+    let files: [(&std::path::Path, &[u8]); 5] = [
+        (exact.as_path(), b"stale"),
+        (completed.as_path(), b"kept"),
+        (mid_name.as_path(), b"kept"),
+        (dot_alpha.as_path(), b"kept"),
+        (dot_date.as_path(), b"kept"),
+    ];
+    for (path, contents) in files {
+        std::fs::write(path, contents).unwrap();
+    }
+
+    // Constructing the manager runs the startup stale-temp sweep.
+    let _manager = DownloadManager::new(dir.clone());
+
+    assert!(!exact.exists(), "exact temp pattern must be reclaimed");
+    assert!(completed.exists(), "completed downloads must survive the sweep");
+    assert!(mid_name.exists(), "files merely containing .part- must survive");
+    assert!(dot_alpha.exists(), "non-numeric .part- names must survive");
+    assert!(dot_date.exists(), "non-numeric .part- names must survive");
+}
+
+#[tokio::test]
+async fn retry_prompt_collision_parks_record_in_prompting() {
+    let manager = test_download_manager();
+    let body: &'static [u8] = b"retried prompt";
+    let port = spawn_http_server(body, "text/plain");
+    let destination = test_dir().join("notes.txt");
+    std::fs::write(&destination, b"pre-existing").unwrap();
+    let request = download_request(
+        Url::parse(&format!("http://127.0.0.1:{port}/notes.txt")).unwrap(),
+        destination.clone(),
+        CollisionPolicy::Prompt,
+    );
+    let id = manager.start(request).await.unwrap();
+    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    manager.resolve_collision(id, false).await.unwrap();
+    assert_eq!(manager.wait_for(id).await, DownloadStatus::Cancelled);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"pre-existing");
+
+    // Retrying a prompt-policy collision must re-park the record in
+    // Prompting synchronously, exactly like start() does, so the UI can
+    // surface the collision prompt instead of a silent pending state.
+    manager.retry(id).await.unwrap();
+    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+    manager.resolve_collision(id, true).await.unwrap();
+    assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"retried prompt");
+}
+
+#[tokio::test(start_paused = true)]
+async fn collision_prompt_wait_parks_instead_of_spinning() {
+    let manager = test_download_manager();
+    let body: &'static [u8] = b"parked";
+    let port = spawn_http_server(body, "text/plain");
+    let destination = test_dir().join("notes.txt");
+    std::fs::write(&destination, b"pre-existing").unwrap();
+    let request = download_request(
+        Url::parse(&format!("http://127.0.0.1:{port}/notes.txt")).unwrap(),
+        destination.clone(),
+        CollisionPolicy::Prompt,
+    );
+    let id = manager.start(request).await.unwrap();
+    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+
+    // The prompt wait must park on a timer, not busy-spin a CPU core: many
+    // poll intervals elapse without the wait resolving or the record leaving
+    // Prompting, and timer-driven tasks stay responsive meanwhile.
+    tokio::time::advance(Duration::from_millis(500)).await;
+    assert_eq!(manager.history().get(id).unwrap().status, DownloadStatus::Prompting);
+
+    let ticker = tokio::spawn(async {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        true
+    });
+    tokio::time::advance(Duration::from_millis(100)).await;
+    assert!(ticker.await.unwrap(), "executor must stay responsive while the prompt waits");
+
+    // hyper/reqwest drives its request lifecycle on real timers, so restore
+    // real time before the download performs its network request.
+    tokio::time::resume();
+    manager.resolve_collision(id, true).await.unwrap();
+    assert_eq!(manager.wait_for(id).await, DownloadStatus::Completed);
+    assert_eq!(std::fs::read(&destination).unwrap(), b"parked");
+}

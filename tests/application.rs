@@ -226,7 +226,7 @@ async fn stale_same_profile_post_result_is_rejected_by_request_token() {
     let detail = |title| PostDetail { post: PostView { id: PostId(1), title, body: None, url: None, community_id: lemmy::CommunityId(1), creator_id: lemmy::UserId(1), score: 0, comments: 0, published: None }, comments: Vec::new() };
     app.dispatch(AppAction::ApiResult(ApiResult::Post { profile: ProfileId::from("fixture"), request: current, result: Ok(detail("current".into())) })).await.unwrap();
     app.dispatch(AppAction::ApiResult(ApiResult::Post { profile: ProfileId::from("fixture"), request: old, result: Ok(detail("old".into())) })).await.unwrap();
-    assert_eq!(app.state.view.detail.unwrap().post.title, "current");
+    assert_eq!(app.state.view.detail.clone().unwrap().post.title, "current");
 }
 
 #[tokio::test]

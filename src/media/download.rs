@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::{
-    mailcap::{remove_temporary, temporary_path},
+    mailcap::{is_temporary_name, remove_temporary, temporary_path},
     mime::{extension_for_mime, resolve_mime},
 };
 
@@ -377,6 +377,11 @@ impl DownloadManager {
         if let Some(flag) = self.inner.cancel_flags.lock().remove(&id) {
             flag.store(true, Ordering::SeqCst);
         }
+        // Aborting the previous attempt drops its task without running the
+        // cleanup inside `run_download`, so a `.part-{id}` temp file may
+        // still sit at the (target, id) path this retry will reuse. Remove it
+        // before spawning or `open_restrictive` (create_new) fails with EEXIST.
+        let previous_path = self.history().get(id).map(|record| record.local_path);
         self.history().reset(id, &request);
         let flag = Arc::new(AtomicBool::new(false));
         self.inner.cancel_flags.lock().insert(id, flag.clone());
@@ -391,6 +396,15 @@ impl DownloadManager {
                 request.destination.clone()
             }
         };
+        if let Some(previous_path) = previous_path {
+            remove_temporary(&previous_path, id);
+        }
+        remove_temporary(&target, id);
+        // Mirror `start`: a collision prompt must be observable as `Prompting`
+        // synchronously, before the retried task is spawned.
+        if needs_prompt {
+            self.history().transition(id, |_| DownloadStatus::Prompting);
+        }
         let prompt_receiver = if needs_prompt {
             let (sender, receiver) = oneshot::channel();
             self.inner.prompts.lock().insert(id, sender);
@@ -524,7 +538,12 @@ fn uniquify(path: &Path) -> PathBuf {
 fn cleanup_stale_temporaries(directory: &Path) {
     let Ok(entries) = fs::read_dir(directory) else { return };
     for entry in entries.flatten() {
-        if entry.file_name().to_string_lossy().contains(".part-") {
+        // Only the exact `.{name}.part-{numeric id}` pattern is a stale
+        // temporary; completed downloads and user files containing ".part-"
+        // as a bare substring must never be removed.
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if is_temporary_name(name) {
             let _ = fs::remove_file(entry.path());
         }
     }
@@ -656,9 +675,13 @@ async fn run_download(
     inner.events.lock().push(DownloadEvent::Completed(id));
 }
 
+/// Polls the cancellation flag at a slow cadence. The prompt wait parks on
+/// this timer instead of busy-spinning a CPU core; cancellation is also
+/// delivered by aborting the task, so this is a defensive backstop, not a
+/// hot path.
 async fn wait_for_cancel(flag: &AtomicBool) {
     while !flag.load(Ordering::SeqCst) {
-        tokio::task::yield_now().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
 

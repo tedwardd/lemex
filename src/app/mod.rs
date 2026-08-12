@@ -142,7 +142,14 @@ fn queue_terminal_event(
     match event {
         Event::Key(key) => {
             let command = input.handle(key);
-            if command == crate::input::Command::Quit { return true; }
+            if command == crate::input::Command::Quit {
+                // Route the quit key through `AppAction::Quit` so the
+                // download manager is shut down and session history cleared
+                // on interactive exit. The loop then ends once the dispatched
+                // action sets the app's quit flag.
+                queued_actions.push_back(AppAction::Quit);
+                return false;
+            }
             if command != crate::input::Command::Noop {
                 queued_actions.push_back(command.into());
             }
@@ -319,7 +326,7 @@ impl App {
                 }
                 self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
             }
-            Command::Quit => { self.quit = true; Ok(()) }
+            Command::Quit => { self.downloads.shutdown(); self.quit = true; Ok(()) }
             Command::Refresh => {
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Retry).await;
@@ -739,6 +746,13 @@ impl App {
                             self.state.status.failure("local file was already deleted");
                             return Ok(());
                         }
+                        if record.status == DownloadStatus::Prompting {
+                            // The local path is the pre-existing collision
+                            // target the download does not own yet; removing
+                            // it would destroy a user file.
+                            self.state.status.failure("cannot delete the pre-existing file while a collision prompt is pending");
+                            return Ok(());
+                        }
                         self.state.pending = Some(crate::app::actions::PendingAction::DeleteDownload { id, path: record.local_path.clone() });
                         self.state.status.pending = false;
                         self.state.status.confirmation_pending = true;
@@ -810,6 +824,13 @@ impl App {
         match pending {
             Some(crate::app::actions::PendingAction::DeleteDownload { id, path }) => {
                 self.state.status.confirmation_pending = false;
+                // Re-check ownership at confirmation time: a record parked in
+                // Prompting does not own its local path, which may be a
+                // pre-existing user file the download has not touched.
+                if self.downloads.history().get(id).is_some_and(|record| record.status == DownloadStatus::Prompting) {
+                    self.state.status.failure("refusing to delete the pre-existing file of a prompting download");
+                    return Ok(());
+                }
                 if std::fs::remove_file(&path).is_ok() {
                     self.downloads.history().mark_file_deleted(id);
                     self.state.status.success("local file deleted");
@@ -950,6 +971,17 @@ impl App {
         }
     }
 }
+
+impl Drop for App {
+    fn drop(&mut self) {
+        // Guarantee in-flight downloads are aborted and their temp files
+        // removed on every exit path (quit action, error return, or an
+        // action task aborted mid-dispatch), not only on the explicit
+        // `AppAction::Quit` path.
+        self.downloads.shutdown();
+    }
+}
+
 /// Run a media handler with a safely constructed argv: no shell, no inherited
 /// stdin/stdout (children must not corrupt the TUI), no authorization headers.
 fn spawn_detached(template: &str, source: &OsStr, mime: &str) -> Result<()> {
@@ -1174,5 +1206,102 @@ mod tests {
         }).await.unwrap();
         assert!(app.state.status.error.is_some());
         assert!(app.state.status.retryable);
+    }
+    #[test]
+    fn quit_key_routes_through_quit_action() {
+        let mut input = crate::input::InputEngine::new();
+        let mut queued = VecDeque::new();
+        let mut redraw = false;
+        // The `q` key must be queued as `AppAction::Quit` (so dispatch runs
+        // DownloadManager::shutdown and clears session history) instead of
+        // exiting the loop before the action is ever dispatched.
+        let quit = queue_terminal_event(
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            &mut input,
+            &mut queued,
+            &mut redraw,
+        );
+        assert!(!quit, "quit key must not short-circuit before AppAction::Quit is dispatched");
+        assert!(matches!(queued.pop_front(), Some(AppAction::Quit)));
+        assert!(queued.is_empty());
+    }
+    #[tokio::test]
+    async fn quit_action_shuts_down_downloads_and_clears_history() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let mut app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        app.downloads.history().insert(crate::domain::DownloadRecord::new(
+            crate::domain::DownloadId(7),
+            MediaRef::new(Url::parse("https://example.com/photo.png").unwrap()),
+            "photo.png",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            PathBuf::from("/tmp/lemmy-quit-test-photo.png"),
+        ));
+        assert!(!app.downloads.history().is_empty());
+
+        app.dispatch(AppAction::Quit).await.unwrap();
+        assert!(app.is_quit());
+        assert!(app.downloads.history().is_empty(), "quit must clear the in-memory session history");
+    }
+    #[tokio::test]
+    async fn delete_is_refused_while_collision_prompt_is_pending() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let mut app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        let directory = std::env::temp_dir().join(format!(
+            "lemmy-delete-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&directory);
+        let destination = directory.join("notes.txt");
+        std::fs::write(&destination, b"pre-existing user file").unwrap();
+
+        let id = crate::domain::DownloadId(7);
+        app.downloads.history().insert(crate::domain::DownloadRecord::new(
+            id,
+            MediaRef::new(Url::parse("https://example.com/notes.txt").unwrap()),
+            "notes.txt",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            destination.clone(),
+        ));
+        app.downloads.history().transition(id, |_| DownloadStatus::Prompting);
+        app.state.view.downloads = Some(DownloadsPanel { query: String::new(), selected: Some(id) });
+
+        // `:delete` on a Prompting record must not stage a confirmation: the
+        // local path is the pre-existing collision target the download does
+        // not own.
+        app.dispatch(AppAction::Downloads(DownloadsAction::Delete)).await.unwrap();
+        assert!(app.state.pending.is_none(), "no deletion may be staged for a prompting download");
+        assert!(app.state.status.error.is_some(), "refusal must be surfaced to the user");
+        assert!(destination.exists(), "the pre-existing collision target must survive");
+
+        // The confirmation-time re-check is the second line of defense: even
+        // a staged deletion is refused if the record parks in Prompting
+        // before the user confirms.
+        app.downloads.history().transition(id, |_| DownloadStatus::Pending);
+        app.dispatch(AppAction::Downloads(DownloadsAction::Delete)).await.unwrap();
+        assert!(app.state.pending.is_some(), "a non-prompting download may be staged for deletion");
+        app.downloads.history().transition(id, |_| DownloadStatus::Prompting);
+        app.dispatch(AppAction::Confirm).await.unwrap();
+        assert!(destination.exists(), "confirm must refuse to remove the pre-existing collision target");
     }
 }
