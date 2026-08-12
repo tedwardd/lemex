@@ -31,6 +31,15 @@ fn normal_decimal_prefix_applies_to_motion() {
 }
 
 #[test]
+fn visual_decimal_prefix_applies_to_motion() {
+    let mut engine = InputEngine::default();
+
+    assert_eq!(engine.handle(key('v')), Command::EnterVisual);
+    assert_eq!(engine.handle(key('2')), Command::Noop);
+    assert_eq!(engine.handle(key('j')), Command::MoveDown { count: 2 });
+}
+
+#[test]
 fn colon_enters_command_mode_and_enter_submits_line() {
     let mut engine = InputEngine::default();
 

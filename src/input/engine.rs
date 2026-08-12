@@ -92,15 +92,13 @@ impl InputEngine {
     }
 
     fn handle_mapped(&mut self, key: KeyCode) -> Command {
-        if self.mode == Mode::Normal {
-            if let KeyCode::Char(character @ '0'..='9') = key {
-                self.count = self
-                    .count
-                    .saturating_mul(10)
-                    .saturating_add(character as u32 - '0' as u32);
-                self.pending.clear();
-                return Command::Noop;
-            }
+        if let KeyCode::Char(character @ '0'..='9') = key {
+            self.count = self
+                .count
+                .saturating_mul(10)
+                .saturating_add(character as u32 - '0' as u32);
+            self.pending.clear();
+            return Command::Noop;
         }
 
         self.pending.push(key);
