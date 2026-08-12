@@ -4,7 +4,7 @@ use tokio::sync::Notify;
 use async_trait::async_trait;
 use lemmy::{
     api::{fixtures::{fixture_api, fixture_api_with_status_count, timeout_fixture_api}, CommentView, FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView, SiteInfo},
-    app::{actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity}, App, Repository},
+    app::{actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity}, help::HelpIndex, App, Repository},
     cache::{CacheStore, CachedFeed, FeedKey, MemoryCache},
     domain::{Mutation, PostId, Profile, ProfileContext, ProfileId},
     error::{AppError, Result},
@@ -51,6 +51,13 @@ fn failing_mutation_app() -> App {
         context,
         Arc::new(MemoryCredentialStore::default()),
     )
+}
+
+#[test]
+fn help_lists_profile_and_media_commands() {
+    let help = HelpIndex::default();
+    assert!(help.contains(":profile"));
+    assert!(help.contains(":downloads"));
 }
 
 #[tokio::test]
@@ -605,6 +612,71 @@ async fn successful_draft_stays_completed_after_switching_profiles() {
     app.dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from("fixture")))).await.unwrap();
     assert!(app.state.draft(draft.id).is_none());
     let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn login_wires_session_into_active_context_after_api_success() {
+    let api = Arc::new(LoginApi);
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    let mut app = App::new(api, Arc::new(MemoryCache::default()), fixture_context(), credentials.clone());
+    app.state.view.compose = "login alice secret".into();
+    app.dispatch(AppAction::Profile(ProfileCommand::Login)).await.unwrap();
+    assert!(app.state.active.session.is_some());
+    assert!(credentials.get_session(&ProfileId::from("fixture")).await.unwrap().is_some());
+}
+
+#[tokio::test]
+async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-delete-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let fixture = Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) };
+    let other = Profile { id: ProfileId::from("other"), instance_url: Url::parse("https://other.example/").unwrap(), account_label: Some("other".into()) };
+    store.save(&[fixture.clone(), other.clone()]).unwrap();
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    credentials.put_session(&other.id, &lemmy::Session { token: lemmy::SecretString::from("other-token"), user_id: lemmy::UserId(7) }).await.unwrap();
+    let mut app = App::with_profile_store(Arc::new(fixture_api("feed.json")), Arc::new(MemoryCache::default()), fixture_context(), credentials.clone(), store.clone());
+    app.dispatch(AppAction::Profile(ProfileCommand::Delete(ProfileId::from("other")))).await.unwrap();
+    assert_eq!(app.state.active.profile.id, ProfileId::from("fixture"));
+    assert!(credentials.get_session(&ProfileId::from("other")).await.unwrap().is_none());
+    assert_eq!(store.load().unwrap(), vec![fixture]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn help_command_opens_searchable_help_and_back_closes_it() {
+    let mut app = fixture_app();
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("help downloads".into()))).await.unwrap();
+    assert_eq!(app.state.view.help.as_deref(), Some("downloads"));
+    app.dispatch(AppAction::Back).await.unwrap();
+    assert!(app.state.view.help.is_none());
+}
+
+#[tokio::test]
+async fn set_command_validates_writes_atomically_and_rejects_bad_values() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-set-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let mut app = App::with_profile_store(Arc::new(fixture_api("feed.json")), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()), store.clone());
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("set collision-policy overwrite".into()))).await.unwrap();
+    assert_eq!(store.load_config().unwrap().media.collision_policy, "overwrite");
+    assert_eq!(app.state.status.message, "configuration updated");
+
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("set collision-policy bogus".into()))).await.unwrap();
+    assert!(app.state.status.error.is_some());
+    assert_eq!(store.load_config().unwrap().media.collision_policy, "overwrite", "invalid update must not be persisted");
+    let _ = std::fs::remove_file(path);
+}
+
+struct LoginApi;
+
+#[async_trait]
+impl LemmyApi for LoginApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> { Err(AppError::Network("unused".into())) }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, request: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+        Ok(lemmy::Session { token: lemmy::SecretString::from(format!("token-{}", request.username)), user_id: lemmy::UserId(7) })
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Err(AppError::Network("unused".into())) }
 }
 
 #[tokio::test]

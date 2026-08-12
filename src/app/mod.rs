@@ -9,16 +9,17 @@ use std::{collections::{HashMap, VecDeque}, ffi::OsStr, io::Write, path::{Path, 
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
+use url::Url;
 
 
 pub use actions::{ApiResult, AppAction, DownloadsAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
 pub use repository::{CachedRead, Repository};
 pub use state::{AppState, DraftStore, DownloadsPanel, DownloadsRender, RenderModel, Status, View};
 use crate::{
-    api::{FeedQuery, LemmyApi, MutationResult},
+    api::{FeedQuery, LemmyApi, LoginRequest, MutationResult},
     cache::Draft,
-    config::MediaConfig,
-    domain::{CreateCommentRequest, CreatePostRequest, DownloadStatus, EditCommentRequest, EditPostRequest, MediaRef, Mutation, Profile, ProfileContext, ProfileId},
+    config::{AppConfig, MediaConfig},
+    domain::{CreateCommentRequest, CreatePostRequest, DownloadStatus, EditCommentRequest, EditPostRequest, MediaRef, Mutation, Profile, ProfileContext, ProfileId, SecretString},
     error::{AppError, Result},
     input::{Command, Mode},
     media::{kitty, build_argv, filename_for, CollisionPolicy, DownloadEvent, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig, TerminalCapabilities},
@@ -295,7 +296,7 @@ impl App {
                     self.state.view.close_downloads_panel();
                     return Ok(());
                 }
-                self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
+                self.invalidate_content_requests(); self.state.view.detail = None; self.state.view.help = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
             }
             AppAction::DeletePost(id) => self.delete_post(id).await,
             AppAction::Mutate(mutation) => self.start_mutation(mutation, None).await,
@@ -324,7 +325,7 @@ impl App {
                     self.state.view.close_downloads_panel();
                     return Ok(());
                 }
-                self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
+                self.invalidate_content_requests(); self.state.view.detail = None; self.state.view.help = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
             }
             Command::Quit => { self.downloads.shutdown(); self.quit = true; Ok(()) }
             Command::Refresh => {
@@ -345,53 +346,160 @@ impl App {
         }
     }
 
-    async fn dispatch_profile(&mut self, command: ProfileCommand) -> Result<()> {
+    /// Execute a profile command: switch, list, create, login, logout,
+    /// whoami, or delete. Every variant funnels through the shared profile
+    /// service so the terminal and any other caller share one session
+    /// lifecycle. Login stores a session only after the API call succeeds;
+    /// logout is destructive only to the session; switching is a hard context
+    /// transition that clears stale transient state before any request can
+    /// observe the old context.
+    pub async fn execute_profile_command(&mut self, command: ProfileCommand) -> Result<()> {
         match command {
             ProfileCommand::Switch(id) => self.switch_profile(id).await,
-            ProfileCommand::Logout => {
-                self.requests.clear();
-                let id = self.state.active.profile.id.clone();
-                if let Err(error) = self.repository.credentials.delete_session(&id).await {
-                    self.state.status.failure(error.to_string());
-                } else {
-                    self.repository.invalidate_profile_context(&id);
-                    let mut context = self.state.active.clone();
-                    context.session = None;
-                    self.state.switch_context(context);
-                    self.state.status.success("logged out");
-                }
+            ProfileCommand::List => self.list_profiles(),
+            ProfileCommand::New(draft) => self.create_profile(draft).await,
+            ProfileCommand::Login => self.login_from_compose().await,
+            ProfileCommand::Logout => self.logout().await,
+            ProfileCommand::WhoAmI => {
+                self.state.status.success(self.state.active.session.as_ref().map(|session| format!("user {}", session.user_id.0)).unwrap_or_else(|| "anonymous".into()));
                 Ok(())
             }
-            ProfileCommand::WhoAmI => { self.state.status.success(self.state.active.session.as_ref().map(|session| format!("user {}", session.user_id.0)).unwrap_or_else(|| "anonymous".into())); Ok(()) }
-            ProfileCommand::List => { self.state.status.success(self.state.active.profile.id.to_string()); Ok(()) }
-            ProfileCommand::New(draft) => {
-                self.requests.clear();
-                let profile = Profile { id: draft.id, instance_url: draft.instance_url, account_label: draft.account_label };
-                let mut config = match self.profile_store.load_config() {
-                    Ok(config) => config,
-                    Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
-                };
-                let replacing = self.state.active.profile.id == profile.id || config.profiles.iter().any(|existing| existing.id == profile.id);
-                if replacing {
-                    self.repository.invalidate_profile_context(&profile.id);
-                }
-                if replacing {
-                    if let Err(error) = self.repository.credentials.delete_session(&profile.id).await {
-                        self.state.status.failure(error.to_string());
-                        return Ok(());
-                    }
-                }
-                if let Some(existing) = config.profiles.iter_mut().find(|existing| existing.id == profile.id) { *existing = profile.clone(); } else { config.profiles.push(profile.clone()); }
-                if let Err(error) = self.profile_store.save_config(&config) {
-                    self.state.status.failure(error.to_string());
-                    return Ok(());
-                }
-                self.state.switch_context(ProfileContext { profile, session: None });
-                self.state.status.success("profile created");
-                Ok(())
-            }
-            ProfileCommand::Login | ProfileCommand::Delete(_) => { self.state.status.failure("profile operation requires interactive profile service"); Ok(()) }
+            ProfileCommand::Delete(id) => self.delete_profile(id).await,
         }
+    }
+
+    async fn dispatch_profile(&mut self, command: ProfileCommand) -> Result<()> {
+        self.execute_profile_command(command).await
+    }
+
+    fn list_profiles(&mut self) -> Result<()> {
+        match self.profile_store.load() {
+            Ok(profiles) if !profiles.is_empty() => {
+                let list = profiles
+                    .iter()
+                    .map(|profile| {
+                        if profile.id == self.state.active.profile.id {
+                            format!("{} (active)", profile.id)
+                        } else {
+                            profile.id.to_string()
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                self.state.status.success(format!("profiles: {list}"));
+            }
+            Ok(_) => self.state.status.success("no profiles configured"),
+            Err(error) => self.state.status.failure(error.to_string()),
+        }
+        Ok(())
+    }
+
+    async fn create_profile(&mut self, draft: ProfileDraft) -> Result<()> {
+        self.requests.clear();
+        let profile = Profile { id: draft.id, instance_url: draft.instance_url, account_label: draft.account_label };
+        if let Err(error) = crate::profiles::validate_instance(&profile.instance_url) {
+            self.state.status.failure(error.to_string());
+            return Ok(());
+        }
+        let mut config = match self.profile_store.load_config() {
+            Ok(config) => config,
+            Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
+        };
+        let replacing = self.state.active.profile.id == profile.id || config.profiles.iter().any(|existing| existing.id == profile.id);
+        if replacing {
+            self.repository.invalidate_profile_context(&profile.id);
+            if let Err(error) = self.repository.credentials.delete_session(&profile.id).await {
+                self.state.status.failure(error.to_string());
+                return Ok(());
+            }
+        }
+        if let Some(existing) = config.profiles.iter_mut().find(|existing| existing.id == profile.id) { *existing = profile.clone(); } else { config.profiles.push(profile.clone()); }
+        if let Err(error) = self.profile_store.save_config(&config) {
+            self.state.status.failure(error.to_string());
+            return Ok(());
+        }
+        self.state.switch_context(ProfileContext { profile, session: None });
+        self.state.status.success("profile created");
+        Ok(())
+    }
+
+    /// `:login <username> <password>` — credentials come from the compose
+    /// buffer. The password is consumed in memory only: it is never written
+    /// to config, logged, or echoed in status.
+    async fn login_from_compose(&mut self) -> Result<()> {
+        let mut tokens = self.state.view.compose.split_whitespace();
+        let first = tokens.next().unwrap_or_default().trim_start_matches(':');
+        let username = if first == "login" { tokens.next() } else { Some(first) };
+        let password = tokens.next();
+        let (Some(username), Some(password)) = (username, password) else {
+            self.state.status.failure("usage: login <username> <password>");
+            return Ok(());
+        };
+        if tokens.next().is_some() {
+            self.state.status.failure("usage: login <username> <password>");
+            return Ok(());
+        }
+        self.perform_login(LoginRequest {
+            profile: self.state.active.profile.id.clone(),
+            instance_url: self.state.active.profile.instance_url.clone(),
+            username: username.to_owned(),
+            password: SecretString::from(password),
+        }).await
+    }
+
+    async fn perform_login(&mut self, request: LoginRequest) -> Result<()> {
+        self.requests.clear();
+        match crate::profiles::login(self.repository.api.as_ref(), self.repository.credentials.as_ref(), request).await {
+            Ok(session) => {
+                let user = session.user_id.0;
+                self.state.active.session = Some(session);
+                self.state.status.success(format!("logged in as user {user}"));
+            }
+            Err(error) => self.state.status.failure(error.to_string()),
+        }
+        Ok(())
+    }
+
+    async fn logout(&mut self) -> Result<()> {
+        self.requests.clear();
+        let id = self.state.active.profile.id.clone();
+        if let Err(error) = crate::profiles::logout(&self.profile_store, self.repository.credentials.as_ref(), &id).await {
+            self.state.status.failure(error.to_string());
+        } else {
+            self.repository.invalidate_profile_context(&id);
+            let mut context = self.state.active.clone();
+            context.session = None;
+            self.state.switch_context(context);
+            self.state.status.success("logged out");
+        }
+        Ok(())
+    }
+
+    async fn delete_profile(&mut self, id: ProfileId) -> Result<()> {
+        if id == self.state.active.profile.id {
+            self.state.status.failure("cannot delete the active profile; switch to another profile first");
+            return Ok(());
+        }
+        let mut config = match self.profile_store.load_config() {
+            Ok(config) => config,
+            Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
+        };
+        if !config.profiles.iter().any(|profile| profile.id == id) {
+            self.state.status.failure(format!("profile {id} is not configured"));
+            return Ok(());
+        }
+        self.repository.invalidate_profile_context(&id);
+        if let Err(error) = self.repository.credentials.delete_session(&id).await {
+            self.state.status.failure(error.to_string());
+            return Ok(());
+        }
+        config.profiles.retain(|profile| profile.id != id);
+        if let Err(error) = self.profile_store.save_config(&config) {
+            self.state.status.failure(error.to_string());
+            return Ok(());
+        }
+        self.state.status.success(format!("profile {id} deleted"));
+        Ok(())
     }
 
 
@@ -437,19 +545,151 @@ impl App {
         self.state.mode = Mode::Normal;
         let trimmed = line.trim();
         if trimmed.is_empty() { return Ok(()); }
-        match trimmed {
+        // The command line commonly starts with the `:` that entered command
+        // mode, so accept both `:profile` and `profile` spellings.
+        let trimmed = trimmed.strip_prefix(':').unwrap_or(trimmed);
+        let mut parts = trimmed.split_whitespace();
+        let command = parts.next().unwrap_or_default();
+        let args: Vec<&str> = parts.collect();
+        match command {
+            "profile" => match args.as_slice() {
+                [] => self.execute_profile_command(ProfileCommand::List).await,
+                [id] => self.execute_profile_command(ProfileCommand::Switch(ProfileId::from(*id))).await,
+                _ => {
+                    self.state.status.failure("usage: profile [<id>]");
+                    Ok(())
+                }
+            },
+            "profile-new" => match args.as_slice() {
+                [id, instance, label @ ..] if label.len() <= 1 => {
+                    match Url::parse(instance) {
+                        Ok(instance_url) => {
+                            let account_label = label.first().map(|label| (*label).to_owned());
+                            self.execute_profile_command(ProfileCommand::New(ProfileDraft {
+                                id: ProfileId::from(*id),
+                                instance_url,
+                                account_label,
+                            })).await
+                        }
+                        Err(error) => {
+                            self.state.status.failure(format!("invalid instance URL: {error}"));
+                            Ok(())
+                        }
+                    }
+                }
+                _ => {
+                    self.state.status.failure("usage: profile-new <id> <instance-url> [account label]");
+                    Ok(())
+                }
+            },
+            "profile-delete" | "delete-profile" => match args.as_slice() {
+                [id] => self.execute_profile_command(ProfileCommand::Delete(ProfileId::from(*id))).await,
+                _ => {
+                    self.state.status.failure("usage: profile-delete <id>");
+                    Ok(())
+                }
+            },
+            "login" => self.execute_profile_command(ProfileCommand::Login).await,
+            "logout" | "profile-logout" => self.execute_profile_command(ProfileCommand::Logout).await,
+            "whoami" => self.execute_profile_command(ProfileCommand::WhoAmI).await,
+            "help" => {
+                self.show_help(if args.is_empty() { None } else { Some(args.join(" ")) });
+                Ok(())
+            }
+            "set" => self.config_command(&args).await,
+            "feed" => {
+                self.state.view.feed_query = FeedQuery::home();
+                self.state.view.search.clear();
+                self.state.view.next_page = None;
+                self.refresh_feed().await
+            }
+            "search" => {
+                let query = args.join(" ").trim().to_owned();
+                self.state.view.search = query.clone();
+                self.state.view.feed_query = FeedQuery { search: (!query.is_empty()).then_some(query), ..FeedQuery::home() };
+                self.state.view.next_page = None;
+                self.refresh_feed().await
+            }
+            "open" => self.open_selected().await,
+            "refresh" => self.refresh_feed().await,
+            "delete" => match self.state.selected_post() {
+                Some(id) => self.delete_post(id).await,
+                None => {
+                    self.state.status.failure("no post selected");
+                    Ok(())
+                }
+            },
             "media" => self.open_media_selected().await,
             "download-media" | "download_media" => self.download_media_selected().await,
             "downloads" => {
                 self.toggle_downloads_panel();
                 Ok(())
             }
+            "quit" => { self.downloads.shutdown(); self.quit = true; Ok(()) }
             _ if self.state.view.downloads_active() => self.submit_downloads_command(trimmed).await,
             other => {
                 self.state.status.failure(format!("unknown command: {other}"));
                 Ok(())
             }
         }
+    }
+
+    async fn config_command(&mut self, args: &[&str]) -> Result<()> {
+        let mut config = match self.profile_store.load_config() {
+            Ok(config) => config,
+            Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
+        };
+        let update = match args {
+            ["keymap", name, sequence] => config.set_keymap((*name).to_owned(), (*sequence).to_owned()),
+            ["media", "kitty", "on"] => config.set_kitty(true),
+            ["media", "kitty", "off"] => config.set_kitty(false),
+            ["media", "mailcap", "on"] => config.set_mailcap(true),
+            ["media", "mailcap", "off"] => config.set_mailcap(false),
+            ["download-dir", directory] | ["download-directory", directory] => config.set_download_directory(Some(PathBuf::from(*directory))),
+            ["collision-policy", policy] => config.set_collision_policy((*policy).to_owned()),
+            ["cache-dir", directory] => config.set_cache_directory(Some(PathBuf::from(*directory))),
+            ["cache-size", bytes] => match bytes.parse::<u64>() {
+                Ok(size) => config.set_cache_size(Some(size)),
+                Err(_) => Err(AppError::Configuration(format!("cache size must be a byte count; got {bytes}"))),
+            },
+            ["logging", "on"] => config.set_logging(true, None),
+            ["logging", "off"] => config.set_logging(false, None),
+            ["logging", "on", level] => config.set_logging(true, Some((*level).to_owned())),
+            ["logging", "off", level] => config.set_logging(false, Some((*level).to_owned())),
+            _ => {
+                self.state.status.failure("usage: set keymap <name> <keys> | set media <kitty|mailcap> <on|off> | set download-dir <path> | set collision-policy <prompt|overwrite|unique-name> | set cache-dir <path> | set cache-size <bytes> | set logging <on|off> [level]");
+                return Ok(());
+            }
+        };
+        match update {
+            Ok(()) => {
+                // Validate first (above), then persist atomically, then apply.
+                if let Err(error) = self.profile_store.save_config(&config) {
+                    self.state.status.failure(error.to_string());
+                    return Ok(());
+                }
+                self.apply_runtime_config(&config);
+                self.state.status.success("configuration updated");
+            }
+            Err(error) => self.state.status.failure(error.to_string()),
+        }
+        Ok(())
+    }
+
+    /// Apply configuration changes that can take effect live; the durable
+    /// config was already written atomically. Keymaps, cache location, and
+    /// the logging subscriber take effect on the next launch.
+    fn apply_runtime_config(&mut self, config: &AppConfig) {
+        self.media_policy = MediaPolicyConfig::from_config(&config.media);
+        self.collision_policy = CollisionPolicy::from_config(&config.media.collision_policy);
+        if let Some(directory) = &config.media.download_directory {
+            self.downloads.set_directory(directory.clone());
+        }
+    }
+
+    fn show_help(&mut self, query: Option<String>) {
+        self.state.view.help = Some(query.unwrap_or_default());
+        self.state.status.success("help: type :help <topic> to filter; Esc closes");
     }
 
     async fn submit_downloads_command(&mut self, line: &str) -> Result<()> {

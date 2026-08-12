@@ -92,6 +92,7 @@ async fn login_preserves_instance_base_path() {
     let (api, instance_url) = login_fixture_api("/lemmy/");
     let session = api
         .login(LoginRequest {
+            profile: lemmy::ProfileId::from("fixture"),
             instance_url,
             username: "fixture-user".into(),
             password: SecretString::from("fixture-password"),

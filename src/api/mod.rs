@@ -3,7 +3,7 @@ pub mod fixtures;
 
 pub use http::HttpLemmyApi;
 
-use crate::domain::{CommunityId, Mutation, PostId, ProfileContext, Session};
+use crate::domain::{CommunityId, Mutation, PostId, ProfileContext, ProfileId, Session};
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -69,6 +69,8 @@ pub struct PostDetail {
 
 #[derive(Clone, Eq, PartialEq)]
 pub struct LoginRequest {
+    /// Profile whose credential store receives the session on success.
+    pub profile: ProfileId,
     pub instance_url: Url,
     pub username: String,
     pub password: crate::domain::SecretString,
@@ -77,6 +79,7 @@ pub struct LoginRequest {
 impl fmt::Debug for LoginRequest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LoginRequest")
+            .field("profile", &self.profile)
             .field("instance_url", &self.instance_url)
             .field("username", &self.username)
             .field("password", &"[REDACTED]")

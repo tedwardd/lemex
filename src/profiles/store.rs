@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::{AppConfig, Result};
-use crate::domain::Profile;
+use crate::domain::{Profile, ProfileId};
 
 /// Persistence boundary for non-secret profile metadata.
 #[derive(Clone, Debug)]
@@ -33,6 +33,27 @@ impl ProfileStore {
 
     pub fn save_config(&self, config: &AppConfig) -> Result<()> {
         config.write_atomic(&self.path)
+    }
+
+    /// Create or replace a profile's non-secret metadata, atomically. A same-id
+    /// replacement overwrites the existing entry; secrets are never handled
+    /// here (the caller owns credential-store lifecycle).
+    pub fn create(&self, profile: Profile) -> Result<()> {
+        let mut config = self.load_config()?;
+        if let Some(existing) = config.profiles.iter_mut().find(|existing| existing.id == profile.id) {
+            *existing = profile;
+        } else {
+            config.profiles.push(profile);
+        }
+        self.save_config(&config)
+    }
+
+    /// Fetch a configured profile's non-secret metadata by id.
+    pub fn get(&self, id: &ProfileId) -> Result<Profile> {
+        self.load()?
+            .into_iter()
+            .find(|profile| profile.id == *id)
+            .ok_or_else(|| crate::error::AppError::Configuration(format!("profile {id} is not configured")))
     }
 }
 

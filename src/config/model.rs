@@ -44,12 +44,30 @@ impl Default for CacheConfig {
     }
 }
 
+/// Opt-in diagnostic logging policy. Logs redact credentials, tokens,
+/// private content, and sensitive profile values; disabled by default.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogConfig {
+    pub enabled: bool,
+    pub level: Option<String>,
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            level: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AppConfig {
     pub profiles: Vec<Profile>,
     pub keymaps: HashMap<String, String>,
     pub media: MediaConfig,
     pub cache: CacheConfig,
+    pub logging: LogConfig,
 }
 
 impl Default for AppConfig {
@@ -59,6 +77,7 @@ impl Default for AppConfig {
             keymaps: HashMap::new(),
             media: MediaConfig::default(),
             cache: CacheConfig::default(),
+            logging: LogConfig::default(),
         }
     }
 }
@@ -99,6 +118,7 @@ impl AppConfig {
             keymaps: raw.keymaps,
             media: raw.media.into_config(),
             cache: raw.cache.into_config(),
+            logging: raw.logging.into_config(),
         })
     }
 
@@ -132,6 +152,7 @@ impl AppConfig {
             keymaps: self.keymaps.clone(),
             media: RawMediaConfig::from_config(&self.media),
             cache: RawCacheConfig::from_config(&self.cache),
+            logging: RawLogConfig::from_config(&self.logging),
         };
         toml::to_string_pretty(&raw)
             .map_err(|error| AppError::Configuration(format!("cannot encode TOML: {error}")))
@@ -160,6 +181,8 @@ struct RawConfig {
     media: RawMediaConfig,
     #[serde(default)]
     cache: RawCacheConfig,
+    #[serde(default)]
+    logging: RawLogConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -239,5 +262,124 @@ impl RawCacheConfig {
 
     fn from_config(config: &CacheConfig) -> Self {
         Self { directory: config.directory.clone(), max_size_bytes: config.max_size_bytes }
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawLogConfig {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default)]
+    level: Option<String>,
+}
+
+impl RawLogConfig {
+    fn into_config(self) -> LogConfig {
+        LogConfig { enabled: self.enabled, level: self.level }
+    }
+
+    fn from_config(config: &LogConfig) -> Self {
+        Self { enabled: config.enabled, level: config.level.clone() }
+    }
+}
+
+impl AppConfig {
+    /// Configure a key mapping. The sequence is validated (non-empty, no
+    /// whitespace); the mapping applies to the input engine on the next
+    /// launch.
+    pub fn set_keymap(&mut self, name: String, sequence: String) -> Result<()> {
+        if name.trim().is_empty() {
+            return Err(AppError::Configuration("keymap name must not be empty".to_owned()));
+        }
+        if sequence.trim().is_empty() {
+            return Err(AppError::Configuration(format!("keymap {name}: key sequence must not be empty")));
+        }
+        if sequence.chars().any(char::is_whitespace) {
+            return Err(AppError::Configuration(format!(
+                "keymap {name}: key sequence must not contain whitespace"
+            )));
+        }
+        self.keymaps.insert(name, sequence);
+        Ok(())
+    }
+
+    pub fn set_kitty(&mut self, enabled: bool) -> Result<()> {
+        self.media.kitty_enabled = enabled;
+        Ok(())
+    }
+
+    pub fn set_mailcap(&mut self, enabled: bool) -> Result<()> {
+        self.media.mailcap_enabled = enabled;
+        Ok(())
+    }
+
+    /// Set the download directory. An existing path must be a directory; new
+    /// paths are created on application.
+    pub fn set_download_directory(&mut self, directory: Option<PathBuf>) -> Result<()> {
+        if let Some(path) = &directory {
+            if path.as_os_str().is_empty() {
+                return Err(AppError::Configuration("download directory must not be empty".to_owned()));
+            }
+            if path.exists() && !path.is_dir() {
+                return Err(AppError::Configuration(format!(
+                    "download directory {} is not a directory",
+                    path.display()
+                )));
+            }
+        }
+        self.media.download_directory = directory;
+        Ok(())
+    }
+
+    /// Set the download collision policy. Unlike the lenient config parsing,
+    /// unknown values are rejected instead of silently falling back.
+    pub fn set_collision_policy(&mut self, policy: String) -> Result<()> {
+        match policy.trim() {
+            "prompt" | "overwrite" | "unique-name" | "unique_name" => {}
+            _ => {
+                return Err(AppError::Configuration(format!(
+                    "collision policy must be one of prompt, overwrite, unique-name; got {policy}"
+                )));
+            }
+        }
+        self.media.collision_policy = policy;
+        Ok(())
+    }
+
+    pub fn set_cache_directory(&mut self, directory: Option<PathBuf>) -> Result<()> {
+        if let Some(path) = &directory {
+            if path.as_os_str().is_empty() {
+                return Err(AppError::Configuration("cache directory must not be empty".to_owned()));
+            }
+        }
+        self.cache.directory = directory;
+        Ok(())
+    }
+
+    pub fn set_cache_size(&mut self, max_size_bytes: Option<u64>) -> Result<()> {
+        if let Some(size) = max_size_bytes {
+            if size == 0 {
+                return Err(AppError::Configuration("cache size must be a positive byte count".to_owned()));
+            }
+        }
+        self.cache.max_size_bytes = max_size_bytes;
+        Ok(())
+    }
+
+    /// Set the opt-in logging policy. `level` must parse as a tracing level
+    /// (trace, debug, info, warn, error). Logs always redact secrets.
+    pub fn set_logging(&mut self, enabled: bool, level: Option<String>) -> Result<()> {
+        if let Some(level) = &level {
+            level
+                .parse::<tracing::Level>()
+                .map_err(|_| {
+                    AppError::Configuration(format!(
+                        "log level must be one of trace, debug, info, warn, error; got {level}"
+                    ))
+                })?;
+        }
+        self.logging = LogConfig { enabled, level };
+        Ok(())
     }
 }

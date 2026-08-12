@@ -20,6 +20,8 @@ pub struct View {
     pub feed_query: crate::api::FeedQuery,
     pub search: String,
     pub downloads: Option<DownloadsPanel>,
+    /// Active help filter; `Some` shows the help index instead of content.
+    pub help: Option<String>,
 }
 
 /// Selection and search state for the session downloads panel.
@@ -31,7 +33,7 @@ pub struct DownloadsPanel {
 
 impl Default for View {
     fn default() -> Self {
-        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new(), downloads: None }
+        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new(), downloads: None, help: None }
     }
 }
 
@@ -49,6 +51,7 @@ impl View {
         self.next_page = None;
         self.feed_query = crate::api::FeedQuery::home();
         self.search.clear();
+        self.help = None;
     }
 
     pub fn selected_comments(&self) -> &[CommentView] {
@@ -267,6 +270,8 @@ pub struct RenderModel {
     pub has_more: bool,
     pub status: Status,
     pub downloads: Option<DownloadsRender>,
+    /// Active help filter shown in place of content.
+    pub help: Option<String>,
 }
 
 /// Render snapshot of the downloads panel, populated by the application layer.
@@ -289,6 +294,7 @@ impl AppState {
             has_more: self.view.next_page.is_some(),
             status: self.status.clone(),
             downloads: None,
+            help: self.view.help.clone(),
         }
     }
 }

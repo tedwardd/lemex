@@ -49,6 +49,17 @@ impl CredentialStore for MemoryCredentialStore {
     }
 }
 
+impl MemoryCredentialStore {
+    /// Snapshot every stored session keyed by profile id. Used by tests and by
+    /// session inventory surfaces; never serialized.
+    pub fn all(&self) -> HashMap<ProfileId, Session> {
+        self.sessions
+            .read()
+            .map(|sessions| sessions.clone())
+            .unwrap_or_default()
+    }
+}
+
 /// OS credential-store backed session storage.
 #[derive(Clone, Debug)]
 pub struct KeyringCredentialStore {

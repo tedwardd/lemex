@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 
-use super::{help::{contextual_help, mode_label}, DownloadsRender, RenderModel};
+use super::help::{contextual_help, mode_label, HelpIndex};
+use super::{DownloadsRender, RenderModel};
 
 pub fn render(frame: &mut Frame, model: &RenderModel) {
     let areas = Layout::default()
@@ -82,6 +83,11 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(areas[1]);
 
+    if let Some(query) = &model.help {
+        render_help(frame, body.as_ref(), query);
+        return;
+    }
+
     let mut post_items = model
         .posts
         .iter()
@@ -116,6 +122,49 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
     };
     let detail = Paragraph::new(detail_text)
         .block(Block::default().borders(Borders::ALL).title("Detail / thread"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(detail, body[1]);
+}
+
+fn render_help(frame: &mut Frame, body: &[ratatui::layout::Rect], query: &str) {
+    let entries = HelpIndex::default().search(query);
+    let items = entries
+        .iter()
+        .map(|entry| {
+            ListItem::new(Line::from(vec![
+                Span::styled(entry.command, Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw("  —  "),
+                Span::raw(entry.description),
+            ]))
+        })
+        .collect::<Vec<_>>();
+    let title = if query.is_empty() {
+        "Help — all commands".to_owned()
+    } else {
+        format!("Help — \"{query}\"")
+    };
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    frame.render_stateful_widget(list, body[0], &mut ListState::default());
+
+    let mut groups: Vec<&'static str> = Vec::new();
+    for entry in &entries {
+        if !groups.contains(&entry.group) {
+            groups.push(entry.group);
+        }
+    }
+    let lines = std::iter::once(Line::from("Searchable help"))
+        .chain(std::iter::once(Line::from(format!(
+            "{} matching command(s)",
+            entries.len()
+        ))))
+        .chain(std::iter::once(Line::from("")))
+        .chain(groups.iter().map(|group| Line::from(format!("• {group}"))))
+        .collect::<Vec<_>>();
+    let detail = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title("Help groups"))
         .wrap(Wrap { trim: false });
     frame.render_widget(detail, body[1]);
 }

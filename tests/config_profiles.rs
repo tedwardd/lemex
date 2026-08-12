@@ -1,10 +1,16 @@
-use std::{fs, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
+use std::{fs, path::{Path, PathBuf}, sync::atomic::{AtomicBool, Ordering}, time::{SystemTime, UNIX_EPOCH}};
 
-use lemmy::{AppConfig, AppError, ProfileId, SecretString, Session, UserId};
-use lemmy::profiles::{CredentialStore, MemoryCredentialStore};
+use async_trait::async_trait;
+use lemmy::{
+    api::{FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo},
+    domain::{Mutation, PostId, Profile, ProfileContext},
+    profiles::{login, logout, CredentialStore, MemoryCredentialStore, ProfileStore},
+    AppConfig, AppError, ProfileId, SecretString, Session, UserId,
+};
 #[cfg(not(target_os = "linux"))]
 use lemmy::profiles::KeyringCredentialStore;
 use secrecy::ExposeSecret;
+use url::Url;
 
 fn session(token: &str) -> Session {
     Session {
@@ -137,4 +143,85 @@ fn relative_config_path_writes_and_reloads() {
         assert_eq!(AppConfig::load(path).unwrap(), config);
     }
     fs::remove_dir_all(directory).unwrap();
+}
+
+fn profile(id: &str) -> Profile {
+    Profile { id: ProfileId::from(id), instance_url: Url::parse("https://example.test/").unwrap(), account_label: Some(id.into()) }
+}
+
+fn login_request() -> LoginRequest {
+    LoginRequest {
+        profile: ProfileId::from("main"),
+        instance_url: Url::parse("https://example.test/").unwrap(),
+        username: "alice".into(),
+        password: SecretString::from("hunter2"),
+    }
+}
+
+#[derive(Default)]
+struct FailOnceLoginApi {
+    failed: AtomicBool,
+}
+
+impl FailOnceLoginApi {
+    fn fail_login_once(&self) {
+        self.failed.store(true, Ordering::SeqCst);
+    }
+}
+
+#[async_trait]
+impl LemmyApi for FailOnceLoginApi {
+    async fn site(&self, _: &ProfileContext) -> lemmy::Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> lemmy::Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn login(&self, _: LoginRequest) -> lemmy::Result<Session> {
+        if self.failed.swap(false, Ordering::SeqCst) {
+            Err(AppError::Authentication("invalid credentials".into()))
+        } else {
+            Ok(session("ok"))
+        }
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> lemmy::Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+fn login_test_dependencies() -> (FailOnceLoginApi, MemoryCredentialStore) {
+    (FailOnceLoginApi::default(), MemoryCredentialStore::default())
+}
+
+#[tokio::test]
+async fn login_stores_session_only_after_api_success() {
+    let (api, credentials) = login_test_dependencies();
+    api.fail_login_once();
+    let result = login(&api, &credentials, login_request()).await;
+    assert!(result.is_err());
+    assert!(credentials.all().is_empty());
+}
+
+fn profile_test_dependencies() -> (ProfileStore, MemoryCredentialStore) {
+    let path = std::env::temp_dir().join(format!("lemmy-logout-{}.toml", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    (ProfileStore::new(path), MemoryCredentialStore::default())
+}
+
+#[tokio::test]
+async fn logout_removes_session_and_keeps_non_secret_profile_metadata() {
+    let (profiles, credentials) = profile_test_dependencies();
+    profiles.create(profile("main")).unwrap();
+    credentials
+        .put_session(&ProfileId::from("main"), &session("secret"))
+        .await
+        .unwrap();
+    logout(&profiles, &credentials, &ProfileId::from("main"))
+        .await
+        .unwrap();
+    assert!(credentials.get_session(&ProfileId::from("main")).await.unwrap().is_none());
+    assert!(profiles.get(&ProfileId::from("main")).is_ok());
 }

@@ -245,7 +245,7 @@ pub struct DownloadManager {
 }
 
 struct DownloadManagerInner {
-    directory: PathBuf,
+    directory: Mutex<PathBuf>,
     client: reqwest::Client,
     history: SessionDownloadHistory,
     requests: Mutex<HashMap<DownloadId, DownloadRequest>>,
@@ -268,7 +268,7 @@ impl DownloadManager {
             .unwrap_or_else(|_| reqwest::Client::new());
         Self {
             inner: Arc::new(DownloadManagerInner {
-                directory,
+                directory: Mutex::new(directory),
                 client,
                 history: SessionDownloadHistory::default(),
                 requests: Mutex::new(HashMap::new()),
@@ -281,8 +281,16 @@ impl DownloadManager {
         }
     }
 
-    pub fn directory(&self) -> &Path {
-        &self.inner.directory
+    pub fn directory(&self) -> PathBuf {
+        self.inner.directory.lock().clone()
+    }
+
+    /// Point future downloads at a new root directory. In-flight downloads
+    /// keep their already-resolved destinations; the directory is created if
+    /// missing.
+    pub fn set_directory(&self, directory: PathBuf) {
+        let _ = fs::create_dir_all(&directory);
+        *self.inner.directory.lock() = directory;
     }
 
     pub fn history(&self) -> &SessionDownloadHistory {
