@@ -63,6 +63,11 @@ Accepted values are `feed`, `search <query>`, and `community <id>`. Anything
 else is rejected at load time so a typo never launches into an unexpected
 view.
 
+Because TOML assigns every bare `key = value` to the most recent `[section]`
+header, `startup` must appear **before the first `[` header** in the file
+(above `[keymaps]`); placing it after a section such as `[logging]` parses it
+as `logging.startup` and fails with an "unknown field" error.
+
 ## Keymaps
 
 ```toml
