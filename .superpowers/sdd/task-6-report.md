@@ -30,3 +30,38 @@
 ## Concerns
 
 - None identified within the Task 6 contract. Capability flags describe the core v3 endpoint family after a successful site response; endpoint-specific unsupported responses remain actionable authorization errors.
+
+
+## Task 6 review fix pass
+
+### Changed files
+
+- `src/api/http.rs`: Propagated reqwest response body-read failures, classified mutation transport/body/parse failures as outcome-uncertain, rejected empty successful bodies, preserved signed counts, derived capabilities from recognized Lemmy v3 site metadata, used shared base-path URL construction for login, restricted retries to explicit transient statuses, and normalized mutation comment post IDs from the response.
+- `src/api/fixtures.rs`: Added deterministic truncated/empty response, request-count, custom-body, and path-preserving login fixtures.
+- `tests/api_adapter.rs`: Added regression coverage for body-read and empty-body errors, negative scores/comments, mutation comment post IDs, login subpaths, unknown/malformed site metadata, unsupported endpoints, and non-transient retry behavior.
+
+### Fix details
+
+- `Response::text()` errors now become `AppError::Network`; mutation failures include `outcome uncertain`. A successful response with an empty body is an error rather than an empty JSON object.
+- Counts use the observed `counts` value when present, including negative values, and otherwise fall back to the post/comment value.
+- Mutation `comment_view` normalization reads `comment.post_id` instead of injecting `PostId(0)`.
+- Login uses the same `/api/v3/{path}` endpoint builder as other calls, preserving instance URL subpaths and fixture base overrides.
+- Read retries are bounded to 408, 429, 500, 502, 503, and 504; 501/505 and other statuses are not retried, and mutations remain single-attempt.
+- Site capability flags require valid site metadata, a recognized 0.18/0.19 Lemmy version, and the observed `local_site` v3 shape; unknown versions report no claimed capabilities. 404 responses retain actionable unsupported-capability text.
+
+### Verification
+
+Exact command and output:
+
+```text
+$ cargo test --test api_adapter
+cargo test: 13 passed (1 suite, 0.06s)
+```
+
+### Concerns
+
+- Capability detection intentionally reports no capabilities for unknown software versions or incomplete site metadata; endpoint-specific 404 responses remain actionable authorization errors.
+
+### Commit
+
+- Focused commit: `fix: address Lemmy adapter review findings`

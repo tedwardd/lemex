@@ -1,7 +1,7 @@
 use super::HttpLemmyApi;
 use crate::domain::{Profile, ProfileContext, ProfileId, SecretString, Session, UserId};
 use crate::error::{AppError, Result};
-use std::{net::TcpListener as StdTcpListener, path::PathBuf, sync::Arc, time::Duration};
+use std::{net::TcpListener as StdTcpListener, path::PathBuf, sync::{atomic::{AtomicUsize, Ordering}, Arc}, time::Duration};
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpListener};
 use url::Url;
 
@@ -10,6 +10,8 @@ struct FixtureRoute {
     status: u16,
     body: Option<String>,
     delay: Option<Duration>,
+    malformed_body: bool,
+    requests: Option<Arc<AtomicUsize>>,
 }
 
 pub struct FixtureServer { task: tokio::task::JoinHandle<()> }
@@ -28,27 +30,36 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
     let task = tokio::spawn(async move {
         loop {
             let Ok((mut stream, _)) = listener.accept().await else { break };
-            let route = FixtureRoute { path: route.path.clone(), status: route.status, body: route.body.clone(), delay: route.delay };
+            let route = FixtureRoute {
+                path: route.path.clone(),
+                status: route.status,
+                body: route.body.clone(),
+                delay: route.delay,
+                malformed_body: route.malformed_body,
+                requests: route.requests.clone(),
+            };
             tokio::spawn(async move {
                 let mut request = vec![0_u8; 8192];
                 let _ = stream.read(&mut request).await;
+                if let Some(requests) = &route.requests { requests.fetch_add(1, Ordering::SeqCst); }
                 if let Some(delay) = route.delay { tokio::time::sleep(delay).await; return; }
                 let request = String::from_utf8_lossy(&request);
                 let requested_path = request.lines().next().and_then(|line| line.split_whitespace().nth(1)).unwrap_or_default().split('?').next().unwrap_or_default();
                 if route.path.as_deref().is_some_and(|path| path != requested_path) {
-                    write_response(&mut stream, 404, r#"{"error":"fixture route not found"}"#).await;
+                    write_response(&mut stream, 404, r#"{"error":"fixture route not found"}"#, false).await;
                     return;
                 }
-                write_response(&mut stream, route.status, &route.body.unwrap_or_else(|| "{}".into())).await;
+                write_response(&mut stream, route.status, &route.body.unwrap_or_else(|| "{}".into()), route.malformed_body).await;
             });
         }
     });
     Ok((Url::parse(&format!("http://{address}/")).expect("local fixture URL"), Arc::new(FixtureServer { task })))
 }
 
-async fn write_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str) {
+async fn write_response(stream: &mut tokio::net::TcpStream, status: u16, body: &str, malformed_body: bool) {
     let reason = if status >= 400 { "Error" } else { "OK" };
-    let response = format!("HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
+    let content_length = if malformed_body { body.len() + 16 } else { body.len() };
+    let response = format!("HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {content_length}\r\nConnection: close\r\n\r\n{body}");
     let _ = stream.write_all(response.as_bytes()).await;
 }
 
@@ -58,17 +69,39 @@ fn api_for(server: Arc<FixtureServer>, base: Url, timeout: Duration) -> HttpLemm
 
 pub fn fixture_api(name: &str) -> HttpLemmyApi {
     let body = fixture_body(name).expect("fixture exists");
-    let (base, server) = start_server(FixtureRoute { path: None, status: 200, body: Some(body), delay: None }).expect("fixture server starts");
+    fixture_api_with_body(&body)
+}
+
+pub fn fixture_api_with_body(body: &str) -> HttpLemmyApi {
+    let (base, server) = start_server(FixtureRoute { path: None, status: 200, body: Some(body.into()), delay: None, malformed_body: false, requests: None }).expect("fixture server starts");
     api_for(server, base, Duration::from_secs(2))
 }
 
 pub fn fixture_api_with_status(path: &str, status: u16) -> HttpLemmyApi {
-    let (base, server) = start_server(FixtureRoute { path: Some(path.into()), status, body: Some(r#"{"error":"session expired"}"#.into()), delay: None }).expect("fixture server starts");
+    let (base, server) = start_server(FixtureRoute { path: Some(path.into()), status, body: Some(r#"{"error":"session expired"}"#.into()), delay: None, malformed_body: false, requests: None }).expect("fixture server starts");
     api_for(server, base, Duration::from_secs(2))
 }
 
+pub fn fixture_api_with_status_count(status: u16) -> (HttpLemmyApi, Arc<AtomicUsize>) {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let (base, server) = start_server(FixtureRoute { path: None, status, body: Some(r#"{"error":"fixture status"}"#.into()), delay: None, malformed_body: false, requests: Some(requests.clone()) }).expect("fixture server starts");
+    (api_for(server, base, Duration::from_secs(2)), requests)
+}
+
+pub fn truncated_body_fixture_api() -> HttpLemmyApi {
+    let (base, server) = start_server(FixtureRoute { path: None, status: 200, body: Some("{}".into()), delay: None, malformed_body: true, requests: None }).expect("fixture server starts");
+    api_for(server, base, Duration::from_secs(2))
+}
+
+pub fn login_fixture_api(path: &str) -> (HttpLemmyApi, Url) {
+    let normalized = format!("{}api/v3/user/login", path.trim_end_matches('/').to_owned() + "/");
+    let body = fixture_body("login.json").expect("fixture exists");
+    let (base, server) = start_server(FixtureRoute { path: Some(normalized), status: 200, body: Some(body), delay: None, malformed_body: false, requests: None }).expect("fixture server starts");
+    let instance_url = base.join(path.trim_start_matches('/')).expect("fixture instance URL");
+    (api_for(server, base, Duration::from_secs(2)), instance_url)
+}
 pub fn timeout_fixture_api() -> HttpLemmyApi {
-    let (base, server) = start_server(FixtureRoute { path: None, status: 200, body: None, delay: Some(Duration::from_secs(2)) }).expect("fixture server starts");
+    let (base, server) = start_server(FixtureRoute { path: None, status: 200, body: None, delay: Some(Duration::from_secs(2)), malformed_body: false, requests: None }).expect("fixture server starts");
     api_for(server, base, Duration::from_millis(50))
 }
 

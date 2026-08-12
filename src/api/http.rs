@@ -40,11 +40,14 @@ impl HttpLemmyApi {
         self
     }
 
-    fn endpoint(&self, ctx: &ProfileContext, path: &str) -> Result<Url> {
-        let mut url = self.base_url.clone().unwrap_or_else(|| ctx.profile.instance_url.clone());
+    fn endpoint_from(&self, mut url: Url, path: &str) -> Result<Url> {
         let base = url.path().trim_end_matches('/');
         url.set_path(&format!("{base}/api/v3/{path}"));
         Ok(url)
+    }
+
+    fn endpoint(&self, ctx: &ProfileContext, path: &str) -> Result<Url> {
+        self.endpoint_from(self.base_url.clone().unwrap_or_else(|| ctx.profile.instance_url.clone()), path)
     }
 
     fn auth_request(&self, request: reqwest::RequestBuilder, ctx: &ProfileContext) -> reqwest::RequestBuilder {
@@ -71,7 +74,9 @@ impl HttpLemmyApi {
             match request.send().await {
                 Ok(response) => {
                     if retry_read && is_transient(response.status()) && attempt + 1 < MAX_READ_ATTEMPTS {
-                        let _ = response.bytes().await;
+                        if let Err(error) = response.bytes().await {
+                            return Err(network_error(operation, format!("could not read response body: {error}"), false));
+                        }
                         tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1))).await;
                         continue;
                     }
@@ -102,12 +107,21 @@ impl HttpLemmyApi {
 }
 
 fn is_transient(status: StatusCode) -> bool {
-    matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS | StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT) || status.is_server_error()
+    matches!(status, StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS | StatusCode::INTERNAL_SERVER_ERROR | StatusCode::BAD_GATEWAY | StatusCode::SERVICE_UNAVAILABLE | StatusCode::GATEWAY_TIMEOUT)
+}
+
+fn network_error(operation: &str, detail: impl Into<String>, mutation: bool) -> AppError {
+    let detail = detail.into();
+    if mutation {
+        AppError::Network(format!("{operation} outcome uncertain: {detail}"))
+    } else {
+        AppError::Network(format!("{operation}: {detail}"))
+    }
 }
 
 async fn parse_response(response: Response, operation: &str, mutation: bool) -> Result<Value> {
     let status = response.status();
-    let body = response.text().await.unwrap_or_default();
+    let body = response.text().await.map_err(|error| network_error(operation, format!("could not read response body: {error}"), mutation))?;
     if !status.is_success() {
         let detail = server_detail(&body);
         let message = format!("{operation} ({status}): {detail}");
@@ -119,8 +133,10 @@ async fn parse_response(response: Response, operation: &str, mutation: bool) -> 
             _ => AppError::Network(message),
         });
     }
-    if body.trim().is_empty() { return Ok(Value::Object(serde_json::Map::new())); }
-    serde_json::from_str(&body).map_err(|error| AppError::Network(format!("{operation}: invalid JSON response: {error}")))
+    if body.trim().is_empty() {
+        return Err(network_error(operation, "empty response body", mutation));
+    }
+    serde_json::from_str(&body).map_err(|error| network_error(operation, format!("invalid JSON response: {error}"), mutation))
 }
 
 fn server_detail(body: &str) -> String {
@@ -131,6 +147,9 @@ fn server_detail(body: &str) -> String {
 }
 
 fn number(value: &Value, key: &str) -> i64 { value.get(key).and_then(Value::as_i64).unwrap_or_default() }
+fn metric(value: &Value, fallback: &Value, key: &str) -> i64 {
+    value.get(key).and_then(Value::as_i64).or_else(|| fallback.get(key).and_then(Value::as_i64)).unwrap_or_default()
+}
 fn string(value: &Value, key: &str) -> Option<String> { value.get(key).and_then(Value::as_str).map(ToOwned::to_owned) }
 
 fn normalize_post(value: &Value) -> Result<PostView> {
@@ -143,31 +162,36 @@ fn normalize_post(value: &Value) -> Result<PostView> {
         url,
         community_id: crate::domain::CommunityId(number(post, "community_id")),
         creator_id: UserId(number(post, "creator_id")),
-        score: number(value.get("counts").unwrap_or(post), "score").max(number(post, "score")),
-        comments: number(value.get("counts").unwrap_or(post), "comments").max(number(post, "comments")),
+        score: metric(value.get("counts").unwrap_or(&Value::Null), post, "score"),
+        comments: metric(value.get("counts").unwrap_or(&Value::Null), post, "comments"),
         published: string(post, "published"),
     })
 }
 
 fn normalize_comment(value: &Value, post_id: PostId) -> CommentView {
     let comment = value.get("comment").unwrap_or(value);
-    CommentView { id: CommentId(number(comment, "id")), post_id, content: string(comment, "content").unwrap_or_default(), creator_id: UserId(number(comment, "creator_id")), score: number(value.get("counts").unwrap_or(comment), "score").max(number(comment, "score")) }
+    CommentView { id: CommentId(number(comment, "id")), post_id, content: string(comment, "content").unwrap_or_default(), creator_id: UserId(number(comment, "creator_id")), score: metric(value.get("counts").unwrap_or(&Value::Null), comment, "score") }
 }
 
 #[async_trait::async_trait]
 impl LemmyApi for HttpLemmyApi {
     async fn site(&self, ctx: &ProfileContext) -> Result<SiteInfo> {
         let response = self.read_json(self.auth_request(self.client.get(self.endpoint(ctx, "site")?), ctx), "site").await?;
-        let site_view = response.get("site_view").unwrap_or(&response);
-        let site = site_view.get("site").unwrap_or(site_view);
+        let site_view = response.get("site_view").and_then(Value::as_object).ok_or_else(|| AppError::Network("site: response did not contain site_view metadata".into()))?;
+        let site = site_view.get("site").and_then(Value::as_object).ok_or_else(|| AppError::Network("site: response did not contain site metadata".into()))?;
+        let name = site.get("name").and_then(Value::as_str).ok_or_else(|| AppError::Network("site: response did not contain site name".into()))?;
+        let version = site.get("version").and_then(Value::as_str).ok_or_else(|| AppError::Network("site: response did not contain site version".into()))?;
+        let recognized_version = version.split('.').next() == Some("0") && matches!(version.split('.').nth(1), Some("18" | "19"));
+        let observed_v3_shape = site_view.get("local_site").is_some_and(Value::is_object);
+        let core_v3 = recognized_version && observed_v3_shape;
         Ok(SiteInfo {
-            name: string(site, "name").unwrap_or_else(|| "Lemmy".into()),
-            version: string(site, "version").unwrap_or_default(),
+            name: name.to_owned(),
+            version: version.to_owned(),
             capabilities: Capabilities {
-                supports_login: true,
-                supports_feed: true,
-                supports_post: true,
-                supports_mutations: true,
+                supports_login: core_v3,
+                supports_feed: core_v3,
+                supports_post: core_v3,
+                supports_mutations: core_v3,
             },
         })
     }
@@ -193,7 +217,15 @@ impl LemmyApi for HttpLemmyApi {
     }
 
     async fn login(&self, request: LoginRequest) -> Result<Session> {
-        let endpoint = request.instance_url.join("api/v3/user/login").map_err(|error| AppError::Network(format!("login URL: {error}")))?;
+        let endpoint_base = if let Some(mut base) = self.base_url.clone() {
+            if request.instance_url.path() != "/" && !request.instance_url.path().is_empty() {
+                base.set_path(request.instance_url.path());
+            }
+            base
+        } else {
+            request.instance_url
+        };
+        let endpoint = self.endpoint_from(endpoint_base, "user/login")?;
         let body = json!({ "username_or_email": request.username, "password": request.password.expose_secret() });
         let response = self.mutation_request(self.client.post(endpoint).json(&body), "login").await?;
         let token = response.get("jwt").and_then(Value::as_str).ok_or_else(|| AppError::Authentication("login response did not contain a session token".into()))?;
@@ -206,7 +238,11 @@ impl LemmyApi for HttpLemmyApi {
         let body = self.auth_body(ctx, body);
         let request = self.auth_request(self.client.post(self.endpoint(ctx, path)?).json(&body), ctx);
         let response = self.mutation_request(request, path).await?;
-        Ok(MutationResult { success: true, post: response.get("post_view").map(normalize_post).transpose()?, comment: response.get("comment_view").map(|value| normalize_comment(value, PostId(0))), message: string(&response, "message") })
+        let comment = response.get("comment_view").map(|value| {
+            let comment = value.get("comment").unwrap_or(value);
+            normalize_comment(value, PostId(number(comment, "post_id")))
+        });
+        Ok(MutationResult { success: true, post: response.get("post_view").map(normalize_post).transpose()?, comment, message: string(&response, "message") })
     }
 }
 
