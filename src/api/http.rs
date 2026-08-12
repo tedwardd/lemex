@@ -264,11 +264,13 @@ fn normalize_post(value: &Value) -> Result<PostView> {
 
 fn normalize_comment(value: &Value, post_id: PostId) -> CommentView {
     let comment = value.get("comment").unwrap_or(value);
+    let creator = value.get("creator").unwrap_or(&Value::Null);
     CommentView {
         id: CommentId(number(comment, "id")),
         post_id,
         content: string(comment, "content").unwrap_or_default(),
         creator_id: UserId(number(comment, "creator_id")),
+        creator_name: string(creator, "name").unwrap_or_else(|| "unknown".to_owned()),
         score: metric(
             value.get("counts").unwrap_or(&Value::Null),
             comment,

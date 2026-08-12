@@ -694,6 +694,7 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_detail() {
         id: lemmy::CommentId(1),
         post_id: PostId(1),
         content: "stale".into(),
+        creator_name: "alice".into(),
         creator_id: lemmy::UserId(1),
         score: 0,
     };
@@ -766,6 +767,7 @@ async fn back_invalidates_inflight_comments_result() {
         id: lemmy::CommentId(1),
         post_id: PostId(1),
         content: "stale".into(),
+        creator_name: "alice".into(),
         creator_id: lemmy::UserId(1),
         score: 0,
     };
@@ -1142,6 +1144,7 @@ impl LemmyApi for ThreadApi {
             id: lemmy::CommentId(10),
             post_id: id,
             content: "A real comment".into(),
+            creator_name: "alice".into(),
             creator_id: lemmy::UserId(2),
             score: 3,
         }])

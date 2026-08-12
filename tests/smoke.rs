@@ -47,7 +47,7 @@ fn profile_context(instance_url: Url) -> ProfileContext {
 }
 
 /// A fixture body that serves both a post and one thread comment.
-const POST_THREAD_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Fixture post","body":"Fixture body","url":"https://example.com/fixture","community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z","score":3},"counts":{"score":3,"comments":1}},"comments":[{"comment":{"id":1,"post_id":1,"content":"Fixture comment","creator_id":1},"counts":{"score":1}}]}"#;
+const POST_THREAD_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Fixture post","body":"Fixture body","url":"https://example.com/fixture","community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z","score":3},"counts":{"score":3,"comments":1}},"comments":[{"comment":{"id":1,"post_id":1,"content":"Fixture comment","creator_id":1},"creator":{"id":1,"name":"alice"},"counts":{"score":1}}]}"#;
 
 /// A fixture body that reports a successful post mutation.
 const MUTATION_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Voted post","body":null,"community_id":1,"creator_id":1,"score":5},"counts":{"score":5,"comments":0}}}"#;

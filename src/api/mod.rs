@@ -64,6 +64,8 @@ pub struct CommentView {
     pub post_id: PostId,
     pub content: String,
     pub creator_id: crate::domain::UserId,
+    /// Display name of the comment author, for thread rendering.
+    pub creator_name: String,
     pub score: i64,
 }
 

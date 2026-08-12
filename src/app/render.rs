@@ -3,7 +3,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{
+        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+    },
 };
 
 use super::help::{HelpIndex, contextual_help, mode_label};
@@ -108,35 +110,50 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
         return;
     }
 
-    let mut post_items = model
+    let mut post_rows = model
         .posts
         .iter()
         .map(|post| {
-            ListItem::new(format!(
-                "{}  [score: {}]  [comments: {}]",
-                post.title, post.score, post.comments
-            ))
+            Row::new(vec![
+                Cell::from(post.score.to_string()),
+                Cell::from(post.comments.to_string()),
+                Cell::from(post.title.as_str()),
+            ])
         })
         .collect::<Vec<_>>();
     if model.has_more {
-        post_items.push(ListItem::new("… more posts available (load more)"));
+        post_rows.push(Row::new(vec![
+            Cell::from("…"),
+            Cell::from(""),
+            Cell::from("more posts available (load more)"),
+        ]));
     }
-    let posts = post_items;
-    let mut list_state = ListState::default();
-    list_state.select(selected_index(model));
-    let primary = List::new(posts)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(if model.search.is_empty() {
-                    "Primary content"
-                } else {
-                    "Search results"
-                }),
-        )
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
-        .highlight_symbol("▶ ");
-    frame.render_stateful_widget(primary, body[0], &mut list_state);
+    let table = Table::new(
+        post_rows,
+        [
+            Constraint::Length(6),
+            Constraint::Length(9),
+            Constraint::Min(10),
+        ],
+    )
+    .header(
+        Row::new(vec!["score", "comments", "title"])
+            .style(Style::default().add_modifier(Modifier::BOLD)),
+    )
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(if model.search.is_empty() {
+                "Primary content"
+            } else {
+                "Search results"
+            }),
+    )
+    .row_highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+    .highlight_symbol("▶ ");
+    let mut table_state = TableState::default();
+    table_state.select(selected_index(model));
+    frame.render_stateful_widget(table, body[0], &mut table_state);
 
     let detail_text = match &model.detail {
         Some(detail) => {
@@ -154,15 +171,16 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
                 "Thread comments: {}",
                 detail.comments.len()
             )));
-            // Blank lines separate comments; the score is prefixed so long
-            // content can never push it off the pane, and the server-side
-            // ids stay out of the UI.
+            // Blank lines separate comments; the score and author lead each
+            // comment so long content can never push them off the pane, and
+            // server-side ids stay out of the UI.
             for comment in &detail.comments {
                 lines.push(Line::from(""));
                 lines.push(Line::from(format!(
-                    "[score: {}]  {}",
-                    comment.score, comment.content
+                    "[{}] {}:",
+                    comment.score, comment.creator_name
                 )));
+                lines.push(Line::from(comment.content.as_str()));
             }
             lines
         }
@@ -370,14 +388,14 @@ mod tests {
     }
 
     fn rendered(model: &RenderModel) -> String {
-        rendered_at(model, 80)
+        rendered_at(model, 80, 24)
     }
 
-    /// Render into a terminal of the given width so layout tests can verify
+    /// Render into a terminal of the given size so layout tests can verify
     /// trailing row metadata at a realistic pane size instead of a narrow
-    /// 80-column split.
-    fn rendered_at(model: &RenderModel, width: u16) -> String {
-        let backend = TestBackend::new(width, 24);
+    /// 80-column split, and can see a full detail thread below the fold.
+    fn rendered_at(model: &RenderModel, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
         let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
         terminal
             .draw(|frame| render(frame, model))
@@ -405,14 +423,18 @@ mod tests {
             comments: 7,
             published: None,
         }];
-        let text = rendered_at(&model, 140);
+        let text = rendered_at(&model, 140, 24);
         assert!(
-            text.contains("[score: 12]") && text.contains("[comments: 7]"),
-            "feed rows must show the score and comment count; rendered: {text}"
+            text.contains("score") && text.contains("comments") && text.contains("title"),
+            "the feed table must carry a column header; rendered: {text}"
         );
         assert!(
-            !text.contains("1  Threaded post"),
-            "feed rows must not expose the post id; rendered: {text}"
+            text.contains("Threaded post") && text.contains("12") && text.contains("7"),
+            "the row must show the title with the score and comment count; rendered: {text}"
+        );
+        assert!(
+            !text.contains("1  Threaded post") && !text.contains("Post 1:"),
+            "the feed must not expose post ids; rendered: {text}"
         );
     }
 
@@ -437,6 +459,7 @@ mod tests {
                     post_id: crate::PostId(1),
                     content: "A comment".into(),
                     creator_id: crate::UserId(2),
+                    creator_name: "alice".into(),
                     score: 3,
                 },
                 crate::api::CommentView {
@@ -444,14 +467,19 @@ mod tests {
                     post_id: crate::PostId(1),
                     content: "Another comment".into(),
                     creator_id: crate::UserId(2),
+                    creator_name: "bob".into(),
                     score: -1,
                 },
             ],
         });
-        let text = rendered(&model);
+        let text = rendered_at(&model, 140, 48);
         assert!(
-            text.contains("[score: 3]") && text.contains("[score: -1]"),
-            "each comment must show its score; rendered: {text}"
+            text.contains("[3] alice:") && text.contains("[-1] bob:"),
+            "each comment must show its score and author; rendered: {text}"
+        );
+        assert!(
+            text.contains("A comment") && text.contains("Another comment"),
+            "comment content must render under its author line; rendered: {text}"
         );
         assert!(
             !text.contains("Comment 10:") && !text.contains("Comment 11:"),
