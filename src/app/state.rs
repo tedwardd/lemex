@@ -45,6 +45,7 @@ pub struct Status {
     pub retryable: bool,
     pub stale: bool,
     pub pending: bool,
+    pub confirmation_pending: bool,
     pub profile_name: String,
     pub instance_url: String,
 }
@@ -57,6 +58,7 @@ impl Status {
             retryable: false,
             stale: false,
             pending: false,
+            confirmation_pending: false,
             profile_name: context.profile.account_label.clone().unwrap_or_else(|| context.profile.id.to_string()),
             instance_url: context.profile.instance_url.to_string(),
         }
@@ -74,6 +76,7 @@ impl Status {
         self.error = None;
         self.retryable = false;
         self.pending = false;
+        self.confirmation_pending = false;
     }
 
     pub fn failure(&mut self, error: impl Into<String>) {
@@ -81,6 +84,7 @@ impl Status {
         self.error = Some(error.into());
         self.retryable = true;
         self.pending = false;
+        self.confirmation_pending = false;
     }
 }
 

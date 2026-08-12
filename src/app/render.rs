@@ -87,6 +87,9 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     if model.status.stale || model.status.retryable {
         status_lines.push(Line::from("[STALE] Data may be out of date; refresh to retry."));
     }
+    if model.status.confirmation_pending {
+        status_lines.push(Line::from("[PENDING] Confirmation required before network activity."));
+    }
     if model.status.pending {
         status_lines.push(Line::from("[PENDING] Network activity in progress."));
     }

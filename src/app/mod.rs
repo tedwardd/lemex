@@ -210,7 +210,13 @@ impl App {
     pub fn is_quit(&self) -> bool { self.quit }
 
     fn prepare_action(&mut self, action: &AppAction) {
-        if matches!(action, AppAction::Input(Command::Refresh)) || (matches!(action, AppAction::Confirm) && self.state.pending.is_some()) {
+        if matches!(action, AppAction::Input(Command::Refresh))
+            || (matches!(action, AppAction::Confirm) && self.state.pending.is_some())
+            || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some())
+        {
+            if matches!(action, AppAction::Confirm) {
+                self.state.status.confirmation_pending = false;
+            }
             self.state.status.pending = true;
         }
     }
@@ -339,8 +345,9 @@ impl App {
 
     async fn delete_post(&mut self, id: crate::PostId) -> Result<()> {
         self.state.pending = Some(crate::app::actions::PendingAction::DeletePost { profile: self.state.active.profile.id.clone(), id });
-        self.state.status.pending = true;
-self.state.status.message = format!("confirm deletion of post {:?}", id);
+        self.state.status.pending = false;
+        self.state.status.confirmation_pending = true;
+        self.state.status.message = format!("confirm deletion of post {:?}", id);
         self.state.status.error = None;
         Ok(())
     }
@@ -348,6 +355,7 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
     async fn confirm_pending(&mut self) -> Result<()> {
         let Some(crate::app::actions::PendingAction::DeletePost { profile, id }) = self.state.pending.take() else { return Ok(()); };
         if profile != self.state.active.profile.id { self.cancel_pending(); return Ok(()); }
+        self.state.status.confirmation_pending = false;
         self.state.status.pending = true;
         let mutation = Mutation::DeletePost(id);
         let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
@@ -355,10 +363,11 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
         self.apply_api_result(ApiResult::Mutation { profile, request, draft: None, mutation, result });
         Ok(())
     }
-
     fn cancel_pending(&mut self) {
+        let had_confirmation = self.state.pending.is_some() || self.state.status.confirmation_pending;
         self.state.pending = None;
-        if self.state.status.pending { self.state.status.pending = false; self.state.status.success("cancelled"); }
+        self.state.status.confirmation_pending = false;
+        if self.state.status.pending || had_confirmation { self.state.status.success("cancelled"); }
     }
 
     fn invalidate_content_requests(&mut self) {
@@ -482,5 +491,25 @@ mod tests {
         app.prepare_action(&action);
         model = app.render_model();
         assert!(model.status.pending);
+        app.state.view.posts.push(crate::api::PostView {
+            id: crate::PostId(1),
+            title: "selected".into(),
+            body: None,
+            url: None,
+            community_id: crate::CommunityId(1),
+            creator_id: crate::UserId(1),
+            score: 0,
+            comments: 0,
+            published: None,
+        });
+        app.state.view.selected = Some(0);
+        app.state.status.pending = false;
+        app.prepare_action(&AppAction::OpenSelected);
+        assert!(app.render_model().status.pending);
+
+        app.dispatch(AppAction::DeletePost(crate::PostId(1))).await.unwrap();
+        let confirmation = app.render_model();
+        assert!(confirmation.status.confirmation_pending);
+        assert!(!confirmation.status.pending);
     }
 }

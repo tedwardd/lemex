@@ -52,3 +52,22 @@
 - The render model is refreshed synchronously before the action `JoinHandle` is spawned, after setting the pending marker for refresh and confirmation actions. Rendering still receives only the cloned read-only `RenderModel`.
 - The existing `status.pending` field also represents delete confirmation, so its existing `[PENDING]` presentation remains unchanged until that separate status-model concern is addressed.
 
+## Residual pending-state follow-up
+
+### Changed files
+
+- `src/app/state.rs`: distinguishes network `pending` from `confirmation_pending` in `Status`, preserving the distinction in read-only `RenderModel` snapshots.
+- `src/app/mod.rs`: marks selected post opens pending before their async request, clears confirmation state when confirming, and records delete confirmation without presenting it as network activity; regressions cover open, refresh, and delete-confirmation snapshots.
+- `src/app/render.rs`: renders separate confirmation and network pending indicators.
+- `.superpowers/sdd/task-8-report.md`: records the follow-up and verification.
+
+### Verification
+
+- `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
+
+### Fix details
+
+- Delete staging now sets `confirmation_pending` without setting network `pending`; confirmation and cancellation clear the correct state, while confirmed mutation requests set network `pending` before awaiting.
+- `OpenSelected` receives the same pre-spawn pending snapshot treatment as refresh, but only when a post is selected; no-selection open remains a no-op.
+
