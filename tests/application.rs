@@ -1,6 +1,8 @@
 use std::{
+    ffi::OsString,
+    path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -79,6 +81,105 @@ fn failing_mutation_app() -> App {
         context,
         Arc::new(MemoryCredentialStore::default()),
     )
+}
+
+/// A disposable scratch XDG root that removes itself on drop; mirrors
+/// `tests/support::ScratchDir`.
+struct XdgScratch {
+    root: PathBuf,
+}
+
+impl XdgScratch {
+    fn new(label: &str) -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "lemmy-application-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(root.join("config").join("lemmy"))
+            .expect("create scratch config directory");
+        std::fs::create_dir_all(root.join("cache").join("lemmy"))
+            .expect("create scratch cache directory");
+        Self { root }
+    }
+}
+
+impl Drop for XdgScratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+/// Serializes the whole-body XDG redirect in `XdgRedirect`.
+///
+/// `std::env::set_var` is not thread-safe. Parallel tests in this binary
+/// resolve (but never mutate) the XDG environment while constructing apps,
+/// so the redirect window only serializes against itself.
+static XDG_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Redirects `XDG_CONFIG_HOME` and `XDG_CACHE_HOME` to a per-test scratch
+/// directory for the whole test body, restoring the previous values on drop.
+///
+/// Mirrors the redirect window in `tests/support::FixtureApp::build`, but
+/// spans the entire body: tests that resolve the default profile store
+/// (`lemmy::profiles::default_store()`, `App::new`) or the default cache
+/// location after construction never read or materialize the real
+/// `~/.config/lemmy/config.toml`. The window is serialized process-wide by
+/// `XDG_ENV_LOCK` and the environment is restored before the scratch
+/// directory is removed.
+struct XdgRedirect {
+    _lock: MutexGuard<'static, ()>,
+    previous_config: Option<OsString>,
+    previous_cache: Option<OsString>,
+    /// Owned scratch directory kept alive until the environment is
+    /// restored; held for its drop side effect.
+    _scratch: XdgScratch,
+}
+
+impl XdgRedirect {
+    fn new(label: &str) -> Self {
+        let scratch = XdgScratch::new(label);
+        let _lock = XDG_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let previous_config = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_cache = std::env::var_os("XDG_CACHE_HOME");
+        // SAFETY: the whole redirect window is serialized by `XDG_ENV_LOCK`,
+        // so no other thread reads or mutates these variables while they are
+        // redirected; the previous values are restored in `Drop` before the
+        // guard is released.
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", scratch.root.join("config"));
+            std::env::set_var("XDG_CACHE_HOME", scratch.root.join("cache"));
+        }
+        Self {
+            _lock,
+            previous_config,
+            previous_cache,
+            _scratch: scratch,
+        }
+    }
+}
+
+impl Drop for XdgRedirect {
+    fn drop(&mut self) {
+        // SAFETY: still holding `XDG_ENV_LOCK`; the previous values were
+        // read under the same lock above. See the comment on the matching
+        // set_var calls.
+        unsafe {
+            match &self.previous_config {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match &self.previous_cache {
+                Some(value) => std::env::set_var("XDG_CACHE_HOME", value),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+        }
+    }
 }
 
 #[test]
@@ -1063,6 +1164,9 @@ async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
 
 #[tokio::test]
 async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
+    // `App::with_profile_store` still resolves the downloads directory from
+    // `XDG_CACHE_HOME`, so keep the whole body redirected to scratch.
+    let _xdg = XdgRedirect::new("profile-refresh-replace");
     let path = std::env::temp_dir().join(format!(
         "lemmy-application-profile-refresh-replace-{}.toml",
         std::process::id()
@@ -1121,8 +1225,10 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
 
 #[tokio::test]
 async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
-    let store = lemmy::profiles::default_store();
-    let original = store.load_config().unwrap();
+    // `App::new` resolves the default profile store and downloads directory
+    // from the XDG env; keep the whole body redirected to scratch so the
+    // real `~/.config/lemmy/config.toml` is never read or materialized.
+    let _xdg = XdgRedirect::new("active-unpersisted");
     let id = ProfileId::from(format!(
         "active-unpersisted-{}",
         std::time::SystemTime::now()
@@ -1130,7 +1236,6 @@ async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
             .unwrap()
             .as_nanos()
     ));
-    assert!(!original.profiles.iter().any(|profile| profile.id == id));
     let old = Profile {
         id: id.clone(),
         instance_url: Url::parse("http://old.example/").unwrap(),
@@ -1176,7 +1281,6 @@ async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
         .unwrap()
         .unwrap();
     let title = cached.entity["items"][0]["title"].clone();
-    store.save_config(&original).unwrap();
     assert_eq!(title, "cached");
 }
 
