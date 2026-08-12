@@ -45,6 +45,37 @@ terminal capability check also passes, images are transmitted through the
 Kitty graphics protocol and rendered inline. This is strictly opt-in: the
 default configuration uses mailcap even when Kitty support is available.
 
+The capability check never passes inside tmux: tmux does not forward the
+graphics protocol, so even a tmux configured with `default-terminal
+xterm-kitty` falls back to mailcap instead of emitting escape sequences the
+pane would swallow.
+
+## tmux and SSH
+
+The client runs the media handlers **on the host where it executes**, not on
+your local machine:
+
+- **External handlers (`xdg-open`, mailcap, `[media.handlers]`)** open on
+  that host's display. Over SSH:
+  - With X11 forwarding (`ssh -X`/`-Y`), `$DISPLAY` is set and the handler
+    opens locally through the tunnel — tmux does not interfere.
+  - Without forwarding (typical headless server), there is no display: the
+    client refuses to spawn the handler and reports
+    `no display on this host; … use :download-media and view the file
+    locally` instead of silently doing nothing.
+- **Kitty inline rendering** cannot work through tmux at all (see above).
+  Over a plain SSH session into a local Kitty terminal it can work, but only
+  when no tmux is in the middle.
+- **The reliable tmux/SSH path is `:download-media`** to the remote disk,
+  then view the file locally (scp/sftp, a synced directory, or
+  `:downloads copy` to grab the path). `:downloads reopen` still needs a
+  display on the remote host.
+
+Custom handlers that do not need a display (for example copying the file to
+a shared location) can be run by setting a dummy `DISPLAY` in the client's
+environment; the guard only checks for a non-empty `$DISPLAY` or
+`$WAYLAND_DISPLAY`.
+
 ## Downloads
 
 - `:download-media` downloads the selected post's media asynchronously and
@@ -87,4 +118,9 @@ never own their local path and are refused.
   `overwrite`/`keep` decision.
 - **Kitty rendering does not happen** — the terminal does not advertise
   Kitty support, or `media.kitty_enabled` is off. The client falls back to
-  mailcap, which is the intended default.
+  mailcap, which is the intended default. Inside tmux the capability check
+  always fails by design.
+- **"no display on this host; …"** — the client is running on a machine
+  without `$DISPLAY`/`$WAYLAND_DISPLAY` (headless SSH, no X11 forwarding).
+  Use `:download-media` and view the file locally, or forward X11 so
+  `xdg-open` can reach your display.

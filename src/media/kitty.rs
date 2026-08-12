@@ -6,11 +6,30 @@ use crate::error::{AppError, Result};
 /// support. This is a conservative environment check (the `TERM` value or the
 /// presence of `KITTY_WINDOW_ID`); it never writes to the terminal.
 pub fn detect_support() -> bool {
-    let term = std::env::var("TERM").unwrap_or_default();
-    if term.contains("kitty") {
-        return true;
+    detect_support_in(
+        std::env::var("TERM").ok().as_deref(),
+        std::env::var_os("KITTY_WINDOW_ID").is_some(),
+        std::env::var_os("TMUX").is_some(),
+    )
+}
+
+/// Pure capability decision: Kitty graphics require a Kitty terminal, and
+/// tmux never forwards the graphics protocol — even a `TERM` that claims
+/// kitty (for example a `default-terminal xterm-kitty` tmux configuration)
+/// cannot render inline through a tmux pane.
+pub fn detect_support_in(term: Option<&str>, kitty_window_id: bool, tmux: bool) -> bool {
+    if tmux {
+        return false;
     }
-    std::env::var("KITTY_WINDOW_ID").is_ok()
+    term.is_some_and(|term| term.contains("kitty")) || kitty_window_id
+}
+
+/// Whether the host the client runs on has a display for external GUI
+/// handlers. Over plain SSH without X11 forwarding both are unset, and a
+/// spawned `xdg-open` would fail invisibly.
+pub fn environment_has_display(display: Option<&str>, wayland_display: Option<&str>) -> bool {
+    display.is_some_and(|value| !value.is_empty())
+        || wayland_display.is_some_and(|value| !value.is_empty())
 }
 
 /// Produce the escape sequences that transmit and place a raster file through
@@ -79,4 +98,29 @@ fn base64_encode(bytes: &[u8]) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{detect_support_in, environment_has_display};
+
+    #[test]
+    fn kitty_is_unsupported_inside_tmux_even_with_a_kitty_term() {
+        assert!(
+            !detect_support_in(Some("xterm-kitty"), true, true),
+            "tmux never forwards the graphics protocol"
+        );
+        assert!(detect_support_in(Some("xterm-kitty"), false, false));
+        assert!(detect_support_in(None, true, false));
+        assert!(!detect_support_in(Some("screen-256color"), false, false));
+        assert!(!detect_support_in(None, false, false));
+    }
+
+    #[test]
+    fn display_detection_requires_x11_or_wayland() {
+        assert!(environment_has_display(Some(":0"), None));
+        assert!(environment_has_display(None, Some("wayland-0")));
+        assert!(!environment_has_display(None, None));
+        assert!(!environment_has_display(Some(""), None));
+    }
 }
