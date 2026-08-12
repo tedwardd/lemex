@@ -154,3 +154,31 @@ Output:
 ```text
 cargo test: 20 passed (1 suite, 0.11s)
 ```
+## Task 7 lifecycle review integrity fixes
+
+### Changed files
+
+- `src/app/repository.rs`: Reconciled background feed snapshots with confirmed post updates and profile-scoped deletion tombstones while holding the shared cache-write lock; applied tombstones and confirmed updates during cached-feed rehydration; added profile context epochs that reject refresh writes from replaced instances.
+- `src/app/mod.rs`: Invalidated repository refresh state and context epochs when `ProfileCommand::New` replaces an existing profile ID.
+- `tests/application.rs`: Added deterministic regressions for a refresh racing a confirmed post update, tombstone filtering during profile-switch rehydration, and an in-flight refresh from an old same-ID profile instance.
+- `.superpowers/sdd/task-7-report.md`: Appended this lifecycle review fix evidence.
+
+### Fix details
+
+- Confirmed mutation records and tombstones are updated under the same write synchronization used by refresh cache writes. A refresh takes that lock before reconciling its API snapshot, so either ordering preserves the confirmed mutation and deletion outcome.
+- `cached_feed` now reconciles and persists tombstone-filtered/confirmed content before returning it, so profile switches cannot resurrect deleted posts from persistent cache.
+- Repository context epochs are incremented on same-ID profile replacement and captured by each refresh. Late refreshes from the old instance fail the epoch check and cannot write into the replacement profile's cache.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 23 passed (1 suite, 0.11s)
+```

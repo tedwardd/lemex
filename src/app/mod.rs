@@ -116,6 +116,9 @@ impl App {
                 };
                 let replacing = config.profiles.iter().any(|existing| existing.id == profile.id);
                 if replacing {
+                    self.repository.invalidate_profile_context(&profile.id);
+                }
+                if replacing {
                     if let Err(error) = self.repository.credentials.delete_session(&profile.id).await {
                         self.state.status.failure(error.to_string());
                         return Ok(());

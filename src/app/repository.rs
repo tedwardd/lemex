@@ -29,15 +29,29 @@ pub struct Repository {
     pub cache: Arc<dyn CacheStore>,
     pub credentials: Arc<dyn CredentialStore>,
     deleted_posts: Arc<Mutex<HashSet<(crate::ProfileId, crate::PostId)>>>,
+    confirmed_posts: Arc<Mutex<HashMap<(crate::ProfileId, crate::PostId), PostView>>>,
     refreshes: Arc<Mutex<HashMap<(crate::ProfileId, FeedKey), RefreshState>>>,
+    context_epochs: Arc<Mutex<HashMap<crate::ProfileId, u64>>>,
     cache_writes: Arc<Mutex<()>>,
 }
+
 impl Repository {
     pub fn new(api: Arc<dyn LemmyApi>, cache: Arc<dyn CacheStore>, credentials: Arc<dyn CredentialStore>) -> Self {
-        Self { api, cache, credentials, deleted_posts: Arc::new(Mutex::new(HashSet::new())), refreshes: Arc::new(Mutex::new(HashMap::new())), cache_writes: Arc::new(Mutex::new(())) }
+        Self {
+            api,
+            cache,
+            credentials,
+            deleted_posts: Arc::new(Mutex::new(HashSet::new())),
+            confirmed_posts: Arc::new(Mutex::new(HashMap::new())),
+            refreshes: Arc::new(Mutex::new(HashMap::new())),
+            context_epochs: Arc::new(Mutex::new(HashMap::new())),
+            cache_writes: Arc::new(Mutex::new(())),
+        }
     }
 
-    fn register_refresh(&self, profile: &crate::ProfileId, key: &FeedKey, requested: u64) -> u64 {
+    fn register_refresh(&self, profile: &crate::ProfileId, key: &FeedKey, requested: u64) -> (u64, u64) {
+        let epochs = self.context_epochs.lock().expect("context epoch state poisoned");
+        let epoch = *epochs.get(profile).unwrap_or(&0);
         let mut refreshes = self.refreshes.lock().expect("refresh state poisoned");
         let state = refreshes.entry((profile.clone(), key.clone())).or_default();
         let generation = if requested == 0 { state.latest.saturating_add(1) } else { requested };
@@ -45,11 +59,12 @@ impl Repository {
             state.latest = generation;
             state.completed = None;
         }
-        generation
+        (generation, epoch)
     }
 
-    fn write_refresh(&self, profile: &crate::ProfileId, key: &FeedKey, generation: u64, feed: &CachedFeed) -> Result<bool> {
-        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
+    fn write_refresh_locked(&self, profile: &crate::ProfileId, key: &FeedKey, generation: u64, epoch: u64, feed: &CachedFeed) -> Result<bool> {
+        let epochs = self.context_epochs.lock().expect("context epoch state poisoned");
+        if epochs.get(profile).copied().unwrap_or_default() != epoch { return Ok(false); }
         let mut refreshes = self.refreshes.lock().expect("refresh state poisoned");
         let state = refreshes.entry((profile.clone(), key.clone())).or_default();
         if state.latest != generation { return Ok(false); }
@@ -58,10 +73,30 @@ impl Repository {
         Ok(true)
     }
 
-
-    fn filter_deleted(&self, profile: &crate::ProfileId, page: &mut Page<PostView>) {
+    fn reconcile_page(&self, profile: &crate::ProfileId, page: &mut Page<PostView>) {
         let deleted = self.deleted_posts.lock().expect("deleted post set poisoned");
         page.items.retain(|post| !deleted.contains(&(profile.clone(), post.id)));
+        let confirmed = self.confirmed_posts.lock().expect("confirmed post state poisoned");
+        for post in &mut page.items {
+            if let Some(updated) = confirmed.get(&(profile.clone(), post.id)) { *post = updated.clone(); }
+        }
+        let present = page.items.iter().map(|post| post.id).collect::<HashSet<_>>();
+        for ((mutation_profile, id), post) in confirmed.iter() {
+            if mutation_profile == profile && !deleted.contains(&(profile.clone(), *id)) && !present.contains(id) {
+                page.items.push(post.clone());
+            }
+        }
+    }
+
+    pub fn invalidate_profile_context(&self, profile: &crate::ProfileId) {
+        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
+        let mut epochs = self.context_epochs.lock().expect("context epoch state poisoned");
+        let epoch = epochs.entry(profile.clone()).or_default();
+        *epoch = epoch.saturating_add(1);
+        let mut refreshes = self.refreshes.lock().expect("refresh state poisoned");
+        refreshes.retain(|(id, _), _| id != profile);
+        self.deleted_posts.lock().expect("deleted post set poisoned").retain(|(id, _)| id != profile);
+        self.confirmed_posts.lock().expect("confirmed post state poisoned").retain(|(id, _), _| id != profile);
     }
 
     pub async fn feed(&self, context: &ProfileContext, query: FeedQuery) -> Result<CachedRead<Page<PostView>>> {
@@ -70,37 +105,45 @@ impl Repository {
 
     pub async fn feed_with_generation(&self, context: &ProfileContext, query: FeedQuery, requested_generation: u64) -> Result<CachedRead<Page<PostView>>> {
         let key = FeedKey::new(feed_key(&query));
-        let generation = self.register_refresh(&context.profile.id, &key, requested_generation);
+        let (generation, epoch) = self.register_refresh(&context.profile.id, &key, requested_generation);
         let Some(mut cached) = self.cache.read_feed(&context.profile.id, &key)? else {
             let mut page = self.api.feed(context, query).await?;
-            self.filter_deleted(&context.profile.id, &mut page);
-            let _ = self.write_refresh(&context.profile.id, &key, generation, &CachedFeed::new(page_to_value(&page), unix_now(), false))?;
+            let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
+            self.reconcile_page(&context.profile.id, &mut page);
+            let _ = self.write_refresh_locked(&context.profile.id, &key, generation, epoch, &CachedFeed::new(page_to_value(&page), unix_now(), false))?;
             return Ok(CachedRead { value: page, stale: false, refresh_error: None });
         };
         let mut page = page_from_value(&cached.entity)?;
-        self.filter_deleted(&context.profile.id, &mut page);
+        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
+        self.reconcile_page(&context.profile.id, &mut page);
         cached.entity = page_to_value(&page);
         cached.stale = true;
-        let _ = self.write_refresh(&context.profile.id, &key, generation, &cached)?;
+        let _ = self.write_refresh_locked(&context.profile.id, &key, generation, epoch, &cached)?;
+        drop(_cache_write);
         let api = self.api.clone();
         let repository = self.clone();
         let context = context.clone();
         tokio::spawn(async move {
             if let Ok(mut page) = api.feed(&context, query).await {
-                let deleted = repository.deleted_posts.lock().expect("deleted post set poisoned");
-                page.items.retain(|post| !deleted.contains(&(context.profile.id.clone(), post.id)));
-                drop(deleted);
-                let _ = repository.write_refresh(&context.profile.id, &key, generation, &CachedFeed::new(page_to_value(&page), unix_now(), false));
+                let _cache_write = repository.cache_writes.lock().expect("cache write lock poisoned");
+                repository.reconcile_page(&context.profile.id, &mut page);
+                let _ = repository.write_refresh_locked(&context.profile.id, &key, generation, epoch, &CachedFeed::new(page_to_value(&page), unix_now(), false));
             }
         });
         Ok(CachedRead { value: page, stale: true, refresh_error: None })
     }
 
-
     pub fn cached_feed(&self, context: &ProfileContext, query: &FeedQuery) -> Result<Option<CachedRead<Page<PostView>>>> {
         let key = FeedKey::new(feed_key(query));
-        let Some(cached) = self.cache.read_feed(&context.profile.id, &key)? else { return Ok(None); };
-        let page = page_from_value(&cached.entity)?;
+        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
+        let Some(mut cached) = self.cache.read_feed(&context.profile.id, &key)? else { return Ok(None); };
+        let mut page = page_from_value(&cached.entity)?;
+        let before = page_to_value(&page);
+        self.reconcile_page(&context.profile.id, &mut page);
+        if page_to_value(&page) != before {
+            cached.entity = page_to_value(&page);
+            self.cache.write_feed(&context.profile.id, &key, &cached)?;
+        }
         Ok(Some(CachedRead { value: page, stale: cached.stale, refresh_error: None }))
     }
 
@@ -116,8 +159,6 @@ impl Repository {
         Ok(Some((generation, read)))
     }
 
-
-
     pub async fn post(&self, context: &ProfileContext, id: crate::PostId) -> Result<PostDetail> {
         self.api.post(context, id).await
     }
@@ -126,18 +167,17 @@ impl Repository {
         let deleted_post = match &mutation { Mutation::DeletePost(id) => Some(*id), _ => None };
         let result = self.api.mutate(context, mutation).await?;
         if !result.success { return Ok(result); }
+        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
         if let Some(id) = deleted_post {
             self.deleted_posts.lock().expect("deleted post set poisoned").insert((context.profile.id.clone(), id));
+            self.confirmed_posts.lock().expect("confirmed post state poisoned").remove(&(context.profile.id.clone(), id));
+        } else if let Some(post) = &result.post {
+            self.confirmed_posts.lock().expect("confirmed post state poisoned").insert((context.profile.id.clone(), post.id), post.clone());
         }
         let key = FeedKey::new("home");
-        let _cache_write = self.cache_writes.lock().expect("cache write lock poisoned");
         if let Ok(Some(mut cached)) = self.cache.read_feed(&context.profile.id, &key) {
             if let Ok(mut page) = page_from_value(&cached.entity) {
-                if let Some(id) = deleted_post {
-                    page.items.retain(|candidate| candidate.id != id);
-                } else if let Some(post) = &result.post {
-                    if let Some(found) = page.items.iter_mut().find(|candidate| candidate.id == post.id) { *found = post.clone(); } else { page.items.push(post.clone()); }
-                }
+                self.reconcile_page(&context.profile.id, &mut page);
                 cached.entity = page_to_value(&page);
                 cached.stale = false;
                 self.cache.write_feed(&context.profile.id, &key, &cached)?;

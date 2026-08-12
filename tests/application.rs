@@ -328,6 +328,61 @@ async fn unsuccessful_mutation_does_not_update_cached_post() {
 }
 
 #[tokio::test]
+async fn background_refresh_preserves_confirmed_post_update() {
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    cache.write_feed(&context.profile.id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "cached")], "next_page": null }), 1, false)).unwrap();
+    let api = Arc::new(RefreshMutationRaceApi::default());
+    let repository = Repository::new(api.clone(), cache.clone(), Arc::new(MemoryCredentialStore::default()));
+    let read = repository.feed(&context, FeedQuery::home()).await.unwrap();
+    assert!(read.stale);
+    api.started.notified().await;
+    repository.mutate(&context, Mutation::VotePost { id: PostId(1), score: 1 }).await.unwrap();
+    api.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached = cache.read_feed(&context.profile.id, &FeedKey::from("home")).unwrap().unwrap();
+    assert_eq!(cached.entity["items"][0]["title"], "confirmed");
+}
+
+#[tokio::test]
+async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-tombstone-switch-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let destination = Profile { id: ProfileId::from("destination"), instance_url: Url::parse("https://destination.example/").unwrap(), account_label: Some("destination".into()) };
+    store.save(std::slice::from_ref(&destination)).unwrap();
+    let cache = Arc::new(MemoryCache::default());
+    cache.write_feed(&destination.id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "deleted"), post_json(2, "survivor")], "next_page": null }), 1, false)).unwrap();
+    let mut app = App::with_profile_store(Arc::new(ConfirmedDeleteApi), cache.clone(), fixture_context(), Arc::new(MemoryCredentialStore::default()), store);
+    app.repository.mutate(&ProfileContext { profile: destination.clone(), session: None }, Mutation::DeletePost(PostId(1))).await.unwrap();
+    cache.write_feed(&destination.id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "resurrected"), post_json(2, "survivor")], "next_page": null }), 1, false)).unwrap();
+    app.dispatch(AppAction::Profile(ProfileCommand::Switch(destination.id))).await.unwrap();
+    assert_eq!(app.state.view.posts.iter().map(|post| post.id).collect::<Vec<_>>(), vec![PostId(2)]);
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-profile-refresh-replace-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let id = ProfileId::from("fixture");
+    let old = Profile { id: id.clone(), instance_url: Url::parse("http://old.example/").unwrap(), account_label: Some("old".into()) };
+    store.save(std::slice::from_ref(&old)).unwrap();
+    let cache = Arc::new(MemoryCache::default());
+    cache.write_feed(&id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "cached")], "next_page": null }), 1, false)).unwrap();
+    let api = Arc::new(ProfileReplacementRaceApi::default());
+    let mut app = App::with_profile_store(api.clone(), cache.clone(), ProfileContext { profile: old, session: None }, Arc::new(MemoryCredentialStore::default()), store.clone());
+    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh)).await.unwrap();
+    api.started.notified().await;
+    app.dispatch(AppAction::Profile(ProfileCommand::New(ProfileDraft { id: id.clone(), instance_url: Url::parse("https://new.example/").unwrap(), account_label: Some("new".into()) }))).await.unwrap();
+    api.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached = cache.read_feed(&id, &FeedKey::from("home")).unwrap().unwrap();
+    assert_eq!(cached.entity["items"][0]["title"], "cached");
+    let _ = std::fs::remove_file(path);
+}
+
+
+#[tokio::test]
 async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
     let cache = Arc::new(MemoryCache::default());
     let context = fixture_context();
@@ -393,6 +448,49 @@ fn post_view(id: i64, title: &str) -> PostView {
 }
 fn post_json(id: i64, title: &str) -> serde_json::Value {
     json!({ "id": id, "title": title, "body": null, "url": null, "community_id": 1, "creator_id": 1, "score": 1, "comments": 0, "published": null })
+}
+
+#[derive(Default)]
+struct RefreshMutationRaceApi {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl LemmyApi for RefreshMutationRaceApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(Page { items: vec![post_view(1, "old refresh")], next_page: None })
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        match mutation {
+            Mutation::VotePost { id, .. } => Ok(MutationResult { success: true, post: Some(post_view(id.0, "confirmed")), comment: None, message: None }),
+            _ => Err(AppError::Network("unexpected mutation".into())),
+        }
+    }
+}
+
+#[derive(Default)]
+struct ProfileReplacementRaceApi {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+}
+
+#[async_trait]
+impl LemmyApi for ProfileReplacementRaceApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        self.started.notify_one();
+        self.release.notified().await;
+        Ok(Page { items: vec![post_view(1, "old refresh")], next_page: None })
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Err(AppError::Network("unused".into())) }
 }
 
 struct ConfirmedDeleteApi;
