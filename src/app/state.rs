@@ -22,7 +22,7 @@ pub struct View {
     pub selected: Option<usize>,
     pub compose: String,
     pub stale: bool,
-    pub next_page: Option<u32>,
+    pub next_page: Option<String>,
     pub feed_query: crate::api::FeedQuery,
     pub search: String,
     pub downloads: Option<DownloadsPanel>,

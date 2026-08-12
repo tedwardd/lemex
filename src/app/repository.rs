@@ -388,7 +388,7 @@ fn feed_key(query: &FeedQuery) -> String {
     }
     serde_json::to_string(&(
         query.sort.as_str(),
-        query.page,
+        query.page.as_deref(),
         query.limit,
         query.community.map(|id| id.0),
         query.search.as_deref(),
@@ -417,8 +417,8 @@ fn page_from_value(value: &Value) -> Result<Page<PostView>> {
         .collect::<Result<Vec<_>>>()?;
     let next_page = value
         .get("next_page")
-        .and_then(Value::as_u64)
-        .map(|page| page as u32);
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     Ok(Page { items, next_page })
 }
 

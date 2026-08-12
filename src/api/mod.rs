@@ -21,7 +21,9 @@ pub trait LemmyApi: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeedQuery {
     pub sort: String,
-    pub page: Option<u32>,
+    /// Opaque page cursor (Lemmy 0.19+ returns `next_page` as an opaque
+    /// string sent back as `page_cursor`); `None` starts at the first page.
+    pub page: Option<String>,
     pub limit: Option<u32>,
     pub community: Option<CommunityId>,
     pub search: Option<String>,
@@ -46,7 +48,8 @@ impl FeedQuery {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Page<T> {
     pub items: Vec<T>,
-    pub next_page: Option<u32>,
+    /// Opaque cursor for the next page, passed back as `page_cursor`.
+    pub next_page: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

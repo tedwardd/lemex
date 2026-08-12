@@ -560,7 +560,7 @@ async fn failed_search_resets_stale_cursor_so_load_more_is_refused() {
         Arc::new(MemoryCredentialStore::default()),
     );
     app.state.view.posts = vec![post_view(1, "old feed")];
-    app.state.view.next_page = Some(2);
+    app.state.view.next_page = Some("2".to_owned());
 
     // Drive `/rust` through the real input engine: `/`, text, Enter.
     let mut engine = InputEngine::new();
@@ -1197,7 +1197,7 @@ impl LemmyApi for PagedFeedApi {
         Err(AppError::Network("unused".into()))
     }
     async fn feed(&self, _: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>> {
-        if query.page == Some(2) {
+        if query.page.as_deref() == Some("2") {
             self.second_page_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Page {
                 items: vec![post_view(2, "second page post")],
@@ -1206,7 +1206,7 @@ impl LemmyApi for PagedFeedApi {
         } else {
             Ok(Page {
                 items: vec![post_view(1, "first page post")],
-                next_page: Some(2),
+                next_page: Some("2".to_owned()),
             })
         }
     }
@@ -1234,7 +1234,7 @@ async fn next_page_command_appends_the_following_feed_page() {
         Arc::new(MemoryCredentialStore::default()),
     );
     app.state.view.posts = vec![post_view(1, "first page post")];
-    app.state.view.next_page = Some(2);
+    app.state.view.next_page = Some("2".to_owned());
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
         .unwrap();

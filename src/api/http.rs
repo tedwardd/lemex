@@ -328,8 +328,8 @@ impl LemmyApi for HttpLemmyApi {
             .client
             .get(self.endpoint(ctx, "post/list")?)
             .query(&[("sort", query.sort), ("type_", "All".into())]);
-        if let Some(page) = query.page {
-            request = request.query(&[("page", page)]);
+        if let Some(cursor) = query.page {
+            request = request.query(&[("page_cursor", cursor)]);
         }
         if let Some(limit) = query.limit {
             request = request.query(&[("limit", limit)]);
@@ -352,8 +352,8 @@ impl LemmyApi for HttpLemmyApi {
             .collect::<Result<Vec<_>>>()?;
         let next_page = response
             .get("next_page")
-            .and_then(Value::as_u64)
-            .map(|value| value as u32);
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         Ok(Page { items, next_page })
     }
 

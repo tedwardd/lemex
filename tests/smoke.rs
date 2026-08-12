@@ -22,8 +22,8 @@ use std::{
 use lemmy::{
     api::fixtures::{
         anonymous_context, authenticated_context, fixture_api_requiring_auth,
-        fixture_api_with_body, fixture_api_with_status, fixture_api_with_transient_failures,
-        login_fixture_api,
+        fixture_api_with_body, fixture_api_with_pages, fixture_api_with_status,
+        fixture_api_with_transient_failures, login_fixture_api,
     },
     app::AppAction,
     config::MediaConfig,
@@ -177,6 +177,48 @@ fn feed_loads_through_fixture_and_vim_keys_navigate() {
 
     // The engine returns to normal mode after commands.
     assert_eq!(engine.mode(), lemmy::input::Mode::Normal);
+}
+
+/// Pagination: the first page carries an opaque `next_page` cursor, and
+/// `>` sends it back as `page_cursor` to append the following page (the
+/// Lemmy 0.19+ cursor protocol).
+#[test]
+fn next_page_cursor_appends_the_following_page() {
+    let runtime = support::runtime();
+    let first = r#"{"posts":[{"post":{"id":1,"name":"First page","body":null,"community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":"P2"}"#;
+    let next = r#"{"posts":[{"post":{"id":2,"name":"Second page","body":null,"community_id":1,"creator_id":1,"published":"2026-01-02T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":null}"#;
+    let api = support::api(&runtime, || fixture_api_with_pages(first, next));
+    let mut app = FixtureApp::with_runtime(
+        runtime,
+        "page",
+        api,
+        anonymous_context(),
+        MediaConfig::default(),
+        &[],
+    );
+    let mut engine = InputEngine::new();
+
+    app.command(&mut engine, "feed")
+        .expect("load the first page");
+    assert_eq!(app.app.state.view.posts.len(), 1);
+    assert_eq!(
+        app.app.state.view.next_page.as_deref(),
+        Some("P2"),
+        "the opaque next_page cursor must survive normalization"
+    );
+
+    app.press(&mut engine, key('>')).expect("flip pages");
+    assert_eq!(
+        app.app.state.view.posts.len(),
+        2,
+        "the next page is appended to the feed"
+    );
+    assert_eq!(app.app.state.view.posts[1].id, PostId(2));
+    assert!(
+        app.app.state.view.next_page.is_none(),
+        "the last page carries no further cursor"
+    );
+    assert!(app.app.state.status.message.contains("more posts loaded"));
 }
 
 /// Post/thread opening: opening a selected post fetches the post detail and

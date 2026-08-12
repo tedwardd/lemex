@@ -1271,12 +1271,12 @@ impl App {
     }
 
     async fn load_more(&mut self) -> Result<()> {
-        let Some(page) = self.state.view.next_page else {
+        let Some(cursor) = self.state.view.next_page.clone() else {
             self.state.status.success("no more posts to load");
             return Ok(());
         };
         let mut query = self.state.view.feed_query.clone();
-        query.page = Some(page);
+        query.page = Some(cursor);
         let result = self.repository.api.feed(&self.state.active, query).await;
         match result {
             Ok(next) => {

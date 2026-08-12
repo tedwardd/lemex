@@ -6,6 +6,24 @@ use lemmy::api::fixtures::{
 use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
 use lemmy::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
 
+#[tokio::test]
+async fn feed_response_carries_the_opaque_next_page_cursor() {
+    // Lemmy 0.19+ returns `next_page` as an opaque string cursor, not a
+    // number; the adapter must carry it verbatim so `>` can flip pages.
+    let body = r#"{"posts":[{"post":{"id":1,"name":"Fixture post","body":null,"community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":"P303839a"}"#;
+    let api = fixture_api_with_body(body);
+    let page = api
+        .feed(&anonymous_context(), FeedQuery::home())
+        .await
+        .unwrap();
+    assert_eq!(page.items.len(), 1);
+    assert_eq!(
+        page.next_page.as_deref(),
+        Some("P303839a"),
+        "the opaque next_page cursor must survive normalization"
+    );
+}
+
 #[test]
 fn home_feed_requests_twenty_posts() {
     assert_eq!(

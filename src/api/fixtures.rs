@@ -38,6 +38,11 @@ struct FixtureRoute {
     /// instead of sending the generic reqwest default (which at least one
     /// public Lemmy edge resets the connection on).
     user_agent: Option<Arc<Mutex<Option<String>>>>,
+    /// When set, requests whose raw query contains `page_cursor=` are
+    /// answered with this body instead of `body`, so tests can serve a
+    /// distinct next page and prove the client sends the opaque cursor
+    /// back as `page_cursor` (Lemmy 0.19+ protocol).
+    cursor_body: Option<String>,
 }
 
 pub struct FixtureServer {
@@ -85,6 +90,7 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                 transient_failures: route.transient_failures.clone(),
                 extra_paths: route.extra_paths.clone(),
                 user_agent: route.user_agent.clone(),
+                cursor_body: route.cursor_body.clone(),
             };
             tokio::spawn(async move {
                 let mut request = vec![0_u8; 8192];
@@ -145,28 +151,38 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                     .split('?')
                     .next()
                     .unwrap_or_default();
-                let body = match route.path.as_deref() {
-                    Some(path) if path == requested_path => {
-                        route.body.clone().unwrap_or_else(|| "{}".into())
-                    }
-                    Some(_) => match route
-                        .extra_paths
-                        .iter()
-                        .find(|(path, _)| path == requested_path)
-                    {
-                        Some((_, body)) => body.clone(),
-                        None => {
-                            write_response(
-                                &mut stream,
-                                404,
-                                r#"{"error":"fixture route not found"}"#,
-                                false,
-                            )
-                            .await;
-                            return;
+                let body = if let Some(cursor_body) = &route.cursor_body
+                    && route
+                        .path
+                        .as_deref()
+                        .is_none_or(|path| path == requested_path)
+                    && request.contains("page_cursor=")
+                {
+                    cursor_body.clone()
+                } else {
+                    match route.path.as_deref() {
+                        Some(path) if path == requested_path => {
+                            route.body.clone().unwrap_or_else(|| "{}".into())
                         }
-                    },
-                    None => route.body.clone().unwrap_or_else(|| "{}".into()),
+                        Some(_) => match route
+                            .extra_paths
+                            .iter()
+                            .find(|(path, _)| path == requested_path)
+                        {
+                            Some((_, body)) => body.clone(),
+                            None => {
+                                write_response(
+                                    &mut stream,
+                                    404,
+                                    r#"{"error":"fixture route not found"}"#,
+                                    false,
+                                )
+                                .await;
+                                return;
+                            }
+                        },
+                        None => route.body.clone().unwrap_or_else(|| "{}".into()),
+                    }
                 };
                 write_response(&mut stream, route.status, &body, route.malformed_body).await;
             });
@@ -219,6 +235,7 @@ pub fn fixture_api_with_body(body: &str) -> HttpLemmyApi {
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -236,6 +253,7 @@ pub fn fixture_api_with_status(path: &str, status: u16) -> HttpLemmyApi {
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -254,6 +272,7 @@ pub fn fixture_api_with_status_count(status: u16) -> (HttpLemmyApi, Arc<AtomicUs
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -271,6 +290,7 @@ pub fn truncated_body_fixture_api() -> HttpLemmyApi {
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -294,6 +314,7 @@ pub fn login_fixture_api(path: &str) -> (HttpLemmyApi, Url) {
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         // Login derives the user id from the authenticated `/site` response;
         // serve the my_user-bearing fixture on that route too.
         extra_paths: vec![("/api/v3/site".to_owned(), site_body)],
@@ -315,6 +336,7 @@ pub fn timeout_fixture_api() -> HttpLemmyApi {
         require_auth: false,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -337,6 +359,7 @@ pub fn fixture_api_requiring_auth(body: &str) -> (HttpLemmyApi, Arc<AtomicUsize>
         require_auth: true,
         transient_failures: None,
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -362,10 +385,32 @@ pub fn fixture_api_with_transient_failures(
         require_auth: false,
         transient_failures: Some(remaining.clone()),
         user_agent: None,
+        cursor_body: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), remaining)
+}
+
+/// A fixture server that answers the first page with `first` and any
+/// follow-up request carrying `page_cursor=` with `next`, so tests can prove
+/// the client sends the opaque cursor back as `page_cursor`.
+pub fn fixture_api_with_pages(first: &str, next: &str) -> HttpLemmyApi {
+    let (base, server) = start_server(FixtureRoute {
+        path: None,
+        status: 200,
+        body: Some(first.into()),
+        delay: None,
+        malformed_body: false,
+        requests: None,
+        require_auth: false,
+        transient_failures: None,
+        extra_paths: Vec::new(),
+        user_agent: None,
+        cursor_body: Some(next.into()),
+    })
+    .expect("fixture server starts");
+    api_for(server, base, Duration::from_secs(2))
 }
 
 /// A fixture server that answers every request with `body` and captures the
@@ -384,6 +429,7 @@ pub fn fixture_api_recording_user_agent(body: &str) -> (HttpLemmyApi, Arc<Mutex<
         transient_failures: None,
         extra_paths: Vec::new(),
         user_agent: Some(user_agent.clone()),
+        cursor_body: None,
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), user_agent)
