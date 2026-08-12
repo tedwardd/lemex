@@ -4,22 +4,24 @@ pub mod render;
 pub mod repository;
 pub mod state;
 
-use std::{collections::{HashMap, VecDeque}, sync::Arc, thread, time::Duration};
+use std::{collections::{HashMap, VecDeque}, ffi::OsStr, io::Write, path::{Path, PathBuf}, process::Stdio, sync::Arc, thread, time::Duration};
 
 use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
 
-pub use actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
+pub use actions::{ApiResult, AppAction, DownloadsAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
 pub use repository::{CachedRead, Repository};
-pub use state::{AppState, DraftStore, RenderModel, Status, View};
+pub use state::{AppState, DraftStore, DownloadsPanel, DownloadsRender, RenderModel, Status, View};
 use crate::{
     api::{FeedQuery, LemmyApi, MutationResult},
     cache::Draft,
-    domain::{CreateCommentRequest, CreatePostRequest, EditCommentRequest, EditPostRequest, Mutation, Profile, ProfileContext, ProfileId},
-    error::Result,
+    config::MediaConfig,
+    domain::{CreateCommentRequest, CreatePostRequest, DownloadStatus, EditCommentRequest, EditPostRequest, MediaRef, Mutation, Profile, ProfileContext, ProfileId},
+    error::{AppError, Result},
     input::{Command, Mode},
+    media::{kitty, build_argv, filename_for, CollisionPolicy, DownloadEvent, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig, TerminalCapabilities},
     profiles::{default_store, CredentialStore, ProfileStore},
 };
 
@@ -175,6 +177,10 @@ pub struct App {
     profile_store: ProfileStore,
     requests: HashMap<RequestIdentity, RequestToken>,
     next_generation: u64,
+    downloads: DownloadManager,
+    media_policy: MediaPolicyConfig,
+    terminal_capabilities: TerminalCapabilities,
+    collision_policy: CollisionPolicy,
     quit: bool,
 }
 
@@ -185,7 +191,7 @@ impl App {
         active: ProfileContext,
         credentials: Arc<dyn CredentialStore>,
     ) -> Self {
-        Self::with_profile_store(api, cache, active, credentials, default_store())
+        Self::with_media(api, cache, active, credentials, MediaConfig::default())
     }
 
     pub fn with_profile_store(
@@ -195,8 +201,44 @@ impl App {
         credentials: Arc<dyn CredentialStore>,
         profile_store: ProfileStore,
     ) -> Self {
+        Self::with_media_and_profile_store(api, cache, active, credentials, MediaConfig::default(), profile_store)
+    }
+
+    pub fn with_media(
+        api: Arc<dyn LemmyApi>,
+        cache: Arc<dyn crate::cache::CacheStore>,
+        active: ProfileContext,
+        credentials: Arc<dyn CredentialStore>,
+        media: MediaConfig,
+    ) -> Self {
+        Self::with_media_and_profile_store(api, cache, active, credentials, media, default_store())
+    }
+
+    fn with_media_and_profile_store(
+        api: Arc<dyn LemmyApi>,
+        cache: Arc<dyn crate::cache::CacheStore>,
+        active: ProfileContext,
+        credentials: Arc<dyn CredentialStore>,
+        media: MediaConfig,
+        profile_store: ProfileStore,
+    ) -> Self {
         let state = AppState::new(active, cache.clone());
-        Self { state, repository: Repository::new(api, cache, credentials), profile_store, requests: HashMap::new(), next_generation: 0, quit: false }
+        let downloads_directory = media.download_directory.clone().unwrap_or_else(|| crate::config::cache_dir().join("downloads"));
+        let collision_policy = CollisionPolicy::from_config(&media.collision_policy);
+        let media_policy = MediaPolicyConfig::from_config(&media);
+        let terminal_capabilities = TerminalCapabilities { kitty: kitty::detect_support() };
+        Self {
+            state,
+            repository: Repository::new(api, cache, credentials),
+            profile_store,
+            requests: HashMap::new(),
+            next_generation: 0,
+            downloads: DownloadManager::new(downloads_directory),
+            media_policy,
+            terminal_capabilities,
+            collision_policy,
+            quit: false,
+        }
     }
 
     pub fn begin_request(&mut self, identity: RequestIdentity) -> RequestToken {
@@ -206,12 +248,20 @@ impl App {
         token
     }
 
-    pub fn render_model(&self) -> RenderModel { self.state.render_model() }
+    pub fn render_model(&self) -> RenderModel {
+        let mut model = self.state.render_model();
+        model.downloads = self.state.view.downloads.as_ref().map(|panel| DownloadsRender {
+            query: panel.query.clone(),
+            selected: panel.selected,
+            records: self.downloads.history().filtered(&panel.query),
+        });
+        model
+    }
     pub fn is_quit(&self) -> bool { self.quit }
 
     fn prepare_action(&mut self, action: &AppAction) {
         let is_confirm = matches!(action, AppAction::Confirm) && self.state.pending.is_some();
-        let is_network = matches!(action, AppAction::Input(Command::Refresh) | AppAction::OpenCommunity(_) | AppAction::LoadMore | AppAction::Mutate(_))
+        let is_network = matches!(action, AppAction::Input(Command::Refresh) | AppAction::OpenCommunity(_) | AppAction::LoadMore | AppAction::Mutate(_) | AppAction::Media | AppAction::DownloadMedia)
             || is_confirm
             || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some());
         if !is_network { return; }
@@ -233,23 +283,49 @@ impl App {
             AppAction::OpenSelected => self.open_selected().await,
             AppAction::OpenCommunity(id) => self.open_community(id).await,
             AppAction::LoadMore => self.load_more().await,
-            AppAction::Back => { self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
+            AppAction::Back => {
+                if self.state.view.downloads_active() {
+                    self.state.view.close_downloads_panel();
+                    return Ok(());
+                }
+                self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
+            }
             AppAction::DeletePost(id) => self.delete_post(id).await,
             AppAction::Mutate(mutation) => self.start_mutation(mutation, None).await,
             AppAction::Confirm => self.confirm_pending().await,
             AppAction::Cancel => { self.cancel_pending(); Ok(()) }
             AppAction::ApiResult(result) => { self.apply_api_result(result); Ok(()) }
-            AppAction::Tick => { self.poll_feed_refresh(); Ok(()) }
-            AppAction::Quit => { self.quit = true; Ok(()) }
+            AppAction::Media => self.open_media_selected().await,
+            AppAction::DownloadMedia => self.download_media_selected().await,
+            AppAction::ShowDownloads => { self.toggle_downloads_panel(); Ok(()) }
+            AppAction::Downloads(action) => self.downloads_action(action).await,
+            AppAction::Tick => { self.poll_feed_refresh(); self.poll_downloads(); Ok(()) }
+            AppAction::Quit => { self.downloads.shutdown(); self.quit = true; Ok(()) }
         }
     }
 
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::Open => self.open_selected().await,
-            Command::Back => { self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
+            Command::Open => {
+                if self.state.view.downloads_active() {
+                    return self.downloads_action(DownloadsAction::Reopen).await;
+                }
+                self.open_selected().await
+            }
+            Command::Back => {
+                if self.state.view.downloads_active() {
+                    self.state.view.close_downloads_panel();
+                    return Ok(());
+                }
+                self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(())
+            }
             Command::Quit => { self.quit = true; Ok(()) }
-            Command::Refresh => self.refresh_feed().await,
+            Command::Refresh => {
+                if self.state.view.downloads_active() {
+                    return self.downloads_action(DownloadsAction::Retry).await;
+                }
+                self.refresh_feed().await
+            }
             Command::MoveDown { count } => { self.move_selection(count as isize); Ok(()) }
             Command::MoveUp { count } => { self.move_selection(-(count as isize)); Ok(()) }
             Command::EnterInsert => { self.state.mode = Mode::Insert; Ok(()) }
@@ -352,7 +428,43 @@ impl App {
             return self.refresh_feed().await;
         }
         self.state.mode = Mode::Normal;
-        Ok(())
+        let trimmed = line.trim();
+        if trimmed.is_empty() { return Ok(()); }
+        match trimmed {
+            "media" => self.open_media_selected().await,
+            "download-media" | "download_media" => self.download_media_selected().await,
+            "downloads" => {
+                self.toggle_downloads_panel();
+                Ok(())
+            }
+            _ if self.state.view.downloads_active() => self.submit_downloads_command(trimmed).await,
+            other => {
+                self.state.status.failure(format!("unknown command: {other}"));
+                Ok(())
+            }
+        }
+    }
+
+    async fn submit_downloads_command(&mut self, line: &str) -> Result<()> {
+        if let Some(query) = line.strip_prefix("search ") {
+            return self.downloads_action(DownloadsAction::Search(query.trim().to_owned())).await;
+        }
+        let action = match line {
+            "reopen" => DownloadsAction::Reopen,
+            "reveal" => DownloadsAction::Reveal,
+            "copy" => DownloadsAction::CopyPath,
+            "retry" => DownloadsAction::Retry,
+            "cancel" => DownloadsAction::Cancel,
+            "delete" => DownloadsAction::Delete,
+            "overwrite" => DownloadsAction::ResolveCollision { overwrite: true },
+            "keep" => DownloadsAction::ResolveCollision { overwrite: false },
+            "close" => DownloadsAction::Close,
+            other => {
+                self.state.status.failure(format!("unknown download command: {other}"));
+                return Ok(());
+            }
+        };
+        self.downloads_action(action).await
     }
 
     async fn open_community(&mut self, community: crate::domain::CommunityId) -> Result<()> {
@@ -391,6 +503,284 @@ impl App {
         Ok(())
     }
 
+    fn selected_media(&self) -> Option<MediaRef> {
+        self.state
+            .selected_post()
+            .and_then(|id| self.state.view.posts.iter().find(|post| post.id == id))
+            .and_then(|post| post.url.clone())
+            .map(MediaRef::new)
+    }
+
+    async fn open_media_selected(&mut self) -> Result<()> {
+        let Some(media) = self.selected_media() else {
+            self.state.status.failure("selected post has no media URL");
+            return Ok(());
+        };
+        self.open_media(media, None).await
+    }
+
+    async fn download_media_selected(&mut self) -> Result<()> {
+        let Some(media) = self.selected_media() else {
+            self.state.status.failure("selected post has no media URL");
+            return Ok(());
+        };
+        let directory = self.downloads.directory().to_path_buf();
+        let destination = directory.join(filename_for(&media));
+        let request = DownloadRequest {
+            media,
+            profile: self.state.active.profile.id.clone(),
+            instance_url: self.state.active.profile.instance_url.clone(),
+            destination,
+            collision: self.collision_policy,
+        };
+        match self.downloads.start(request).await {
+            Ok(id) => {
+                let prompting = self.downloads.history().get(id).is_some_and(|record| record.status == DownloadStatus::Prompting);
+                if prompting {
+                    self.state.view.open_downloads_panel();
+                    if let Some(panel) = &mut self.state.view.downloads { panel.selected = Some(id); }
+                    self.state.status.message = "file already exists; choose :overwrite or :keep in the downloads panel".into();
+                    self.state.status.pending = false;
+                    self.state.status.error = None;
+                } else {
+                    self.state.status.success(format!("download #{} started", id.0));
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.state.status.failure(error.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// Open media through the selected handler. `local` is the downloaded file
+    /// when reopening a record; otherwise the source URL is passed.
+    async fn open_media(&mut self, media: MediaRef, local: Option<PathBuf>) -> Result<()> {
+        let handler = self.media_policy.select(&media, &self.terminal_capabilities);
+        match handler {
+            MediaHandler::KittyInline => self.render_kitty(media, local).await,
+            MediaHandler::Mailcap { command } | MediaHandler::External { command } => {
+                if !media.url.username().is_empty() || media.url.password().is_some() {
+                    self.state.status.failure("refusing to open a media URL containing credentials");
+                    return Ok(());
+                }
+                let mime = crate::media::resolve_mime(&media, None).unwrap_or_default();
+                let source = match local {
+                    Some(path) => path.into_os_string(),
+                    None => OsStr::new(media.url.as_str()).to_os_string(),
+                };
+                match spawn_detached(&command, &source, &mime) {
+                    Ok(()) => self.state.status.success("opened media with external handler"),
+                    Err(error) => self.state.status.failure(error.to_string()),
+                }
+                Ok(())
+            }
+            MediaHandler::MetadataOnly => {
+                let mime = crate::media::resolve_mime(&media, None).unwrap_or_else(|| "unknown".into());
+                self.state.status.success(format!("no media handler for {mime}; metadata only"));
+                Ok(())
+            }
+        }
+    }
+
+    async fn render_kitty(&mut self, media: MediaRef, local: Option<PathBuf>) -> Result<()> {
+        let path = match local {
+            Some(path) if path.exists() => path,
+            _ => {
+                let scratch = std::env::temp_dir().join(filename_for(&media));
+                let request = DownloadRequest {
+                    media: media.clone(),
+                    profile: self.state.active.profile.id.clone(),
+                    instance_url: self.state.active.profile.instance_url.clone(),
+                    destination: scratch,
+                    collision: CollisionPolicy::UniqueName,
+                };
+                match self.downloads.start(request).await {
+                    Ok(id) => {
+                        let outcome = tokio::time::timeout(Duration::from_secs(30), self.downloads.wait_for(id)).await;
+                        match outcome {
+                            Ok(DownloadStatus::Completed) => match self.downloads.history().get(id) {
+                                Some(record) => record.local_path,
+                                None => {
+                                    self.state.status.failure("kitty render download vanished");
+                                    return Ok(());
+                                }
+                            },
+                            Ok(status) => {
+                                self.state.status.failure(format!("kitty render download did not complete ({status})"));
+                                return Ok(());
+                            }
+                            Err(_) => {
+                                self.state.status.failure("kitty render download timed out");
+                                return Ok(());
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.state.status.failure(error.to_string());
+                        return Ok(());
+                    }
+                }
+            }
+        };
+        match kitty::render_file(&path) {
+            Ok(bytes) => {
+                let mut stdout = std::io::stdout();
+                if stdout.write_all(&bytes).is_ok() {
+                    let _ = stdout.flush();
+                    self.state.status.success("rendered media via kitty graphics protocol");
+                } else {
+                    self.state.status.failure("could not write kitty escape sequence to terminal");
+                }
+            }
+            Err(error) => self.state.status.failure(error.to_string()),
+        }
+        Ok(())
+    }
+
+    fn toggle_downloads_panel(&mut self) {
+        if self.state.view.downloads_active() {
+            self.state.view.close_downloads_panel();
+            return;
+        }
+        self.state.view.open_downloads_panel();
+        let query = self.state.view.downloads.as_ref().map(|panel| panel.query.clone()).unwrap_or_default();
+        let first = self.downloads.history().filtered(&query).first().map(|record| record.id);
+        if let Some(panel) = &mut self.state.view.downloads {
+            panel.selected = first;
+        }
+    }
+
+    async fn downloads_action(&mut self, action: DownloadsAction) -> Result<()> {
+        match action {
+            DownloadsAction::Search(query) => {
+                let mut panel = self.state.view.downloads.clone().unwrap_or_default();
+                panel.query = query;
+                panel.selected = self.downloads.history().filtered(&panel.query).first().map(|record| record.id);
+                self.state.view.downloads = Some(panel);
+                Ok(())
+            }
+            DownloadsAction::Close => {
+                self.state.view.close_downloads_panel();
+                Ok(())
+            }
+            DownloadsAction::Reopen
+            | DownloadsAction::Reveal
+            | DownloadsAction::CopyPath
+            | DownloadsAction::Retry
+            | DownloadsAction::Cancel
+            | DownloadsAction::Delete
+            | DownloadsAction::ResolveCollision { .. } => {
+                let Some(id) = self.state.view.selected_download() else {
+                    self.state.status.failure("no download selected");
+                    return Ok(());
+                };
+                match action {
+                    DownloadsAction::Reopen => {
+                        let Some(record) = self.downloads.history().get(id) else {
+                            self.state.status.failure("download not found");
+                            return Ok(());
+                        };
+                        if record.local_file_deleted || !record.local_path.exists() {
+                            self.state.status.failure("local file is missing; retry the download");
+                            return Ok(());
+                        }
+                        self.open_media(record.media.clone(), Some(record.local_path.clone())).await
+                    }
+                    DownloadsAction::Reveal => {
+                        let Some(record) = self.downloads.history().get(id) else {
+                            self.state.status.failure("download not found");
+                            return Ok(());
+                        };
+                        let directory = record.local_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+                        reveal_directory(&directory);
+                        self.state.status.success(format!("revealed {}", directory.display()));
+                        Ok(())
+                    }
+                    DownloadsAction::CopyPath => {
+                        let Some(record) = self.downloads.history().get(id) else {
+                            self.state.status.failure("download not found");
+                            return Ok(());
+                        };
+                        if copy_to_clipboard(&record.local_path.to_string_lossy()) {
+                            self.state.status.success("download path copied to clipboard");
+                        } else {
+                            self.state.status.success(format!("path: {}", record.local_path.display()));
+                        }
+                        Ok(())
+                    }
+                    DownloadsAction::Retry => match self.downloads.retry(id).await {
+                        Ok(()) => {
+                            self.state.status.success(format!("retrying download #{id}"));
+                            Ok(())
+                        }
+                        Err(error) => {
+                            self.state.status.failure(error.to_string());
+                            Ok(())
+                        }
+                    },
+                    DownloadsAction::Cancel => match self.downloads.cancel(id).await {
+                        Ok(()) => {
+                            self.state.status.success(format!("download #{id} cancelled"));
+                            Ok(())
+                        }
+                        Err(error) => {
+                            self.state.status.failure(error.to_string());
+                            Ok(())
+                        }
+                    },
+                    DownloadsAction::Delete => {
+                        let Some(record) = self.downloads.history().get(id) else {
+                            self.state.status.failure("download not found");
+                            return Ok(());
+                        };
+                        if record.local_file_deleted {
+                            self.state.status.failure("local file was already deleted");
+                            return Ok(());
+                        }
+                        self.state.pending = Some(crate::app::actions::PendingAction::DeleteDownload { id, path: record.local_path.clone() });
+                        self.state.status.pending = false;
+                        self.state.status.confirmation_pending = true;
+                        self.state.status.message = format!("confirm deletion of {}", record.local_path.display());
+                        self.state.status.error = None;
+                        Ok(())
+                    }
+                    DownloadsAction::ResolveCollision { overwrite } => match self.downloads.resolve_collision(id, overwrite).await {
+                        Ok(()) => {
+                            self.state.status.success(if overwrite { "overwriting existing file" } else { "kept existing file" });
+                            Ok(())
+                        }
+                        Err(error) => {
+                            self.state.status.failure(error.to_string());
+                            Ok(())
+                        }
+                    },
+                    _ => unreachable!("other download actions handled above"),
+                }
+            }
+        }
+    }
+
+    fn poll_downloads(&mut self) {
+        for event in self.downloads.take_events() {
+            match event {
+                DownloadEvent::Completed(id) => {
+                    let message = self
+                        .downloads
+                        .history()
+                        .get(id)
+                        .map(|record| format!("download #{} complete: {}", id.0, record.local_path.display()))
+                        .unwrap_or_else(|| format!("download #{} complete", id.0));
+                    self.state.status.success(message);
+                }
+                DownloadEvent::Failed(id, error) => {
+                    self.state.status.failure(format!("download #{} failed: {error}", id.0));
+                }
+            }
+        }
+    }
+
     async fn delete_post(&mut self, id: crate::PostId) -> Result<()> {
         self.state.pending = Some(crate::app::actions::PendingAction::DeletePost { profile: self.state.active.profile.id.clone(), id });
         self.state.status.pending = false;
@@ -417,11 +807,24 @@ impl App {
 
     async fn confirm_pending(&mut self) -> Result<()> {
         let pending = self.state.pending.take();
-        let (profile, mutation, draft) = match pending {
-            Some(crate::app::actions::PendingAction::DeletePost { profile, id }) => (profile, Mutation::DeletePost(id), None),
-            Some(crate::app::actions::PendingAction::Mutation { profile, mutation, draft }) => (profile, mutation, draft),
-            None => return Ok(()),
-        };
+        match pending {
+            Some(crate::app::actions::PendingAction::DeleteDownload { id, path }) => {
+                self.state.status.confirmation_pending = false;
+                if std::fs::remove_file(&path).is_ok() {
+                    self.downloads.history().mark_file_deleted(id);
+                    self.state.status.success("local file deleted");
+                } else {
+                    self.state.status.failure(format!("could not delete {}", path.display()));
+                }
+                Ok(())
+            }
+            Some(crate::app::actions::PendingAction::DeletePost { profile, id }) => self.confirm_mutation(profile, Mutation::DeletePost(id), None).await,
+            Some(crate::app::actions::PendingAction::Mutation { profile, mutation, draft }) => self.confirm_mutation(profile, mutation, draft).await,
+            None => Ok(()),
+        }
+    }
+
+    async fn confirm_mutation(&mut self, profile: ProfileId, mutation: Mutation, draft: Option<crate::cache::DraftId>) -> Result<()> {
         if profile != self.state.active.profile.id { self.cancel_pending(); return Ok(()); }
         self.state.status.confirmation_pending = false;
         self.state.status.pending = true;
@@ -472,6 +875,12 @@ impl App {
 
 
     fn move_selection(&mut self, delta: isize) {
+        if self.state.view.downloads_active() {
+            let query = self.state.view.downloads.as_ref().map(|panel| panel.query.clone()).unwrap_or_default();
+            let ids = self.downloads.history().filtered(&query).into_iter().map(|record| record.id).collect::<Vec<_>>();
+            self.state.view.move_download_selection(delta, &ids);
+            return;
+        }
         if self.state.view.posts.is_empty() { return; }
         let current = self.state.view.selected.unwrap_or(0) as isize;
         let max = self.state.view.posts.len().saturating_sub(1) as isize;
@@ -541,6 +950,64 @@ impl App {
         }
     }
 }
+/// Run a media handler with a safely constructed argv: no shell, no inherited
+/// stdin/stdout (children must not corrupt the TUI), no authorization headers.
+fn spawn_detached(template: &str, source: &OsStr, mime: &str) -> Result<()> {
+    let argv = build_argv(template, source, mime);
+    let Some(program) = argv.first() else {
+        return Err(AppError::Media("empty media handler command".into()));
+    };
+    std::process::Command::new(program)
+        .args(&argv[1..])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map(|_| ())
+        .map_err(|error| AppError::Media(format!("could not start media handler: {error}")))
+}
+
+/// Best-effort reveal of a directory through the system file manager.
+fn reveal_directory(directory: &Path) {
+    let _ = std::process::Command::new("xdg-open")
+        .arg(directory)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+}
+
+/// Copy a value to the system clipboard through available tools.
+fn copy_to_clipboard(value: &str) -> bool {
+    const TOOLS: [&[&str]; 3] = [
+        &["wl-copy"],
+        &["xclip", "-selection", "clipboard"],
+        &["xsel", "--clipboard", "--input"],
+    ];
+    for tool in TOOLS {
+        let Ok(mut child) = std::process::Command::new(tool[0])
+            .args(&tool[1..])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        else {
+            continue;
+        };
+        let written = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(value.as_bytes()).is_ok());
+        if !written {
+            continue;
+        }
+        if child.wait().is_ok_and(|status| status.success()) {
+            return true;
+        }
+    }
+    false
+}
+
 fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>, community: Option<crate::CommunityId>) -> Option<Mutation> {
     let mut lines = draft.content.lines();
     match draft.operation.as_str() {

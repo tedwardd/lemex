@@ -11,6 +11,7 @@ path = "src/main.rs"
 async-trait = "0.1"
 crossterm = "0.29"
 keyring = { version = "3", features = ["linux-native-sync-persistent"] }
+parking_lot = "0.12"
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }

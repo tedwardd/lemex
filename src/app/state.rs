@@ -3,7 +3,7 @@ use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicU64, Ordering},
 use crate::{
     api::{CommentView, PostDetail, PostView},
     cache::{CacheStore, Draft, DraftId},
-    domain::{PostId, ProfileContext, ProfileId},
+    domain::{DownloadId, DownloadRecord, PostId, ProfileContext, ProfileId},
     error::Result,
     input::Mode,
 };
@@ -19,11 +19,19 @@ pub struct View {
     pub next_page: Option<u32>,
     pub feed_query: crate::api::FeedQuery,
     pub search: String,
+    pub downloads: Option<DownloadsPanel>,
+}
+
+/// Selection and search state for the session downloads panel.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct DownloadsPanel {
+    pub query: String,
+    pub selected: Option<DownloadId>,
 }
 
 impl Default for View {
     fn default() -> Self {
-        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new() }
+        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new(), downloads: None }
     }
 }
 
@@ -45,6 +53,36 @@ impl View {
 
     pub fn selected_comments(&self) -> &[CommentView] {
         self.detail.as_ref().map(|detail| detail.comments.as_slice()).unwrap_or_default()
+    }
+
+    pub fn downloads_active(&self) -> bool {
+        self.downloads.is_some()
+    }
+
+    pub fn open_downloads_panel(&mut self) {
+        self.downloads.get_or_insert_with(DownloadsPanel::default);
+    }
+
+    pub fn close_downloads_panel(&mut self) {
+        self.downloads = None;
+    }
+
+    pub fn selected_download(&self) -> Option<DownloadId> {
+        self.downloads.as_ref().and_then(|panel| panel.selected)
+    }
+
+    pub fn move_download_selection(&mut self, delta: isize, ids: &[DownloadId]) {
+        let Some(panel) = &mut self.downloads else { return };
+        if ids.is_empty() {
+            panel.selected = None;
+            return;
+        }
+        let current = panel
+            .selected
+            .and_then(|id| ids.iter().position(|candidate| *candidate == id))
+            .unwrap_or(0) as isize;
+        let max = ids.len().saturating_sub(1) as isize;
+        panel.selected = Some(ids[(current + delta).clamp(0, max) as usize]);
     }
 }
 
@@ -228,6 +266,15 @@ pub struct RenderModel {
     pub search: String,
     pub has_more: bool,
     pub status: Status,
+    pub downloads: Option<DownloadsRender>,
+}
+
+/// Render snapshot of the downloads panel, populated by the application layer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DownloadsRender {
+    pub query: String,
+    pub selected: Option<DownloadId>,
+    pub records: Vec<DownloadRecord>,
 }
 
 impl AppState {
@@ -241,6 +288,7 @@ impl AppState {
             search: self.view.search.clone(),
             has_more: self.view.next_page.is_some(),
             status: self.status.clone(),
+            downloads: None,
         }
     }
 }

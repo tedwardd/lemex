@@ -1,7 +1,7 @@
 use crate::{
     api::{CommentView, MutationResult, Page, PostDetail, PostView},
     cache::{Draft, DraftId},
-    domain::{Mutation, PostId, ProfileId},
+    domain::{DownloadId, Mutation, PostId, ProfileId},
     error::Result,
     input::Command,
 };
@@ -25,6 +25,7 @@ pub struct RequestToken {
 pub enum PendingAction {
     DeletePost { profile: ProfileId, id: PostId },
     Mutation { profile: ProfileId, mutation: Mutation, draft: Option<DraftId> },
+    DeleteDownload { id: DownloadId, path: std::path::PathBuf },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -54,6 +55,19 @@ pub enum ApiResult {
 }
 
 #[derive(Debug)]
+pub enum DownloadsAction {
+    Search(String),
+    Reopen,
+    Reveal,
+    CopyPath,
+    Retry,
+    Cancel,
+    Delete,
+    ResolveCollision { overwrite: bool },
+    Close,
+}
+
+#[derive(Debug)]
 pub enum AppAction {
     Input(Command),
     Profile(ProfileCommand),
@@ -68,6 +82,10 @@ pub enum AppAction {
     Confirm,
     Cancel,
     ApiResult(ApiResult),
+    Media,
+    DownloadMedia,
+    ShowDownloads,
+    Downloads(DownloadsAction),
     Tick,
     Quit,
 }

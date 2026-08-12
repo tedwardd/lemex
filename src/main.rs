@@ -13,6 +13,7 @@ use lemmy::{
 fn build_app() -> Result<App> {
     let path = config_path();
     let config = if path.exists() { AppConfig::load(&path)? } else { AppConfig::default() };
+    let media = config.media.clone();
     let profile = config
         .profiles
         .into_iter()
@@ -23,11 +24,12 @@ fn build_app() -> Result<App> {
         .map_err(|error| AppError::Storage(format!("cannot create cache directory {}: {error}", cache_root.display())))?;
     let cache = SqliteCacheStore::open(cache_root.join(PathBuf::from("cache.sqlite3")))?;
     let api = HttpLemmyApi::new()?;
-    Ok(App::new(
+    Ok(App::with_media(
         Arc::new(api),
         Arc::new(cache),
         ProfileContext { profile, session: None },
         Arc::new(KeyringCredentialStore::default()),
+        media,
     ))
 }
 

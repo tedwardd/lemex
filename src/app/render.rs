@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use super::{help::{contextual_help, mode_label}, RenderModel};
+use super::{help::{contextual_help, mode_label}, DownloadsRender, RenderModel};
 
 pub fn render(frame: &mut Frame, model: &RenderModel) {
     let areas = Layout::default()
@@ -30,6 +30,53 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     .block(Block::default().borders(Borders::ALL).title("Session"));
     frame.render_widget(header, areas[0]);
 
+    match &model.downloads {
+        Some(downloads) => render_downloads(frame, areas.as_ref(), downloads),
+        None => render_content(frame, areas.as_ref(), model),
+    }
+
+    let compose = Paragraph::new(if model.compose.is_empty() {
+        "(empty compose buffer)".to_owned()
+    } else {
+        model.compose.clone()
+    })
+    .block(Block::default().borders(Borders::ALL).title("Compose buffer"))
+    .wrap(Wrap { trim: false });
+    frame.render_widget(compose, areas[2]);
+
+    let mut status_lines = vec![Line::from(vec![
+        Span::styled(format!("Mode: {}", mode_label(model.mode)), Style::default().add_modifier(Modifier::BOLD)),
+        Span::raw("  |  "),
+        Span::raw(status_message(model)),
+    ])];
+    if model.status.stale || model.status.retryable {
+        status_lines.push(Line::from("[STALE] Data may be out of date; refresh to retry."));
+    }
+    if model.status.confirmation_pending {
+        status_lines.push(Line::from("[PENDING] Confirmation required before network activity."));
+    }
+    if model.status.pending {
+        status_lines.push(Line::from("[PENDING] Network activity in progress."));
+    }
+    if let Some(error) = &model.status.error {
+        status_lines.push(Line::from(Span::styled(
+            format!("ERROR: {error}"),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )));
+    }
+    let help = contextual_help(model.mode)
+        .iter()
+        .map(|item| format!("{} {}", item.key, item.action))
+        .collect::<Vec<_>>()
+        .join("  ");
+    status_lines.push(Line::from(format!("Help: {help}")));
+    let status = Paragraph::new(status_lines)
+        .block(Block::default().borders(Borders::ALL).title("Command / status"))
+        .wrap(Wrap { trim: false });
+    frame.render_widget(status, areas[3]);
+}
+
+fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &RenderModel) {
     let body = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
@@ -71,46 +118,58 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
         .block(Block::default().borders(Borders::ALL).title("Detail / thread"))
         .wrap(Wrap { trim: false });
     frame.render_widget(detail, body[1]);
+}
 
-    let compose = Paragraph::new(if model.compose.is_empty() {
-        "(empty compose buffer)".to_owned()
-    } else {
-        model.compose.clone()
-    })
-    .block(Block::default().borders(Borders::ALL).title("Compose buffer"))
-    .wrap(Wrap { trim: false });
-    frame.render_widget(compose, areas[2]);
+fn render_downloads(frame: &mut Frame, areas: &[ratatui::layout::Rect], downloads: &DownloadsRender) {
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(areas[1]);
 
-    let mut status_lines = vec![Line::from(vec![
-        Span::styled(format!("Mode: {}", mode_label(model.mode)), Style::default().add_modifier(Modifier::BOLD)),
-        Span::raw("  |  "),
-        Span::raw(status_message(model)),
-    ])];
-    if model.status.stale || model.status.retryable {
-        status_lines.push(Line::from("[STALE] Data may be out of date; refresh to retry."));
-    }
-    if model.status.confirmation_pending {
-        status_lines.push(Line::from("[PENDING] Confirmation required before network activity."));
-    }
-    if model.status.pending {
-        status_lines.push(Line::from("[PENDING] Network activity in progress."));
-    }
-    if let Some(error) = &model.status.error {
-        status_lines.push(Line::from(Span::styled(
-            format!("ERROR: {error}"),
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )));
-    }
-    let help = contextual_help(model.mode)
+    let items = downloads
+        .records
         .iter()
-        .map(|item| format!("{} {}", item.key, item.action))
-        .collect::<Vec<_>>()
-        .join("  ");
-    status_lines.push(Line::from(format!("Help: {help}")));
-    let status = Paragraph::new(status_lines)
-        .block(Block::default().borders(Borders::ALL).title("Command / status"))
+        .map(|record| {
+            let deleted = if record.local_file_deleted { " [file deleted]" } else { "" };
+            ListItem::new(format!("#{}  {}  [{}]{}", record.id.0, record.filename, record.status, deleted))
+        })
+        .collect::<Vec<_>>();
+    let mut list_state = ListState::default();
+    list_state.select(
+        downloads
+            .records
+            .iter()
+            .position(|record| Some(record.id) == downloads.selected),
+    );
+    let list = List::new(items)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Session downloads{}",
+            if downloads.query.is_empty() { String::new() } else { format!(" — \"{}\"", downloads.query) }
+        )))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
+        .highlight_symbol("▶ ");
+    frame.render_stateful_widget(list, body[0], &mut list_state);
+
+    let detail_lines = match downloads
+        .records
+        .iter()
+        .find(|record| Some(record.id) == downloads.selected)
+    {
+        Some(record) => vec![
+            Line::from(Span::styled(format!("#{} — {}", record.id.0, record.filename), Style::default().add_modifier(Modifier::BOLD))),
+            Line::from(format!("Status: {}", record.status)),
+            Line::from(format!("Source: {}", record.media.url)),
+            Line::from(format!("MIME: {}", record.mime_type.as_deref().unwrap_or("unknown"))),
+            Line::from(format!("Profile: {}  |  Instance: {}", record.profile.0, record.instance_url)),
+            Line::from(format!("Requested: {}", record.requested_at)),
+            Line::from(format!("Local path: {}", record.local_path.display())),
+        ],
+        None => vec![Line::from("No download selected")],
+    };
+    let detail = Paragraph::new(detail_lines)
+        .block(Block::default().borders(Borders::ALL).title("Download"))
         .wrap(Wrap { trim: false });
-    frame.render_widget(status, areas[3]);
+    frame.render_widget(detail, body[1]);
 }
 
 fn selected_index(model: &RenderModel) -> Option<usize> {
