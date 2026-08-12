@@ -64,3 +64,45 @@ test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 ## Concerns
 - The create-post draft layout (`title`, optional link line, body) is a new documented convention; a body whose first line looks like a URL is treated as the link. `edit_post` still sends `url: None`; only `CreatePostRequest` was wired per the finding.
 - One pre-existing acceptance test (`successful_post_submission_removes_draft_only_after_confirmation`) had its fixture updated to select a post, because its original setup relied on the removed `CommunityId(1)` default; its assertion (draft removed only after confirmation) is unchanged.
+
+---
+
+# Task 9 re-review fix (empty-feed selection underflow)
+
+## Findings addressed
+1. **Empty-feed selection restore underflow (Important)** — in `src/app/mod.rs` `apply_api_result` (Feed branch), the fallback selection expression evaluated `self.state.view.posts.len() - 1` eagerly inside `then_some` (its argument is evaluated regardless of the boolean). On an empty feed page, `0 - 1` underflows: it panics in debug builds and wraps to `usize::MAX` in release, leaving a stale/out-of-range selection instead of `None`. The subtraction is now deferred via `saturating_sub(1)`, so empty pages leave `view.selected == None` while non-empty pages still clamp to the prior visible position.
+
+## Changed files
+- `src/app/mod.rs`: `.min(self.state.view.posts.len() - 1)` → `.min(self.state.view.posts.len().saturating_sub(1))` in the Feed success branch; added unit regression `app::tests::empty_feed_page_leaves_selection_none`.
+
+## Regressions added
+- `empty_feed_page_leaves_selection_none` (in `src/app/mod.rs` tests): seeds two posts with selection at index 1, applies an empty `Feed` `ApiResult::Ok(Page{ items: vec![], .. })`, asserts `view.posts` is empty and `view.selected` is `None`. This would panic in debug under the prior code and fails the assert in release.
+
+## Exact command and output
+
+### `cargo test --lib app::tests`
+```
+running 4 tests
+test app::tests::queues_text_and_escape_while_action_is_in_flight ... ok
+test app::tests::pending_refresh_snapshot_is_visible_before_action_completes ... ok
+test app::tests::empty_feed_page_leaves_selection_none ... ok
+test app::tests::detached_refresh_error_clears_pending_and_is_retryable ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.08s
+```
+
+### `cargo test --test application`
+```
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+```
+
+### `cargo test --test api_adapter`
+```
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+```
+
+Total: 52 passed, 0 failed (4 lib `app::tests` + 35 application + 13 api_adapter). Only pre-existing warning remains: `unused_assignments` on the `model` variable in `pending_refresh_snapshot_is_visible_before_action_completes` (not touched; unrelated to this fix).
+
+## Concerns
+- The stale out-of-range selection in release (the "setting stale selection" half of the bug) is now impossible because empty pages short-circuit to `None` and non-empty pages clamp via `saturating_sub`.
+- `saturating_sub(1)` on a non-empty list is identical to `len() - 1`, so non-empty behavior is unchanged.

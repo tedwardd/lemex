@@ -490,7 +490,7 @@ impl App {
                     let selected_index = self.state.view.selected.unwrap_or_default();
                     self.state.view.posts = page.items;
                     self.state.view.next_page = page.next_page;
-                    self.state.view.selected = selected_id.and_then(|id| self.state.view.posts.iter().position(|post| post.id == id)).or_else(|| (!self.state.view.posts.is_empty()).then_some(selected_index.min(self.state.view.posts.len() - 1)));
+                    self.state.view.selected = selected_id.and_then(|id| self.state.view.posts.iter().position(|post| post.id == id)).or_else(|| (!self.state.view.posts.is_empty()).then_some(selected_index.min(self.state.view.posts.len().saturating_sub(1))));
                     self.state.view.stale = stale;
                     self.state.status.stale = stale;
                     if stale {
@@ -654,6 +654,33 @@ mod tests {
             stale: true,
         });
         assert!(app.render_model().status.pending);
+    }
+    #[tokio::test]
+    async fn empty_feed_page_leaves_selection_none() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let mut app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        app.state.view.posts = vec![
+            crate::api::PostView { id: crate::PostId(1), title: "one".into(), body: None, url: None, community_id: crate::CommunityId(1), creator_id: crate::UserId(1), score: 0, comments: 0, published: None },
+            crate::api::PostView { id: crate::PostId(2), title: "two".into(), body: None, url: None, community_id: crate::CommunityId(1), creator_id: crate::UserId(1), score: 0, comments: 0, published: None },
+        ];
+        app.state.view.selected = Some(1);
+        let request = app.begin_request(RequestIdentity::Feed);
+        app.apply_api_result(ApiResult::Feed {
+            profile: ProfileId::from("fixture"),
+            request,
+            result: Ok(crate::api::Page { items: Vec::new(), next_page: None }),
+            stale: false,
+        });
+        assert!(app.state.view.posts.is_empty());
+        assert!(app.state.view.selected.is_none());
     }
     #[tokio::test]
     async fn detached_refresh_error_clears_pending_and_is_retryable() {
