@@ -1,0 +1,1 @@
+{"posts":[{"post":{"id":1,"name":"Fixture post","body":"Fixture body","community_id":1,"creator_id":1,"score":3,"published":"2026-01-01T00:00:00Z"},"counts":{"score":3,"comments":2}},{"post":{"id":2,"name":"Second fixture post","body":null,"community_id":1,"creator_id":2,"score":1,"published":"2026-01-02T00:00:00Z"},"counts":{"score":1,"comments":0}}],"next_page":null}

@@ -4,7 +4,9 @@ pub mod domain;
 pub mod error;
 pub mod input;
 pub mod profiles;
+pub mod api;
 
+pub use api::{Capabilities, CommentView, FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo};
 pub use config::{AppConfig, CacheConfig, MediaConfig};
 pub use domain::{
     ActiveProfile, CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, DownloadRecord,
