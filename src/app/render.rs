@@ -113,8 +113,8 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
         .iter()
         .map(|post| {
             ListItem::new(format!(
-                "{}  {}  [{} comments]",
-                post.id.0, post.title, post.comments
+                "{}  [score: {}]  [comments: {}]",
+                post.title, post.score, post.comments
             ))
         })
         .collect::<Vec<_>>();
@@ -141,19 +141,29 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
     let detail_text = match &model.detail {
         Some(detail) => {
             let mut lines = vec![Line::from(Span::styled(
-                format!("Post {}: {}", detail.post.id.0, detail.post.title),
+                detail.post.title.as_str(),
                 Style::default().add_modifier(Modifier::BOLD),
             ))];
-            if let Some(body) = &detail.post.body {
+            if let Some(body) = &detail.post.body
+                && !body.is_empty()
+            {
+                lines.push(Line::from(""));
                 lines.push(Line::from(body.as_str()));
             }
             lines.push(Line::from(format!(
                 "Thread comments: {}",
                 detail.comments.len()
             )));
-            lines.extend(detail.comments.iter().map(|comment| {
-                Line::from(format!("Comment {}: {}", comment.id.0, comment.content))
-            }));
+            // Blank lines separate comments; the score is prefixed so long
+            // content can never push it off the pane, and the server-side
+            // ids stay out of the UI.
+            for comment in &detail.comments {
+                lines.push(Line::from(""));
+                lines.push(Line::from(format!(
+                    "[score: {}]  {}",
+                    comment.score, comment.content
+                )));
+            }
             lines
         }
         None => vec![Line::from("No detail or thread selected")],
@@ -360,7 +370,14 @@ mod tests {
     }
 
     fn rendered(model: &RenderModel) -> String {
-        let backend = TestBackend::new(80, 24);
+        rendered_at(model, 80)
+    }
+
+    /// Render into a terminal of the given width so layout tests can verify
+    /// trailing row metadata at a realistic pane size instead of a narrow
+    /// 80-column split.
+    fn rendered_at(model: &RenderModel, width: u16) -> String {
+        let backend = TestBackend::new(width, 24);
         let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
         terminal
             .draw(|frame| render(frame, model))
@@ -375,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn feed_rows_show_comment_count() {
+    fn feed_rows_show_score_and_comment_count_without_id() {
         let mut model = model(None, false);
         model.posts = vec![crate::api::PostView {
             id: crate::PostId(1),
@@ -388,11 +405,64 @@ mod tests {
             comments: 7,
             published: None,
         }];
+        let text = rendered_at(&model, 140);
+        assert!(
+            text.contains("[score: 12]") && text.contains("[comments: 7]"),
+            "feed rows must show the score and comment count; rendered: {text}"
+        );
+        assert!(
+            !text.contains("1  Threaded post"),
+            "feed rows must not expose the post id; rendered: {text}"
+        );
+    }
+
+    #[test]
+    fn detail_shows_comment_scores_without_ids_and_with_spacing() {
+        let mut model = model(None, false);
+        model.detail = Some(crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(1),
+                title: "Threaded post".into(),
+                body: Some("The body".into()),
+                url: None,
+                community_id: crate::CommunityId(1),
+                creator_id: crate::UserId(1),
+                score: 12,
+                comments: 2,
+                published: None,
+            },
+            comments: vec![
+                crate::api::CommentView {
+                    id: crate::CommentId(10),
+                    post_id: crate::PostId(1),
+                    content: "A comment".into(),
+                    creator_id: crate::UserId(2),
+                    score: 3,
+                },
+                crate::api::CommentView {
+                    id: crate::CommentId(11),
+                    post_id: crate::PostId(1),
+                    content: "Another comment".into(),
+                    creator_id: crate::UserId(2),
+                    score: -1,
+                },
+            ],
+        });
         let text = rendered(&model);
         assert!(
-            text.contains("[7 comments]"),
-            "feed rows must show the comment count; rendered: {text}"
+            text.contains("[score: 3]") && text.contains("[score: -1]"),
+            "each comment must show its score; rendered: {text}"
         );
+        assert!(
+            !text.contains("Comment 10:") && !text.contains("Comment 11:"),
+            "comments must not expose their ids; rendered: {text}"
+        );
+        assert!(
+            !text.contains("Post 1:"),
+            "the detail header must not expose the post id; rendered: {text}"
+        );
+        let count = text.matches("Thread comments: 2").count();
+        assert!(count >= 1, "detail must still report the thread size");
     }
 
     #[test]
