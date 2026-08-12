@@ -129,6 +129,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: "Ctrl-d / Ctrl-u",
+        description: "scroll the open thread down/up",
+        group: "navigation",
+    },
+    HelpEntry {
         command: "Esc",
         description: "back / cancel",
         group: "navigation",
@@ -295,6 +300,10 @@ pub fn contextual_help(mode: Mode) -> &'static [HelpItem] {
             HelpItem {
                 key: "Enter",
                 action: "open",
+            },
+            HelpItem {
+                key: "Ctrl-d/u",
+                action: "scroll thread",
             },
             HelpItem {
                 key: "r",

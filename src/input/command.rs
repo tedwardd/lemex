@@ -22,6 +22,14 @@ pub enum Command {
     },
     Back,
     Quit,
+    /// Scroll the open detail/thread pane down (default key: Ctrl-d).
+    ScrollDetailDown {
+        count: u32,
+    },
+    /// Scroll the open detail/thread pane up (default key: Ctrl-u).
+    ScrollDetailUp {
+        count: u32,
+    },
     /// Confirm the pending destructive action (default key: `y`).
     Confirm,
     /// Cancel the pending destructive action (default key: `n`).
@@ -51,6 +59,8 @@ impl Command {
             "search-backward" => Some(Command::EnterSearch { backward: true }),
             "back" => Some(Command::Back),
             "quit" => Some(Command::Quit),
+            "scroll-detail-down" => Some(Command::ScrollDetailDown { count: 1 }),
+            "scroll-detail-up" => Some(Command::ScrollDetailUp { count: 1 }),
             "confirm" => Some(Command::Confirm),
             "cancel" => Some(Command::Cancel),
             _ => None,

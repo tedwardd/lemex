@@ -186,13 +186,22 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
         }
         None => vec![Line::from("No detail or thread selected")],
     };
+    // Clamp the scroll offset so a short thread (or a very long scroll) can
+    // never leave blank space under the pane; wrapped lines are longer than
+    // the line count, so reaching the absolute bottom of a deeply wrapped
+    // comment may need one more Ctrl-d.
+    let pane_lines = body[1].height.saturating_sub(2) as usize;
+    let scroll = model
+        .detail_scroll
+        .min(detail_text.len().saturating_sub(pane_lines)) as u16;
     let detail = Paragraph::new(detail_text)
         .block(
             Block::default()
                 .borders(Borders::ALL)
                 .title("Detail / thread"),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     frame.render_widget(detail, body[1]);
 }
 
@@ -384,6 +393,7 @@ mod tests {
                 records: Vec::new(),
             }),
             help,
+            detail_scroll: 0,
         }
     }
 
@@ -491,6 +501,50 @@ mod tests {
         );
         let count = text.matches("Thread comments: 2").count();
         assert!(count >= 1, "detail must still report the thread size");
+    }
+
+    #[test]
+    fn detail_scroll_shifts_content_above_the_fold() {
+        let mut model = model(None, false);
+        let comments = (0..8)
+            .map(|index| crate::api::CommentView {
+                id: crate::CommentId(index + 1),
+                post_id: crate::PostId(1),
+                content: format!("comment number {index}"),
+                creator_id: crate::UserId(2),
+                creator_name: "alice".into(),
+                score: index,
+            })
+            .collect();
+        model.detail = Some(crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(1),
+                title: "Threaded post".into(),
+                body: Some("The body".into()),
+                url: None,
+                community_id: crate::CommunityId(1),
+                creator_id: crate::UserId(1),
+                score: 12,
+                comments: 8,
+                published: None,
+            },
+            comments,
+        });
+        let at_top = rendered_at(&model, 140, 24);
+        assert!(
+            at_top.contains("Threaded post"),
+            "the thread title is visible at the top"
+        );
+        model.detail_scroll = 40;
+        let scrolled = rendered_at(&model, 140, 24);
+        assert!(
+            !scrolled.contains("Threaded post"),
+            "scrolling down moves the title above the fold"
+        );
+        assert!(
+            scrolled.contains("comment number 7"),
+            "later comments become reachable after scrolling"
+        );
     }
 
     #[test]

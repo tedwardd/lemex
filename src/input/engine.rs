@@ -69,10 +69,19 @@ impl InputEngine {
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> Command {
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return match (self.mode, key.code) {
+                // Vim-style half-page scrolling of the open detail pane.
+                (Mode::Normal | Mode::Visual, KeyCode::Char('d')) => Command::ScrollDetailDown {
+                    count: self.count_for_command(),
+                },
+                (Mode::Normal | Mode::Visual, KeyCode::Char('u')) => Command::ScrollDetailUp {
+                    count: self.count_for_command(),
+                },
+                _ => Command::Noop,
+            };
+        }
+        if key.modifiers.contains(KeyModifiers::ALT) {
             return Command::Noop;
         }
 

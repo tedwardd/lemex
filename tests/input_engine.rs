@@ -13,6 +13,42 @@ fn escape() -> KeyEvent {
     KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
 }
 
+fn ctrl(character: char) -> KeyEvent {
+    KeyEvent::new(KeyCode::Char(character), KeyModifiers::CONTROL)
+}
+
+#[test]
+fn ctrl_d_and_ctrl_u_scroll_the_detail_pane() {
+    let mut engine = InputEngine::default();
+    assert_eq!(
+        engine.handle(ctrl('d')),
+        Command::ScrollDetailDown { count: 1 }
+    );
+    assert_eq!(
+        engine.handle(ctrl('u')),
+        Command::ScrollDetailUp { count: 1 }
+    );
+    // Ctrl keys are inert outside Normal/Visual mode.
+    engine.handle(key('i'));
+    assert_eq!(engine.handle(ctrl('d')), Command::Noop);
+    engine.handle(escape());
+}
+
+#[test]
+fn ctrl_scroll_commands_apply_counts() {
+    let mut engine = InputEngine::default();
+    engine.handle(key('3'));
+    assert_eq!(
+        engine.handle(ctrl('d')),
+        Command::ScrollDetailDown { count: 3 }
+    );
+    engine.handle(key('2'));
+    assert_eq!(
+        engine.handle(ctrl('u')),
+        Command::ScrollDetailUp { count: 2 }
+    );
+}
+
 #[test]
 fn normal_j_moves_down_once() {
     let mut engine = InputEngine::default();

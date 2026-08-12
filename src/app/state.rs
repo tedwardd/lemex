@@ -28,6 +28,8 @@ pub struct View {
     pub downloads: Option<DownloadsPanel>,
     /// Active help filter; `Some` shows the help index instead of content.
     pub help: Option<String>,
+    /// Scroll offset (in lines) of the open detail/thread pane.
+    pub detail_scroll: usize,
 }
 
 /// Selection and search state for the session downloads panel.
@@ -50,6 +52,7 @@ impl Default for View {
             search: String::new(),
             downloads: None,
             help: None,
+            detail_scroll: 0,
         }
     }
 }
@@ -426,6 +429,8 @@ pub struct RenderModel {
     pub downloads: Option<DownloadsRender>,
     /// Active help filter shown in place of content.
     pub help: Option<String>,
+    /// Scroll offset (in lines) of the open detail/thread pane.
+    pub detail_scroll: usize,
 }
 
 /// Render snapshot of the downloads panel, populated by the application layer.
@@ -449,6 +454,7 @@ impl AppState {
             status: self.status.clone(),
             downloads: None,
             help: self.view.help.clone(),
+            detail_scroll: self.view.detail_scroll,
         }
     }
 }

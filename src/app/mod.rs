@@ -4,6 +4,9 @@ pub mod render;
 pub mod repository;
 pub mod state;
 
+/// Lines the detail/thread pane scrolls per Ctrl-d / Ctrl-u press.
+const DETAIL_SCROLL_STEP: usize = 10;
+
 use std::{
     collections::{HashMap, VecDeque},
     ffi::OsStr,
@@ -449,6 +452,26 @@ impl App {
             }
             Command::MoveUp { count } => {
                 self.move_selection(-(count as isize));
+                Ok(())
+            }
+            Command::ScrollDetailDown { count } => {
+                if self.state.view.detail.is_some() {
+                    self.state.view.detail_scroll = self
+                        .state
+                        .view
+                        .detail_scroll
+                        .saturating_add(DETAIL_SCROLL_STEP * count as usize);
+                }
+                Ok(())
+            }
+            Command::ScrollDetailUp { count } => {
+                if self.state.view.detail.is_some() {
+                    self.state.view.detail_scroll = self
+                        .state
+                        .view
+                        .detail_scroll
+                        .saturating_sub(DETAIL_SCROLL_STEP * count as usize);
+                }
                 Ok(())
             }
             Command::EnterInsert => {
@@ -1936,6 +1959,7 @@ impl App {
                         && self.state.selected_post() == Some(detail.post.id) =>
                 {
                     self.state.view.detail = Some(detail);
+                    self.state.view.detail_scroll = 0;
                     self.state.mode = Mode::Normal;
                     self.state.status.success("post loaded");
                 }

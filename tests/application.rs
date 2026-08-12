@@ -1187,6 +1187,44 @@ async fn opening_post_fetches_detail_and_thread_comments() {
 }
 
 #[tokio::test]
+async fn detail_scroll_commands_move_and_clamp_the_offset() {
+    let api = Arc::new(ThreadApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert_eq!(app.state.view.detail_scroll, 0, "opening resets the scroll");
+
+    app.dispatch(AppAction::Input(Command::ScrollDetailDown { count: 2 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.detail_scroll, 20);
+    app.dispatch(AppAction::Input(Command::ScrollDetailUp { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.detail_scroll, 10);
+    app.dispatch(AppAction::Input(Command::ScrollDetailUp { count: 9 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.detail_scroll, 0,
+        "scrolling up clamps at zero"
+    );
+
+    // Without an open detail the scroll commands are inert.
+    app.dispatch(AppAction::Back).await.unwrap();
+    app.dispatch(AppAction::Input(Command::ScrollDetailDown { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.detail_scroll, 0);
+}
+
+#[tokio::test]
 async fn confirmed_delete_removes_target_from_feed_and_cache() {
     let cache = Arc::new(MemoryCache::default());
     let context = fixture_context();
