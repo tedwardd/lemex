@@ -251,7 +251,7 @@ impl super::DraftStore for SqliteCacheStore {
 
 #[derive(Default)]
 struct MemoryDraftState {
-    drafts: HashMap<DraftId, Draft>,
+    drafts: HashMap<(ProfileId, DraftId), Draft>,
     fail_next_read: bool,
 }
 
@@ -274,8 +274,9 @@ impl MemoryDraftStore {
         self.state
             .lock()
             .ok()
-            .and_then(|state| state.drafts.get(id).cloned())
+            .and_then(|state| state.drafts.values().find(|draft| &draft.id == id).cloned())
     }
+
     pub fn save_draft(&self, draft: Draft) -> Result<()> {
         <Self as DraftStore>::save_draft(self, draft)
     }
@@ -288,7 +289,8 @@ impl MemoryDraftStore {
 impl super::DraftStore for MemoryDraftStore {
     fn save_draft(&self, draft: Draft) -> Result<()> {
         let mut state = self.state.lock().map_err(storage_error)?;
-        state.drafts.insert(draft.id.clone(), draft);
+        let key = (draft.profile.clone(), draft.id.clone());
+        state.drafts.insert(key, draft);
         Ok(())
     }
 

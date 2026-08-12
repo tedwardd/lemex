@@ -56,6 +56,20 @@ fn draft_survives_cache_failure() {
 
     assert_eq!(drafts.raw_draft(&draft.id), Some(draft));
 }
+#[test]
+fn memory_drafts_are_keyed_by_profile_and_id() {
+    let drafts = MemoryDraftStore::default();
+    let profile_a = ProfileId::from("a");
+    let profile_b = ProfileId::from("b");
+    let draft_a = draft_for(&profile_a);
+    let draft_b = draft_for(&profile_b);
+
+    drafts.save_draft(draft_a.clone()).unwrap();
+    drafts.save_draft(draft_b.clone()).unwrap();
+
+    assert_eq!(drafts.load_drafts(&profile_a).unwrap(), vec![draft_a]);
+    assert_eq!(drafts.load_drafts(&profile_b).unwrap(), vec![draft_b]);
+}
 
 #[test]
 fn sqlite_store_round_trips_profile_scoped_cache_and_drafts() {

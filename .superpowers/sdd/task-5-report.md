@@ -26,3 +26,26 @@
 ## Concerns
 
 - None identified within the Task 5 contract. The SQLite cache is intentionally disposable; callers should treat malformed entries as cache misses.
+
+## Follow-up: MemoryDraftStore profile isolation
+
+### Changed files
+
+- `src/cache/store.rs`: Changed the in-memory draft map key from `DraftId` to `(ProfileId, DraftId)`, included the profile in saves, and preserved `raw_draft(&DraftId)` by scanning stored values.
+- `tests/cache.rs`: Added a regression test saving the same draft ID under profiles A and B and asserting each profile loads only its own draft.
+- `.superpowers/sdd/task-5-report.md`: Appended this follow-up record.
+
+### Fix details
+
+The in-memory store previously overwrote profile A's draft when profile B saved the same `DraftId`. Composite keys now match SQLite semantics, while profile filtering and deterministic ID sorting remain unchanged.
+
+### Verification
+
+- Command: `cargo test --test cache memory_drafts_are_keyed_by_profile_and_id`
+- Output: `cargo test: 1 passed (1 suite, 6 filtered, 0.00s)`
+- Command: `cargo test --test cache`
+- Output: `cargo test: 7 passed (1 suite, 0.00s)`
+
+### Concerns
+
+- None identified for this focused fix.
