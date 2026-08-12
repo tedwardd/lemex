@@ -120,3 +120,51 @@ fn cached_feed_exposes_stale_metadata() {
         .unwrap()
         .stale);
 }
+
+#[test]
+fn sqlite_cache_size_limit_evicts_oldest_entries() {
+    let cache = SqliteCacheStore::open_with_size_limit(
+        std::env::temp_dir().join(format!("lemmy-cache-size-{}.sqlite3", std::process::id())),
+        Some(120),
+    )
+    .unwrap();
+    let profile = ProfileId::from("a");
+    // Three payloads padded well above 40 bytes each; with a 120-byte cap at
+    // most two survive. The oldest (by synchronized_at) must be evicted
+    // first.
+    let mut first = feed("first");
+    first.synchronized_at = 1_000;
+    let mut second = feed("second");
+    second.synchronized_at = 2_000;
+    let mut third = feed("third");
+    third.synchronized_at = 3_000;
+    let mut pad = |mut cached: CachedFeed| {
+        cached.entity["pad"] = json!("0123456789abcdef0123456789abcdef");
+        cached
+    };
+    first = pad(first);
+    second = pad(second);
+    third = pad(third);
+    cache.write_feed(&profile, &feed_key("first"), &first).unwrap();
+    cache.write_feed(&profile, &feed_key("second"), &second).unwrap();
+    cache.write_feed(&profile, &feed_key("third"), &third).unwrap();
+
+    assert!(cache.read_feed(&profile, &feed_key("first")).unwrap().is_none(), "oldest entry must be evicted first");
+    assert!(cache.read_feed(&profile, &feed_key("second")).unwrap().is_some());
+    assert!(cache.read_feed(&profile, &feed_key("third")).unwrap().is_some());
+
+    // A fresh write still fits and evicts the next-oldest.
+    let mut fourth = feed("fourth");
+    fourth.synchronized_at = 4_000;
+    fourth = pad(fourth);
+    cache.write_feed(&profile, &feed_key("fourth"), &fourth).unwrap();
+    assert!(cache.read_feed(&profile, &feed_key("second")).unwrap().is_none());
+    assert!(cache.read_feed(&profile, &feed_key("third")).unwrap().is_some());
+    assert!(cache.read_feed(&profile, &feed_key("fourth")).unwrap().is_some());
+
+    // Drafts are never evicted by the size cap.
+    let draft = draft_for(&profile);
+    cache.save_draft(draft.clone()).unwrap();
+    assert_eq!(cache.load_drafts(&profile).unwrap(), vec![draft]);
+    let _ = std::fs::remove_file(std::env::temp_dir().join(format!("lemmy-cache-size-{}.sqlite3", std::process::id())));
+}

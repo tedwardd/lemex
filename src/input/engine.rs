@@ -43,6 +43,25 @@ impl InputEngine {
         }
     }
 
+    /// Apply persisted `[keymaps]` entries (command name → key sequence) on
+    /// top of the default bindings. The new sequence replaces the default
+    /// binding for the named command (so e.g. rebinding `down` to `jk`
+    /// unshadows the multi-key sequence), and multi-key sequences participate
+    /// in prefix matching like any other mapping. Entries whose name is not a
+    /// documented command are skipped with a warning.
+    pub fn with_keymaps(mut self, keymaps: &std::collections::HashMap<String, String>) -> Self {
+        for (name, sequence) in keymaps {
+            match Command::by_name(name) {
+                Some(command) => {
+                    self.mappings.remove_command(&command);
+                    self.mappings.insert(sequence.as_str(), command);
+                }
+                None => tracing::warn!(name = %name, "ignoring keymap for unknown command name"),
+            }
+        }
+        self
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }

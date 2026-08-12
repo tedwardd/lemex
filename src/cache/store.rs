@@ -19,21 +19,31 @@ fn storage_error(error: impl Display) -> AppError {
 ///
 /// The connection is protected by a mutex so the store can be shared between
 /// the UI and repository tasks while preserving a single transaction owner.
+/// When a `max_size_bytes` cap is configured, feed writes evict the oldest
+/// entries (by synchronization time) until the total payload fits under the
+/// cap; drafts are never evicted.
 pub struct SqliteCacheStore {
     connection: Mutex<Connection>,
+    max_size_bytes: Option<u64>,
 }
 
 impl SqliteCacheStore {
     /// Open (or create) a persistent SQLite database at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
+        Self::open_with_size_limit(path, None)
+    }
+
+    /// Open (or create) a persistent SQLite database at `path`, enforcing a
+    /// total feed-payload byte cap on every write.
+    pub fn open_with_size_limit(path: impl AsRef<Path>, max_size_bytes: Option<u64>) -> Result<Self> {
         let connection = Connection::open(path).map_err(storage_error)?;
-        Self::from_connection(connection)
+        Self::from_connection(connection, max_size_bytes)
     }
 
     /// Open a disposable in-memory SQLite database.
     pub fn in_memory() -> Result<Self> {
         let connection = Connection::open_in_memory().map_err(storage_error)?;
-        Self::from_connection(connection)
+        Self::from_connection(connection, None)
     }
 
     /// Alias for [`Self::open`], useful to callers that construct stores by path.
@@ -41,7 +51,7 @@ impl SqliteCacheStore {
         Self::open(path)
     }
 
-    fn from_connection(connection: Connection) -> Result<Self> {
+    fn from_connection(connection: Connection, max_size_bytes: Option<u64>) -> Result<Self> {
         connection
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
@@ -64,7 +74,41 @@ impl SqliteCacheStore {
             .map_err(storage_error)?;
         Ok(Self {
             connection: Mutex::new(connection),
+            max_size_bytes,
         })
+    }
+
+    /// Delete the oldest feed entries (by synchronization time) until the
+    /// total payload fits under the configured cap. A single entry larger
+    /// than the cap is evicted too: the cap is a hard byte limit.
+    fn evict_oldest_locked(connection: &Connection, max_size_bytes: Option<u64>) -> Result<()> {
+        let Some(max) = max_size_bytes else {
+            return Ok(());
+        };
+        loop {
+            let total: i64 = connection
+                .query_row(
+                    "SELECT COALESCE(SUM(LENGTH(CAST(entity_json AS BLOB))), 0) FROM cache_entries",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(storage_error)?;
+            if total as u64 <= max {
+                return Ok(());
+            }
+            let deleted = connection
+                .execute(
+                    "DELETE FROM cache_entries WHERE rowid = (
+                         SELECT rowid FROM cache_entries
+                         ORDER BY synchronized_at ASC, rowid ASC LIMIT 1
+                     )",
+                    [],
+                )
+                .map_err(storage_error)?;
+            if deleted == 0 {
+                return Ok(());
+            }
+        }
     }
 
     /// Insert an uninterpreted cache payload for corruption/recovery tests.
@@ -89,6 +133,12 @@ impl SqliteCacheStore {
                 params![profile, key, payload.as_ref()],
             )
             .map_err(storage_error)?;
+        Self::evict_oldest_locked(&connection, self.max_size_bytes)
+            .map_err(|error| {
+                tracing::warn!(%error, "cache size eviction failed");
+                error
+            })
+            .ok();
         Ok(())
     }
 
@@ -225,7 +275,17 @@ impl CacheStore for SqliteCacheStore {
 
     fn write_feed(&self, context: &ProfileId, key: &FeedKey, feed: &CachedFeed) -> Result<()> {
         let connection = self.connection.lock().map_err(storage_error)?;
-        Self::write_feed_locked(&connection, context, key, feed)
+        Self::write_feed_locked(&connection, context, key, feed)?;
+        // Enforce the configured byte cap: evict the oldest entries until the
+        // total payload fits. The entry just written is the newest and
+        // survives unless it alone exceeds the cap.
+        Self::evict_oldest_locked(&connection, self.max_size_bytes)
+            .map_err(|error| {
+                tracing::warn!(%error, "cache size eviction failed");
+                error
+            })
+            .ok();
+        Ok(())
     }
 
     fn save_draft(&self, draft: Draft) -> Result<()> {

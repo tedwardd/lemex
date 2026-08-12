@@ -124,3 +124,28 @@ fn mappings_choose_longest_complete_sequence_without_waiting() {
     assert_eq!(mappings.classify("g"), MappingMatch::Complete(Command::Refresh));
     assert_eq!(mappings.classify("x"), MappingMatch::NoMatch);
 }
+
+#[test]
+fn persisted_keymaps_bind_documented_commands_at_startup() {
+    let mut keymaps = std::collections::HashMap::new();
+    // Rebind the documented `refresh` and `quit` commands to new sequences,
+    // and add a multi-key motion sequence.
+    keymaps.insert("refresh".to_owned(), "R".to_owned());
+    keymaps.insert("quit".to_owned(), "qq".to_owned());
+    keymaps.insert("down".to_owned(), "jk".to_owned());
+    // An unknown command name must not break the engine.
+    keymaps.insert("not-a-command".to_owned(), "x".to_owned());
+
+    let mut engine = InputEngine::default().with_keymaps(&keymaps);
+
+    assert_eq!(engine.handle(key('R')), Command::Refresh);
+    // `q` is still the default quit; the persisted multi-key `qq` sequence
+    // must be preferred over the single-key default when it completes.
+    assert_eq!(engine.handle(key('q')), Command::Noop);
+    assert_eq!(engine.handle(key('q')), Command::Quit);
+    // The custom `jk` motion binds down; the default `j` no longer fires
+    // alone because `jk` is a prefix.
+    assert_eq!(engine.handle(key('j')), Command::Noop);
+    assert_eq!(engine.handle(key('k')), Command::MoveDown { count: 1 });
+    assert_eq!(engine.handle(key('x')), Command::Noop, "unknown command names must be skipped");
+}

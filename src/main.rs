@@ -1,4 +1,4 @@
-use std::{fs, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
 use lemmy::{
     api::HttpLemmyApi,
@@ -28,11 +28,12 @@ fn init_logging(config: &AppConfig) {
     let _ = tracing_subscriber::fmt().with_max_level(level).try_init();
 }
 
-async fn build_app() -> Result<App> {
+async fn build_app() -> Result<(App, HashMap<String, String>)> {
     let path = config_path();
     let config = if path.exists() { AppConfig::load(&path)? } else { AppConfig::default() };
     init_logging(&config);
     let media = config.media.clone();
+    let keymaps = config.keymaps.clone();
     let profile = config
         .profiles
         .into_iter()
@@ -41,29 +42,47 @@ async fn build_app() -> Result<App> {
     let cache_root = config.cache.directory.unwrap_or_else(cache_dir);
     fs::create_dir_all(&cache_root)
         .map_err(|error| AppError::Storage(format!("cannot create cache directory {}: {error}", cache_root.display())))?;
-    let cache = SqliteCacheStore::open(cache_root.join(PathBuf::from("cache.sqlite3")))?;
+    let cache = SqliteCacheStore::open_with_size_limit(
+        cache_root.join(PathBuf::from("cache.sqlite3")),
+        config.cache.max_size_bytes,
+    )?;
     let api = HttpLemmyApi::new()?;
     // Restore a previously stored session from the OS credential store when
-    // one is available. Secrets never touch the config file.
+    // one is available. Secrets never touch the config file. A missing or
+    // unavailable keyring (headless session, unsupported target, no secret
+    // service) must not block launch: start anonymous and let `:login`
+    // surface any credential-store failure when the user actually signs in.
     let credentials = Arc::new(KeyringCredentialStore::default());
-    let session = credentials.get_session(&profile.id).await?;
-    Ok(App::with_media(
-        Arc::new(api),
-        Arc::new(cache),
-        ProfileContext { profile, session },
-        credentials,
-        media,
+    let session = match credentials.get_session(&profile.id).await {
+        Ok(session) => session,
+        Err(error) => {
+            tracing::warn!(%error, "keyring unavailable at startup; starting anonymous");
+            None
+        }
+    };
+    Ok((
+        App::with_media(
+            Arc::new(api),
+            Arc::new(cache),
+            ProfileContext { profile, session },
+            credentials,
+            media,
+        ),
+        keymaps,
     ))
 }
 
 fn main() -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
+    // One runtime for the whole process: startup session restoration and the
+    // terminal event loop share it, so application state is never handed
+    // between two runtimes and blocking work stays on the multi-thread pool.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| AppError::Terminal(format!("could not start Tokio runtime: {error}")))?;
-    let app = runtime.block_on(build_app())?;
+    let (app, keymaps) = runtime.block_on(build_app())?;
     let terminal = ratatui::init();
-    let result = run_terminal(app, terminal);
+    let result = run_terminal(app, terminal, &runtime, &keymaps);
     ratatui::restore();
     result
 }

@@ -89,6 +89,12 @@ impl MappingTable {
         }
     }
 
+    /// Remove every sequence currently bound to `command`, so a rebinding
+    /// replaces (rather than shadows) the previous binding.
+    pub fn remove_command(&mut self, command: &Command) {
+        self.mappings.retain(|_, bound| bound != command);
+    }
+
     pub fn resolve<S>(&self, sequence: S) -> Option<Command>
     where
         S: IntoKeySequence,

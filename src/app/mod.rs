@@ -26,15 +26,20 @@ use crate::{
     profiles::{default_store, CredentialStore, ProfileStore},
 };
 
-pub fn run_terminal(app: App, terminal: DefaultTerminal) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| crate::error::AppError::Terminal(format!("could not start Tokio runtime: {error}")))?;
-    runtime.block_on(run_terminal_async(app, terminal))
+pub fn run_terminal(
+    app: App,
+    terminal: DefaultTerminal,
+    runtime: &tokio::runtime::Runtime,
+    keymaps: &HashMap<String, String>,
+) -> Result<()> {
+    runtime.block_on(run_terminal_async(app, terminal, keymaps))
 }
 
-async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<()> {
+async fn run_terminal_async(
+    app: App,
+    mut terminal: DefaultTerminal,
+    keymaps: &HashMap<String, String>,
+) -> Result<()> {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Result<Event>>();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let input_thread = thread::spawn(move || {
@@ -60,7 +65,7 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
     });
 
     let result = async {
-        let mut input = crate::input::InputEngine::new();
+        let mut input = crate::input::InputEngine::new().with_keymaps(keymaps);
         let mut ticks = tokio::time::interval(Duration::from_millis(100));
         let mut app = Some(app);
         let mut model = app.as_ref().expect("application is present").render_model();
@@ -449,6 +454,10 @@ impl App {
 
     async fn perform_login(&mut self, request: LoginRequest) -> Result<()> {
         self.requests.clear();
+        // The password arrived through the on-screen compose buffer; it must
+        // not persist on screen or in state after the attempt, whether the
+        // login succeeds or fails.
+        self.state.view.compose.clear();
         match crate::profiles::login(self.repository.api.as_ref(), self.repository.credentials.as_ref(), request).await {
             Ok(session) => {
                 let user = session.user_id.0;
@@ -540,6 +549,7 @@ impl App {
             self.state.view.search = search.clone();
             self.state.view.feed_query = FeedQuery { search: (!search.is_empty()).then_some(search), ..FeedQuery::home() };
             self.state.mode = Mode::Normal;
+            self.state.view.compose.clear();
             return self.refresh_feed().await;
         }
         self.state.mode = Mode::Normal;
@@ -551,7 +561,7 @@ impl App {
         let mut parts = trimmed.split_whitespace();
         let command = parts.next().unwrap_or_default();
         let args: Vec<&str> = parts.collect();
-        match command {
+        let result = match command {
             "profile" => match args.as_slice() {
                 [] => self.execute_profile_command(ProfileCommand::List).await,
                 [id] => self.execute_profile_command(ProfileCommand::Switch(ProfileId::from(*id))).await,
@@ -597,41 +607,83 @@ impl App {
                 Ok(())
             }
             "set" => self.config_command(&args).await,
-            "feed" => {
+            "quit" => { self.downloads.shutdown(); self.quit = true; Ok(()) }
+            "feed" if !self.state.view.downloads_active() => {
                 self.state.view.feed_query = FeedQuery::home();
                 self.state.view.search.clear();
                 self.state.view.next_page = None;
                 self.refresh_feed().await
             }
-            "search" => {
+            "search" if !self.state.view.downloads_active() => {
                 let query = args.join(" ").trim().to_owned();
                 self.state.view.search = query.clone();
                 self.state.view.feed_query = FeedQuery { search: (!query.is_empty()).then_some(query), ..FeedQuery::home() };
                 self.state.view.next_page = None;
                 self.refresh_feed().await
             }
-            "open" => self.open_selected().await,
-            "refresh" => self.refresh_feed().await,
-            "delete" => match self.state.selected_post() {
+            // Downloads panel routing (Task 10 guards): with the panel open,
+            // `:search` filters the download history and `:delete` acts on the
+            // selected download, ahead of the top-level post/search arms.
+            "search" => self.downloads_action(DownloadsAction::Search(args.join(" ").trim().to_owned())).await,
+            "open" if !self.state.view.downloads_active() => self.open_selected().await,
+            "open" => self.downloads_action(DownloadsAction::Reopen).await,
+            "refresh" if !self.state.view.downloads_active() => self.refresh_feed().await,
+            "refresh" => self.downloads_action(DownloadsAction::Retry).await,
+            "delete" if !self.state.view.downloads_active() => match self.state.selected_post() {
                 Some(id) => self.delete_post(id).await,
                 None => {
                     self.state.status.failure("no post selected");
                     Ok(())
                 }
             },
-            "media" => self.open_media_selected().await,
-            "download-media" | "download_media" => self.download_media_selected().await,
-            "downloads" => {
-                self.toggle_downloads_panel();
+            "delete" => self.downloads_action(DownloadsAction::Delete).await,
+            // Content commands have no download-panel equivalent; refuse them
+            // while the panel is open so they never act on the hidden feed
+            // selection.
+            "feed" | "media" | "download-media" | "download_media" | "community" | "post" | "reply" | "edit" | "vote" | "save" | "subscribe" if self.state.view.downloads_active() => {
+                self.state.status.failure("close the downloads panel before using content commands");
                 Ok(())
             }
-            "quit" => { self.downloads.shutdown(); self.quit = true; Ok(()) }
+            "media" => self.open_media_selected().await,
+            "download-media" | "download_media" => self.download_media_selected().await,
+            "community" => self.community_command(&args).await,
+            "post" => self.open_selected().await,
+            "reply" => self.reply_command(&args).await,
+            "edit" => self.edit_command(&args).await,
+            "vote" => self.vote_command(&args).await,
+            "save" => self.save_command().await,
+            "subscribe" => self.subscribe_command().await,
+            "downloads" => match args.as_slice() {
+                [] => {
+                    self.toggle_downloads_panel();
+                    Ok(())
+                }
+                ["search", rest @ ..] => self.downloads_action(DownloadsAction::Search(rest.join(" ").trim().to_owned())).await,
+                ["reopen"] => self.downloads_action(DownloadsAction::Reopen).await,
+                ["reveal"] => self.downloads_action(DownloadsAction::Reveal).await,
+                ["copy"] => self.downloads_action(DownloadsAction::CopyPath).await,
+                ["retry"] => self.downloads_action(DownloadsAction::Retry).await,
+                ["cancel"] => self.downloads_action(DownloadsAction::Cancel).await,
+                ["delete"] => self.downloads_action(DownloadsAction::Delete).await,
+                ["overwrite"] => self.downloads_action(DownloadsAction::ResolveCollision { overwrite: true }).await,
+                ["keep"] => self.downloads_action(DownloadsAction::ResolveCollision { overwrite: false }).await,
+                ["close"] => self.downloads_action(DownloadsAction::Close).await,
+                _ => {
+                    self.state.status.failure("usage: downloads [search <query>|reopen|reveal|copy|retry|cancel|delete|overwrite|keep|close]");
+                    Ok(())
+                }
+            },
             _ if self.state.view.downloads_active() => self.submit_downloads_command(trimmed).await,
             other => {
                 self.state.status.failure(format!("unknown command: {other}"));
                 Ok(())
             }
-        }
+        };
+        // The compose buffer is transient command input; never leave what was
+        // typed on screen after it has been submitted (secrets such as
+        // `:login <user> <password>` must not persist).
+        self.state.view.compose.clear();
+        result
     }
 
     async fn config_command(&mut self, args: &[&str]) -> Result<()> {
@@ -677,8 +729,9 @@ impl App {
     }
 
     /// Apply configuration changes that can take effect live; the durable
-    /// config was already written atomically. Keymaps, cache location, and
-    /// the logging subscriber take effect on the next launch.
+    /// config was already written atomically. Keymaps, the cache directory
+    /// and size limit, and the logging subscriber take effect on the next
+    /// launch (the input engine and cache store are opened at startup).
     fn apply_runtime_config(&mut self, config: &AppConfig) {
         self.media_policy = MediaPolicyConfig::from_config(&config.media);
         self.collision_policy = CollisionPolicy::from_config(&config.media.collision_policy);
@@ -712,6 +765,104 @@ impl App {
             }
         };
         self.downloads_action(action).await
+    }
+
+    /// `:community [<id>]` — open a community feed; without an id, the
+    /// selected post's community is used.
+    async fn community_command(&mut self, args: &[&str]) -> Result<()> {
+        match args {
+            [] => {
+                let community = self
+                    .state
+                    .selected_post()
+                    .and_then(|id| self.state.view.posts.iter().find(|post| post.id == id).map(|post| post.community_id));
+                match community {
+                    Some(community) => self.open_community(community).await,
+                    None => {
+                        self.state.status.failure("no post selected; specify a community id");
+                        Ok(())
+                    }
+                }
+            }
+            [id] => match id.parse::<i64>() {
+                Ok(id) => self.open_community(crate::domain::CommunityId(id)).await,
+                Err(_) => {
+                    self.state.status.failure("community id must be a number");
+                    Ok(())
+                }
+            },
+            _ => {
+                self.state.status.failure("usage: community [<id>]");
+                Ok(())
+            }
+        }
+    }
+
+    /// `:reply <text>` — comment on the selected post.
+    async fn reply_command(&mut self, args: &[&str]) -> Result<()> {
+        let content = args.join(" ").trim().to_owned();
+        if content.is_empty() {
+            self.state.status.failure("usage: reply <text>");
+            return Ok(());
+        }
+        let Some(post) = self.state.selected_post() else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        self.start_mutation(Mutation::CreateComment(CreateCommentRequest { post, content }), None).await
+    }
+
+    /// `:edit <title>` — retitle the selected post.
+    async fn edit_command(&mut self, args: &[&str]) -> Result<()> {
+        let title = args.join(" ").trim().to_owned();
+        if title.is_empty() {
+            self.state.status.failure("usage: edit <title>");
+            return Ok(());
+        }
+        let Some(id) = self.state.selected_post() else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        self.start_mutation(Mutation::EditPost(EditPostRequest { id, name: Some(title), body: None, url: None }), None).await
+    }
+
+    /// `:vote <score>` — vote on the selected post.
+    async fn vote_command(&mut self, args: &[&str]) -> Result<()> {
+        let [score] = args else {
+            self.state.status.failure("usage: vote <score>");
+            return Ok(());
+        };
+        let Ok(score) = score.parse::<i8>() else {
+            self.state.status.failure("score must be a number (typically -1, 0, or 1)");
+            return Ok(());
+        };
+        let Some(id) = self.state.selected_post() else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        self.start_mutation(Mutation::VotePost { id, score }, None).await
+    }
+
+    /// `:save` — save the selected post.
+    async fn save_command(&mut self) -> Result<()> {
+        let Some(id) = self.state.selected_post() else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        self.start_mutation(Mutation::SavePost { id, saved: true }, None).await
+    }
+
+    /// `:subscribe` — subscribe to the selected post's community.
+    async fn subscribe_command(&mut self) -> Result<()> {
+        let Some(id) = self.state.selected_post() else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        let Some(community) = self.state.view.posts.iter().find(|post| post.id == id).map(|post| post.community_id) else {
+            self.state.status.failure("no post selected");
+            return Ok(());
+        };
+        self.start_mutation(Mutation::Subscribe { community, subscribed: true }, None).await
     }
 
     async fn open_community(&mut self, community: crate::domain::CommunityId) -> Result<()> {
@@ -1620,5 +1771,90 @@ mod tests {
         app.downloads.history().insert(record_with_status(id, destination.clone(), DownloadStatus::Cancelled));
         app.dispatch(AppAction::Confirm).await.unwrap();
         assert!(destination.exists(), "confirm must refuse to remove the pre-existing collision target");
+    }
+
+    fn completed_download_app() -> App {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        )
+    }
+
+    #[tokio::test]
+    async fn downloads_panel_routes_delete_and_search_before_feed_arms() {
+        let mut app = completed_download_app();
+        let id = crate::domain::DownloadId(7);
+        app.downloads.history().insert(crate::domain::DownloadRecord::new(
+            id,
+            MediaRef::new(Url::parse("https://example.com/notes.txt").unwrap()),
+            "notes.txt",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            PathBuf::from("/tmp/lemmy-routing-notes.txt"),
+        ));
+        app.downloads.history().transition(id, |_| DownloadStatus::Completed);
+        app.state.view.downloads = Some(DownloadsPanel { query: String::new(), selected: Some(id) });
+        // A selected post so the top-level `:search`/`:delete` arms would have
+        // a feed target if they were (wrongly) reached.
+        app.state.view.posts = vec![crate::api::PostView { id: crate::PostId(1), title: "one".into(), body: None, url: None, community_id: crate::CommunityId(1), creator_id: crate::UserId(1), score: 0, comments: 0, published: None }];
+        app.state.view.selected = Some(0);
+        app.state.view.search = "feed-search".into();
+
+        // `:search` must filter the download history, not the feed.
+        app.dispatch(AppAction::Input(Command::SubmitLine("search notes".into()))).await.unwrap();
+        assert_eq!(app.state.view.downloads.as_ref().map(|panel| panel.query.as_str()), Some("notes"), "panel search must filter the download history");
+        assert_eq!(app.state.view.search, "feed-search", "panel search must not touch the feed search");
+        assert!(app.state.view.feed_query.search.is_none(), "panel search must not change the feed query");
+
+        // `:delete` must stage a download deletion, not a post deletion.
+        app.state.pending = None;
+        app.state.view.downloads = Some(DownloadsPanel { query: String::new(), selected: Some(id) });
+        app.dispatch(AppAction::Input(Command::SubmitLine("delete".into()))).await.unwrap();
+        assert!(
+            matches!(&app.state.pending, Some(crate::app::actions::PendingAction::DeleteDownload { id: staged, .. }) if *staged == id),
+            "panel delete must target the selected download, got {:?}",
+            app.state.pending
+        );
+    }
+
+    #[tokio::test]
+    async fn downloads_subcommands_dispatch_panel_actions_and_bare_toggles() {
+        let mut app = completed_download_app();
+        let id = crate::domain::DownloadId(7);
+        app.downloads.history().insert(crate::domain::DownloadRecord::new(
+            id,
+            MediaRef::new(Url::parse("https://example.com/notes.txt").unwrap()),
+            "notes.txt",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            PathBuf::from("/tmp/lemmy-subcommand-notes.txt"),
+        ));
+        app.downloads.history().transition(id, |_| DownloadStatus::Completed);
+
+        // `:downloads search <query>` opens the panel with the filter applied.
+        assert!(!app.state.view.downloads_active());
+        app.dispatch(AppAction::Input(Command::SubmitLine("downloads search notes".into()))).await.unwrap();
+        assert!(app.state.view.downloads_active(), "documented `:downloads search <query>` must open the panel");
+        assert_eq!(app.state.view.downloads.as_ref().map(|panel| panel.query.as_str()), Some("notes"));
+
+        // `:downloads delete` acts on the selected completed record.
+        app.state.view.downloads.as_mut().unwrap().selected = Some(id);
+        app.dispatch(AppAction::Input(Command::SubmitLine("downloads delete".into()))).await.unwrap();
+        assert!(
+            matches!(&app.state.pending, Some(crate::app::actions::PendingAction::DeleteDownload { id: staged, .. }) if *staged == id),
+            "`:downloads delete` must stage the selected download deletion"
+        );
+
+        // Bare `:downloads` toggles the panel closed.
+        app.dispatch(AppAction::Input(Command::SubmitLine("downloads".into()))).await.unwrap();
+        assert!(!app.state.view.downloads_active(), "bare `:downloads` must toggle the panel closed");
     }
 }

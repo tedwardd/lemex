@@ -626,6 +626,54 @@ async fn login_wires_session_into_active_context_after_api_success() {
 }
 
 #[tokio::test]
+async fn login_clears_compose_buffer_so_password_does_not_persist() {
+    // Success path: the typed `:login alice secret` line must not linger in
+    // the compose buffer (which is rendered on screen) or in state.
+    let mut app = App::new(Arc::new(LoginApi), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    app.state.view.compose = "login alice secret".into();
+    app.dispatch(AppAction::Profile(ProfileCommand::Login)).await.unwrap();
+    assert!(app.state.active.session.is_some());
+    assert!(app.state.view.compose.is_empty(), "plaintext password must not persist in the compose buffer after a successful login");
+
+    // Failure path: the password must be cleared even when the API rejects it.
+    let mut failed = App::new(Arc::new(FailingLoginApi), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    failed.state.view.compose = "login alice secret".into();
+    failed.dispatch(AppAction::Profile(ProfileCommand::Login)).await.unwrap();
+    assert!(failed.state.active.session.is_none());
+    assert!(failed.state.status.error.is_some());
+    assert!(failed.state.view.compose.is_empty(), "plaintext password must not persist in the compose buffer after a failed login");
+}
+
+#[tokio::test]
+async fn documented_content_commands_are_dispatchable() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(Arc::new(api), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    app.state.view.posts = vec![post_view(1, "target")];
+    app.state.select(PostId(1));
+
+    // Every mutation command documented in help must dispatch (never
+    // "unknown command") and reach the API.
+    for line in ["reply hello", "edit New title", "vote 1", "save", "subscribe"] {
+        app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(line.into()))).await.unwrap();
+        let name = line.split_whitespace().next().unwrap();
+        assert_ne!(
+            app.state.status.error.as_deref(),
+            Some(format!("unknown command: {name}")).as_deref(),
+            "`:{line}` is documented in help and must dispatch"
+        );
+    }
+    assert_eq!(requests.load(Ordering::SeqCst), 5, "each documented mutation command must reach the API");
+
+    // Navigation commands dispatch too: `:post` opens the selection and
+    // `:community` defaults to the selected post's community.
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("post".into()))).await.unwrap();
+    assert_ne!(app.state.status.error.as_deref(), Some("unknown command: post"));
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("community".into()))).await.unwrap();
+    assert_ne!(app.state.status.error.as_deref(), Some("unknown command: community"));
+    assert_eq!(app.state.view.feed_query.community, Some(lemmy::CommunityId(1)), ":community defaults to the selected post's community");
+}
+
+#[tokio::test]
 async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
     let path = std::env::temp_dir().join(format!("lemmy-application-delete-{}.toml", std::process::id()));
     let store = ProfileStore::new(&path);
@@ -675,6 +723,19 @@ impl LemmyApi for LoginApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
     async fn login(&self, request: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Ok(lemmy::Session { token: lemmy::SecretString::from(format!("token-{}", request.username)), user_id: lemmy::UserId(7) })
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Err(AppError::Network("unused".into())) }
+}
+
+struct FailingLoginApi;
+
+#[async_trait]
+impl LemmyApi for FailingLoginApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> { Err(AppError::Network("unused".into())) }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+        Err(AppError::Authentication("invalid credentials".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Err(AppError::Network("unused".into())) }
 }
