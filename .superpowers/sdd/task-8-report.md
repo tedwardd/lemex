@@ -80,4 +80,8 @@
 - `src/app/mod.rs`: clearing staged confirmation for Refresh/Open now also clears its stale status message and error before network-pending rendering; regression asserts the network snapshot has no confirmation text.
 - `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
 - `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `src/app/repository.rs`: detached refresh completions now carry API/cache-write errors to the event loop instead of dropping them; `Tick` applies the error so pending clears and retryable status is rendered.
+- `src/app/mod.rs`: adds a deterministic cached-refresh failure regression.
+- `cargo test --lib app::tests` — `cargo test: 3 passed (1 suite, 0.07s)`.
+- `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
 

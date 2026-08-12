@@ -20,7 +20,7 @@ pub struct CachedRead<T> {
 #[derive(Default)]
 struct RefreshState {
     latest: u64,
-    completed: Option<u64>,
+    completed: Option<(u64, Option<String>)>,
 }
 
 #[derive(Clone)]
@@ -69,8 +69,16 @@ impl Repository {
         let state = refreshes.entry((profile.clone(), key.clone())).or_default();
         if state.latest != generation { return Ok(false); }
         self.cache.write_feed(profile, key, feed)?;
-        state.completed = Some(generation);
+        state.completed = Some((generation, None));
         Ok(true)
+    }
+
+    fn record_refresh_error(&self, profile: &crate::ProfileId, key: &FeedKey, generation: u64, epoch: u64, error: String) {
+        let epochs = self.context_epochs.lock().expect("context epoch state poisoned");
+        if epochs.get(profile).copied().unwrap_or_default() != epoch { return; }
+        let mut refreshes = self.refreshes.lock().expect("refresh state poisoned");
+        let state = refreshes.entry((profile.clone(), key.clone())).or_default();
+        if state.latest == generation { state.completed = Some((generation, Some(error))); }
     }
 
     fn reconcile_page(&self, profile: &crate::ProfileId, page: &mut Page<PostView>) {
@@ -124,10 +132,18 @@ impl Repository {
         let repository = self.clone();
         let context = context.clone();
         tokio::spawn(async move {
-            if let Ok(mut page) = api.feed(&context, query).await {
-                let _cache_write = repository.cache_writes.lock().expect("cache write lock poisoned");
-                repository.reconcile_page(&context.profile.id, &mut page);
-                let _ = repository.write_refresh_locked(&context.profile.id, &key, generation, epoch, &CachedFeed::new(page_to_value(&page), unix_now(), false));
+            match api.feed(&context, query).await {
+                Ok(mut page) => {
+                    let write_result = {
+                        let _cache_write = repository.cache_writes.lock().expect("cache write lock poisoned");
+                        repository.reconcile_page(&context.profile.id, &mut page);
+                        repository.write_refresh_locked(&context.profile.id, &key, generation, epoch, &CachedFeed::new(page_to_value(&page), unix_now(), false))
+                    };
+                    if let Err(error) = write_result {
+                        repository.record_refresh_error(&context.profile.id, &key, generation, epoch, error.to_string());
+                    }
+                }
+                Err(error) => repository.record_refresh_error(&context.profile.id, &key, generation, epoch, error.to_string()),
             }
         });
         Ok(CachedRead { value: page, stale: true, refresh_error: None })
@@ -147,16 +163,17 @@ impl Repository {
         Ok(Some(CachedRead { value: page, stale: cached.stale, refresh_error: None }))
     }
 
-    pub fn take_completed_feed(&self, context: &ProfileContext, query: &FeedQuery) -> Result<Option<(u64, CachedRead<Page<PostView>>)>> {
+    pub fn take_completed_feed(&self, context: &ProfileContext, query: &FeedQuery) -> Result<Option<(u64, Result<CachedRead<Page<PostView>>>)>> {
         let key = FeedKey::new(feed_key(query));
-        let generation = {
+        let completion = {
             let mut refreshes = self.refreshes.lock().expect("refresh state poisoned");
             refreshes.get_mut(&(context.profile.id.clone(), key)).and_then(|state| state.completed.take())
         };
-        let Some(generation) = generation else { return Ok(None); };
+        let Some((generation, error)) = completion else { return Ok(None); };
+        if let Some(error) = error { return Ok(Some((generation, Err(crate::error::AppError::Network(error))))); }
         let Some(read) = self.cached_feed(context, query)? else { return Ok(None); };
         if read.stale { return Ok(None); }
-        Ok(Some((generation, read)))
+        Ok(Some((generation, Ok(read))))
     }
 
     pub async fn post(&self, context: &ProfileContext, id: crate::PostId) -> Result<PostDetail> {

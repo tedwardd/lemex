@@ -380,9 +380,9 @@ impl App {
     fn poll_feed_refresh(&mut self) {
         let Some(request) = self.requests.get(&RequestIdentity::Feed).cloned() else { return; };
         let context = self.state.active.clone();
-        if let Ok(Some((generation, read))) = self.repository.take_completed_feed(&context, &FeedQuery::home()) {
+        if let Ok(Some((generation, result))) = self.repository.take_completed_feed(&context, &FeedQuery::home()) {
             if generation == request.generation {
-                self.apply_api_result(ApiResult::Feed { profile: context.profile.id, request, result: Ok(read.value), stale: read.stale });
+                self.apply_api_result(ApiResult::Feed { profile: context.profile.id, request, result: result.map(|read| read.value), stale: false });
             }
         }
     }
@@ -470,7 +470,9 @@ fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CacheStore, CachedFeed, FeedKey, MemoryCache};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use serde_json::json;
     use std::sync::Arc;
     use url::Url;
 
@@ -542,5 +544,31 @@ mod tests {
             stale: true,
         });
         assert!(app.render_model().status.pending);
+    }
+    #[tokio::test]
+    async fn detached_refresh_error_clears_pending_and_is_retryable() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let cache = Arc::new(MemoryCache::default());
+        cache.write_feed(&context.profile.id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [], "next_page": null }), 1, false)).unwrap();
+        let mut app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api_with_status("/api/v3/post/list", 500)),
+            cache,
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        app.dispatch(AppAction::Input(Command::Refresh)).await.unwrap();
+        assert!(app.state.status.pending);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                app.dispatch(AppAction::Tick).await.unwrap();
+                if !app.state.status.pending { break; }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }).await.unwrap();
+        assert!(app.state.status.error.is_some());
+        assert!(app.state.status.retryable);
     }
 }
