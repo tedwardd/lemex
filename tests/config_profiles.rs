@@ -11,7 +11,8 @@ use lemmy::profiles::KeyringCredentialStore;
 use lemmy::{
     AppConfig, AppError, ProfileId, SecretString, Session, UserId,
     api::{
-        FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo,
+        CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
+        SiteInfo,
     },
     domain::{Mutation, PostId, Profile, ProfileContext},
     profiles::{CredentialStore, MemoryCredentialStore, ProfileStore, login, logout},
@@ -208,6 +209,9 @@ impl LemmyApi for FailOnceLoginApi {
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<PostDetail> {
         Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<Vec<CommentView>> {
+        Ok(Vec::new())
     }
     async fn login(&self, _: LoginRequest) -> lemmy::Result<Session> {
         if self.failed.swap(false, Ordering::SeqCst) {

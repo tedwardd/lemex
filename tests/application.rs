@@ -982,6 +982,9 @@ impl LemmyApi for RefreshRaceApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
     }
@@ -1029,6 +1032,9 @@ impl LemmyApi for GenerationRaceApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
     }
@@ -1049,6 +1055,9 @@ impl LemmyApi for SuccessfulCommentApi {
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
     }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
@@ -1079,6 +1088,9 @@ impl LemmyApi for CapturingPostApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
     }
@@ -1091,6 +1103,84 @@ impl LemmyApi for CapturingPostApi {
             message: None,
         })
     }
+}
+
+#[derive(Clone, Default)]
+struct ThreadApi {
+    post_calls: Arc<AtomicUsize>,
+    comments_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LemmyApi for ThreadApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, id: PostId) -> Result<PostDetail> {
+        self.post_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(PostDetail {
+            post: PostView {
+                id,
+                title: "Threaded post".into(),
+                body: Some("The full post body".into()),
+                url: None,
+                community_id: lemmy::CommunityId(1),
+                creator_id: lemmy::UserId(1),
+                score: 5,
+                comments: 2,
+                published: None,
+            },
+            comments: Vec::new(),
+        })
+    }
+    async fn comments(&self, _: &ProfileContext, id: PostId) -> Result<Vec<CommentView>> {
+        self.comments_calls.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![CommentView {
+            id: lemmy::CommentId(10),
+            post_id: id,
+            content: "A real comment".into(),
+            creator_id: lemmy::UserId(2),
+            score: 3,
+        }])
+    }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn opening_post_fetches_detail_and_thread_comments() {
+    let api = Arc::new(ThreadApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    let detail = app.state.view.detail.clone().expect("detail loads");
+    assert_eq!(
+        detail.post.body.as_deref(),
+        Some("The full post body"),
+        "the post body must be part of the opened detail"
+    );
+    assert_eq!(
+        detail.comments.len(),
+        1,
+        "opening a post must fetch the thread comments"
+    );
+    assert_eq!(detail.comments[0].content, "A real comment");
+    assert!(app.state.status.message.contains("comments loaded"));
+    assert_eq!(api.post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(api.comments_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -1820,6 +1910,9 @@ impl LemmyApi for LoginApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, request: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Ok(lemmy::Session {
             token: lemmy::SecretString::from(format!("token-{}", request.username)),
@@ -1843,6 +1936,9 @@ impl LemmyApi for FailingLoginApi {
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
     }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Authentication("invalid credentials".into()))
@@ -1954,6 +2050,9 @@ impl LemmyApi for RefreshMutationRaceApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
     }
@@ -1994,6 +2093,9 @@ impl LemmyApi for ProfileReplacementRaceApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
     }
@@ -2014,6 +2116,9 @@ impl LemmyApi for ConfirmedDeleteApi {
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
     }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))
@@ -2043,6 +2148,9 @@ impl LemmyApi for UnconfirmedApi {
     }
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
         Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
     }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
         Err(AppError::Network("unused".into()))

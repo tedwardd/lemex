@@ -111,7 +111,12 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
     let mut post_items = model
         .posts
         .iter()
-        .map(|post| ListItem::new(format!("{}  {}", post.id.0, post.title)))
+        .map(|post| {
+            ListItem::new(format!(
+                "{}  {}  [{} comments]",
+                post.id.0, post.title, post.comments
+            ))
+        })
         .collect::<Vec<_>>();
     if model.has_more {
         post_items.push(ListItem::new("… more posts available (load more)"));
@@ -367,6 +372,27 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn feed_rows_show_comment_count() {
+        let mut model = model(None, false);
+        model.posts = vec![crate::api::PostView {
+            id: crate::PostId(1),
+            title: "Threaded post".into(),
+            body: None,
+            url: None,
+            community_id: crate::CommunityId(1),
+            creator_id: crate::UserId(1),
+            score: 12,
+            comments: 7,
+            published: None,
+        }];
+        let text = rendered(&model);
+        assert!(
+            text.contains("[7 comments]"),
+            "feed rows must show the comment count; rendered: {text}"
+        );
     }
 
     #[test]

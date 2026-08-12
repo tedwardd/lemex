@@ -179,8 +179,9 @@ fn feed_loads_through_fixture_and_vim_keys_navigate() {
     assert_eq!(engine.mode(), lemmy::input::Mode::Normal);
 }
 
-/// Post/thread opening: opening a selected post fetches the thread detail
-/// through the fixture adapter, and `Esc` (back) returns to the intact feed.
+/// Post/thread opening: opening a selected post fetches the post detail and
+/// then the thread comments through the fixture adapter, and `Esc` (back)
+/// returns to the intact feed.
 #[test]
 fn opening_post_shows_thread_and_back_preserves_feed_position() {
     let runtime = support::runtime();
@@ -212,10 +213,10 @@ fn opening_post_shows_thread_and_back_preserves_feed_position() {
     assert_eq!(
         detail.comments.len(),
         1,
-        "thread comment arrives with the post"
+        "thread comment arrives via the comments fetch"
     );
     assert_eq!(detail.comments[0].content, "Fixture comment");
-    assert!(app.app.state.status.message.contains("post loaded"));
+    assert!(app.app.state.status.message.contains("comments loaded"));
 
     app.dispatch(AppAction::Back).expect("back to the feed");
     assert!(

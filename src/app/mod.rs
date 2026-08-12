@@ -1267,10 +1267,22 @@ impl App {
         let request = self.begin_request(RequestIdentity::Post(id));
         let result = self.repository.post(&self.state.active, id).await;
         self.apply_api_result(ApiResult::Post {
-            profile,
+            profile: profile.clone(),
             request,
             result,
         });
+        // The thread lives on `comment/list`, not the post detail response;
+        // fetch it so the detail pane can render the full thread.
+        if self.state.selected_post() == Some(id) {
+            let request = self.begin_request(RequestIdentity::Comments(id));
+            let result = self.repository.comments(&self.state.active, id).await;
+            self.apply_api_result(ApiResult::Comments {
+                profile,
+                request,
+                post: id,
+                result,
+            });
+        }
         Ok(())
     }
 

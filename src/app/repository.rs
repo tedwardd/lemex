@@ -6,7 +6,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
-    api::{FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView},
+    api::{CommentView, FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView},
     cache::{CacheStore, CachedFeed, FeedKey},
     domain::{Mutation, ProfileContext},
     error::{AppError, Result},
@@ -326,6 +326,14 @@ impl Repository {
 
     pub async fn post(&self, context: &ProfileContext, id: crate::PostId) -> Result<PostDetail> {
         self.api.post(context, id).await
+    }
+
+    pub async fn comments(
+        &self,
+        context: &ProfileContext,
+        id: crate::PostId,
+    ) -> Result<Vec<CommentView>> {
+        self.api.comments(context, id).await
     }
 
     pub async fn mutate(

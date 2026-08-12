@@ -4,7 +4,7 @@ use lemmy::api::fixtures::{
     login_fixture_api, timeout_fixture_api, truncated_body_fixture_api,
 };
 use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
-use lemmy::{AppError, Mutation, PostId, SecretString, UserId};
+use lemmy::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
 
 #[tokio::test]
 async fn client_sends_descriptive_user_agent() {
@@ -18,6 +18,24 @@ async fn client_sends_descriptive_user_agent() {
     assert!(
         captured.starts_with("lemmy-client/"),
         "client must send a descriptive User-Agent identifying the app, got {captured:?}"
+    );
+}
+
+#[tokio::test]
+async fn comment_list_normalizes_thread_comments() {
+    let body = r#"{"comments":[
+        {"comment":{"id":7,"post_id":1,"content":"A threaded comment","creator_id":2},"counts":{"score":4}},
+        {"comment":{"id":8,"post_id":1,"content":"A reply","creator_id":2},"counts":{"score":-1}}
+    ]}"#;
+    let api = fixture_api_with_body(body);
+    let comments = api.comments(&anonymous_context(), PostId(1)).await.unwrap();
+    assert_eq!(comments.len(), 2);
+    assert_eq!(comments[0].id, CommentId(7));
+    assert_eq!(comments[0].content, "A threaded comment");
+    assert_eq!(comments[0].score, 4);
+    assert_eq!(
+        comments[1].score, -1,
+        "negative comment scores must be preserved"
     );
 }
 

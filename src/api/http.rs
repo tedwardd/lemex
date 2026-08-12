@@ -377,6 +377,35 @@ impl LemmyApi for HttpLemmyApi {
         Ok(PostDetail { post, comments })
     }
 
+    /// Lemmy serves a post's thread from `comment/list`, not from the post
+    /// detail response. `type_=All` is required by at least lemmy.ml (a
+    /// missing value returns an empty thread); `max_depth` asks the server
+    /// for the full tree in one flat list.
+    async fn comments(&self, ctx: &ProfileContext, post_id: PostId) -> Result<Vec<CommentView>> {
+        let request = self.auth_request(
+            self.client
+                .get(self.endpoint(ctx, "comment/list")?)
+                .query(&[
+                    ("post_id", post_id.0.to_string()),
+                    ("type_", "All".to_string()),
+                    ("sort", "Top".to_string()),
+                    ("max_depth", "10".to_string()),
+                ]),
+            ctx,
+        );
+        let response = self.read_json(request, "comments").await?;
+        Ok(response
+            .get("comments")
+            .and_then(Value::as_array)
+            .map(|comments| {
+                comments
+                    .iter()
+                    .map(|comment| normalize_comment(comment, post_id))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
     async fn login(&self, request: LoginRequest) -> Result<Session> {
         let profile = request.profile.clone();
         let instance_url = request.instance_url.clone();

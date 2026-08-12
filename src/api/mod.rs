@@ -13,6 +13,7 @@ pub trait LemmyApi: Send + Sync {
     async fn site(&self, ctx: &ProfileContext) -> Result<SiteInfo>;
     async fn feed(&self, ctx: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>>;
     async fn post(&self, ctx: &ProfileContext, id: PostId) -> Result<PostDetail>;
+    async fn comments(&self, ctx: &ProfileContext, post_id: PostId) -> Result<Vec<CommentView>>;
     async fn login(&self, request: LoginRequest) -> Result<Session>;
     async fn mutate(&self, ctx: &ProfileContext, mutation: Mutation) -> Result<MutationResult>;
 }
