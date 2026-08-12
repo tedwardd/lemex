@@ -124,3 +124,33 @@ Output:
 ```text
 cargo test: 17 passed (1 suite, 0.10s)
 ```
+
+## Task 7 lifecycle final fixes
+
+### Changed files
+
+- `src/app/repository.rs`: Tagged feed refreshes with monotonic request generations, rejected late refresh cache writes, exposed completed refresh generations for `Tick`, and serialized mutation/refresh cache writes.
+- `src/app/mod.rs`: Passed feed request generations into repository refreshes, applied completed refreshes to `AppState` only when the active feed token still matched, and deleted credentials before replacing an existing profile ID.
+- `src/app/state.rs`: Preserved completed draft IDs in profile-scoped memory across profile switches.
+- `tests/application.rs`: Added regressions for concurrent refresh ordering, successful draft switch-away/back behavior, and profile replacement credential invalidation.
+- `.superpowers/sdd/task-7-report.md`: Appended this lifecycle-fix evidence.
+
+### Fix details
+
+- Each feed refresh registers its request generation per profile/feed key. A background response writes cache data only if its generation is still current, so an older concurrent response cannot overwrite a newer cache result. Completed generations are consumed by `Tick` and must match the active request token before updating `AppState`.
+- Confirmed-success drafts are tracked by profile ID rather than one global completion set. Switching away and back therefore continues to suppress the submitted draft instead of reloading it from persistence.
+- `ProfileCommand::New` detects replacement by profile ID and removes the old credential-store session before saving replacement metadata or activating the new anonymous context.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 20 passed (1 suite, 0.11s)
+```

@@ -8,7 +8,7 @@ use lemmy::{
     cache::{CacheStore, CachedFeed, FeedKey, MemoryCache},
     domain::{Mutation, PostId, Profile, ProfileContext, ProfileId},
     error::{AppError, Result},
-    profiles::{MemoryCredentialStore, ProfileStore},
+    profiles::{CredentialStore, MemoryCredentialStore, ProfileStore},
 };
 use serde_json::json;
 use url::Url;
@@ -228,6 +228,37 @@ impl LemmyApi for RefreshRaceApi {
     }
 }
 
+#[derive(Default)]
+struct GenerationRaceApi {
+    calls: Arc<AtomicUsize>,
+    first_release: Arc<Notify>,
+    second_release: Arc<Notify>,
+}
+
+#[async_trait]
+impl LemmyApi for GenerationRaceApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        if call == 0 { self.first_release.notified().await; Ok(Page { items: vec![post_view(1, "older")], next_page: None }) }
+        else { self.second_release.notified().await; Ok(Page { items: vec![post_view(1, "newer")], next_page: None }) }
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Err(AppError::Network("unused".into())) }
+}
+
+struct SuccessfulCommentApi;
+
+#[async_trait]
+impl LemmyApi for SuccessfulCommentApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> { Err(AppError::Network("unused".into())) }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Ok(MutationResult { success: true, post: None, comment: None, message: None }) }
+}
+
 #[tokio::test]
 async fn confirmed_delete_removes_target_from_feed_and_cache() {
     let cache = Arc::new(MemoryCache::default());
@@ -296,12 +327,72 @@ async fn unsuccessful_mutation_does_not_update_cached_post() {
     assert_eq!(cache.read_feed(&context.profile.id, &FeedKey::from("home")).unwrap().unwrap(), before);
 }
 
+#[tokio::test]
+async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    cache.write_feed(&context.profile.id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "cached")], "next_page": null }), 1, false)).unwrap();
+    let api = Arc::new(GenerationRaceApi::default());
+    let repository = Repository::new(api.clone(), cache.clone(), Arc::new(MemoryCredentialStore::default()));
+    let first = repository.feed_with_generation(&context, FeedQuery::home(), 10);
+    let second = repository.feed_with_generation(&context, FeedQuery::home(), 20);
+    let (_first, _second) = tokio::join!(first, second);
+    while api.calls.load(Ordering::SeqCst) < 2 { tokio::time::sleep(Duration::from_millis(1)).await; }
+    api.second_release.notify_one();
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    api.first_release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached = cache.read_feed(&context.profile.id, &FeedKey::from("home")).unwrap().unwrap();
+    assert_eq!(cached.entity["items"][0]["title"], "newer");
+    assert_eq!(repository.take_completed_feed(&context, &FeedQuery::home()).unwrap().unwrap().0, 20);
+}
+
+#[tokio::test]
+async fn successful_draft_stays_completed_after_switching_profiles() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-draft-switch-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let fixture = Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) };
+    let other = Profile { id: ProfileId::from("other"), instance_url: Url::parse("https://other.example/").unwrap(), account_label: Some("other".into()) };
+    store.save(&[fixture.clone(), other.clone()]).unwrap();
+    let mut app = App::with_profile_store(Arc::new(SuccessfulCommentApi), Arc::new(MemoryCache::default()), ProfileContext { profile: fixture, session: None }, Arc::new(MemoryCredentialStore::default()), store);
+    app.state.view.posts = vec![post_view(1, "selected")];
+    app.state.select(PostId(1));
+    let draft = app.state.begin_comment_draft();
+    app.dispatch(AppAction::SubmitDraft(draft.id.clone())).await.unwrap();
+    assert!(app.state.draft(draft.id.clone()).is_none());
+    app.dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from("other")))).await.unwrap();
+    app.dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from("fixture")))).await.unwrap();
+    assert!(app.state.draft(draft.id).is_none());
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test]
+async fn replacing_profile_invalidates_old_credentials_before_activation() {
+    let path = std::env::temp_dir().join(format!("lemmy-application-profile-replace-{}.toml", std::process::id()));
+    let store = ProfileStore::new(&path);
+    let id = ProfileId::from("fixture");
+    let old = Profile { id: id.clone(), instance_url: Url::parse("http://old.example/").unwrap(), account_label: Some("old".into()) };
+    store.save(std::slice::from_ref(&old)).unwrap();
+    let credentials = Arc::new(MemoryCredentialStore::default());
+    credentials.put_session(&id, &lemmy::Session { token: lemmy::SecretString::from("old-token"), user_id: lemmy::UserId(7) }).await.unwrap();
+    let mut app = App::with_profile_store(Arc::new(fixture_api("feed.json")), Arc::new(MemoryCache::default()), ProfileContext { profile: old, session: credentials.get_session(&id).await.unwrap() }, credentials.clone(), store.clone());
+    let replacement = ProfileDraft { id: id.clone(), instance_url: Url::parse("https://new.example/lemmy").unwrap(), account_label: Some("new".into()) };
+    app.dispatch(AppAction::Profile(ProfileCommand::New(replacement))).await.unwrap();
+    assert!(credentials.get_session(&id).await.unwrap().is_none());
+    assert!(app.state.active.session.is_none());
+    assert_eq!(store.load().unwrap()[0].instance_url, Url::parse("https://new.example/lemmy").unwrap());
+    let _ = std::fs::remove_file(path);
+}
+
 fn fixture_context() -> ProfileContext {
     ProfileContext { profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) }, session: None }
 }
 
 fn post_view(id: i64, title: &str) -> PostView {
     PostView { id: PostId(id), title: title.into(), body: None, url: None, community_id: lemmy::CommunityId(1), creator_id: lemmy::UserId(1), score: 0, comments: 0, published: None }
+}
+fn post_json(id: i64, title: &str) -> serde_json::Value {
+    json!({ "id": id, "title": title, "body": null, "url": null, "community_id": 1, "creator_id": 1, "score": 1, "comments": 0, "published": null })
 }
 
 struct ConfirmedDeleteApi;

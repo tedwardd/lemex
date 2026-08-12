@@ -1,4 +1,4 @@
-use std::{collections::HashSet, sync::{atomic::{AtomicU64, Ordering}, Arc}};
+use std::{collections::{HashMap, HashSet}, sync::{atomic::{AtomicU64, Ordering}, Arc}};
 
 use crate::{
     api::{CommentView, PostDetail, PostView},
@@ -89,19 +89,18 @@ pub struct DraftStore {
     backend: Arc<dyn CacheStore>,
     profile: ProfileId,
     sequence: Arc<AtomicU64>,
-    completed: Arc<std::sync::Mutex<HashSet<DraftId>>>,
+    completed: Arc<std::sync::Mutex<HashMap<ProfileId, HashSet<DraftId>>>>,
 }
 
 impl DraftStore {
     pub fn new(backend: Arc<dyn CacheStore>, profile: ProfileId) -> Self {
-        Self { backend, profile, sequence: Arc::new(AtomicU64::new(1)), completed: Arc::new(std::sync::Mutex::new(HashSet::new())) }
+        Self { backend, profile, sequence: Arc::new(AtomicU64::new(1)), completed: Arc::new(std::sync::Mutex::new(HashMap::new())) }
     }
 
     pub fn profile(&self) -> &ProfileId { &self.profile }
 
     pub fn set_profile(&mut self, profile: ProfileId) {
         self.profile = profile;
-        if let Ok(mut completed) = self.completed.lock() { completed.clear(); }
     }
 
     pub fn begin_comment_draft(&self) -> Draft {
@@ -116,16 +115,16 @@ impl DraftStore {
     }
 
     pub fn draft(&self, id: &DraftId) -> Option<Draft> {
-        if self.completed.lock().ok().is_some_and(|completed| completed.contains(id)) { return None; }
+        if self.completed.lock().ok().is_some_and(|completed| completed.get(&self.profile).is_some_and(|ids| ids.contains(id))) { return None; }
         self.backend.load_drafts(&self.profile).ok()?.into_iter().find(|draft| &draft.id == id)
     }
 
     pub fn all(&self) -> Vec<Draft> {
-        self.backend.load_drafts(&self.profile).unwrap_or_default().into_iter().filter(|draft| !self.completed.lock().ok().is_some_and(|completed| completed.contains(&draft.id))).collect()
+        self.backend.load_drafts(&self.profile).unwrap_or_default().into_iter().filter(|draft| !self.completed.lock().ok().is_some_and(|completed| completed.get(&self.profile).is_some_and(|ids| ids.contains(&draft.id)))).collect()
     }
 
     pub fn mark_completed(&self, id: DraftId) {
-        if let Ok(mut completed) = self.completed.lock() { completed.insert(id); }
+        if let Ok(mut completed) = self.completed.lock() { completed.entry(self.profile.clone()).or_default().insert(id); }
     }
 }
 pub struct AppState {

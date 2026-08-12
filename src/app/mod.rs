@@ -114,6 +114,13 @@ impl App {
                     Ok(config) => config,
                     Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
                 };
+                let replacing = config.profiles.iter().any(|existing| existing.id == profile.id);
+                if replacing {
+                    if let Err(error) = self.repository.credentials.delete_session(&profile.id).await {
+                        self.state.status.failure(error.to_string());
+                        return Ok(());
+                    }
+                }
                 if let Some(existing) = config.profiles.iter_mut().find(|existing| existing.id == profile.id) { *existing = profile.clone(); } else { config.profiles.push(profile.clone()); }
                 if let Err(error) = self.profile_store.save_config(&config) {
                     self.state.status.failure(error.to_string());
@@ -151,7 +158,7 @@ impl App {
         self.state.status.pending = true;
         let profile = context.profile.id.clone();
         let request = self.begin_request(RequestIdentity::Feed);
-        match self.repository.feed(&context, FeedQuery::home()).await {
+        match self.repository.feed_with_generation(&context, FeedQuery::home(), request.generation).await {
             Ok(read) => self.apply_api_result(ApiResult::Feed { profile, request, result: Ok(read.value), stale: read.stale }),
             Err(error) => self.apply_api_result(ApiResult::Feed { profile, request, result: Err(error), stale: false }),
         }
@@ -198,9 +205,9 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
     fn poll_feed_refresh(&mut self) {
         let Some(request) = self.requests.get(&RequestIdentity::Feed).cloned() else { return; };
         let context = self.state.active.clone();
-        if let Ok(Some(read)) = self.repository.cached_feed(&context, &FeedQuery::home()) {
-            if !read.stale {
-                self.apply_api_result(ApiResult::Feed { profile: context.profile.id, request, result: Ok(read.value), stale: false });
+        if let Ok(Some((generation, read))) = self.repository.take_completed_feed(&context, &FeedQuery::home()) {
+            if generation == request.generation {
+                self.apply_api_result(ApiResult::Feed { profile: context.profile.id, request, result: Ok(read.value), stale: read.stale });
             }
         }
     }
