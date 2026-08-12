@@ -5,6 +5,8 @@ pub mod error;
 pub mod input;
 pub mod profiles;
 pub mod api;
+pub mod app;
+pub use app::{App, AppAction, AppState, ProfileCommand, RenderModel};
 
 pub use api::{Capabilities, CommentView, FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo};
 pub use config::{AppConfig, CacheConfig, MediaConfig};
