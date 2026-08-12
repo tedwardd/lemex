@@ -746,11 +746,15 @@ impl App {
                             self.state.status.failure("local file was already deleted");
                             return Ok(());
                         }
-                        if record.status == DownloadStatus::Prompting {
-                            // The local path is the pre-existing collision
-                            // target the download does not own yet; removing
-                            // it would destroy a user file.
-                            self.state.status.failure("cannot delete the pre-existing file while a collision prompt is pending");
+                        if record.status != DownloadStatus::Completed {
+                            // Only completed downloads own their local path.
+                            // Prompting records point at the pre-existing
+                            // collision target, and cancelled (including
+                            // prompt-keep), failed, pending, or downloading
+                            // records may point at files the download never
+                            // created; deleting any of those could destroy a
+                            // user file.
+                            self.state.status.failure("only completed downloads may be deleted");
                             return Ok(());
                         }
                         self.state.pending = Some(crate::app::actions::PendingAction::DeleteDownload { id, path: record.local_path.clone() });
@@ -824,11 +828,13 @@ impl App {
         match pending {
             Some(crate::app::actions::PendingAction::DeleteDownload { id, path }) => {
                 self.state.status.confirmation_pending = false;
-                // Re-check ownership at confirmation time: a record parked in
-                // Prompting does not own its local path, which may be a
-                // pre-existing user file the download has not touched.
-                if self.downloads.history().get(id).is_some_and(|record| record.status == DownloadStatus::Prompting) {
-                    self.state.status.failure("refusing to delete the pre-existing file of a prompting download");
+                // Re-check ownership at confirmation time: only a Completed
+                // record owns its local path. A record parked in Prompting
+                // (or cancelled prompt-keep, failed, pending, downloading)
+                // does not own its local path, which may be a pre-existing
+                // user file the download has not touched.
+                if self.downloads.history().get(id).is_some_and(|record| record.status != DownloadStatus::Completed) {
+                    self.state.status.failure("refusing to delete a file the download does not own");
                     return Ok(());
                 }
                 if std::fs::remove_file(&path).is_ok() {
@@ -1252,6 +1258,20 @@ mod tests {
         assert!(app.is_quit());
         assert!(app.downloads.history().is_empty(), "quit must clear the in-memory session history");
     }
+    fn record_with_status(id: crate::domain::DownloadId, destination: PathBuf, status: DownloadStatus) -> crate::domain::DownloadRecord {
+        let mut record = crate::domain::DownloadRecord::new(
+            id,
+            MediaRef::new(Url::parse("https://example.com/notes.txt").unwrap()),
+            "notes.txt",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            destination,
+        );
+        record.status = status;
+        record
+    }
+
     #[tokio::test]
     async fn delete_is_refused_while_collision_prompt_is_pending() {
         let context = ProfileContext {
@@ -1294,13 +1314,70 @@ mod tests {
         assert!(app.state.status.error.is_some(), "refusal must be surfaced to the user");
         assert!(destination.exists(), "the pre-existing collision target must survive");
 
-        // The confirmation-time re-check is the second line of defense: even
-        // a staged deletion is refused if the record parks in Prompting
-        // before the user confirms.
-        app.downloads.history().transition(id, |_| DownloadStatus::Pending);
+        // A Completed record may be staged...
+        app.downloads.history().transition(id, |_| DownloadStatus::Completed);
         app.dispatch(AppAction::Downloads(DownloadsAction::Delete)).await.unwrap();
-        assert!(app.state.pending.is_some(), "a non-prompting download may be staged for deletion");
-        app.downloads.history().transition(id, |_| DownloadStatus::Prompting);
+        assert!(app.state.pending.is_some(), "a completed download may be staged for deletion");
+
+        // ...but the confirmation-time re-check is the second line of
+        // defense: a staged deletion is refused when the record is not
+        // Completed at confirm time. `transition` is write-once for terminal
+        // statuses, so re-insert the record in Prompting (the state a retry
+        // legitimately parks it in when the collision policy prompts).
+        app.downloads.history().insert(record_with_status(id, destination.clone(), DownloadStatus::Prompting));
+        app.dispatch(AppAction::Confirm).await.unwrap();
+        assert!(destination.exists(), "confirm must refuse to remove the pre-existing collision target");
+    }
+
+    #[tokio::test]
+    async fn delete_is_refused_for_cancelled_prompt_keep_record() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let mut app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        let directory = std::env::temp_dir().join(format!(
+            "lemmy-delete-keep-test-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::create_dir_all(&directory);
+        let destination = directory.join("notes.txt");
+        std::fs::write(&destination, b"pre-existing user file").unwrap();
+
+        let id = crate::domain::DownloadId(7);
+        app.downloads.history().insert(crate::domain::DownloadRecord::new(
+            id,
+            MediaRef::new(Url::parse("https://example.com/notes.txt").unwrap()),
+            "notes.txt",
+            ProfileId::from("fixture"),
+            Url::parse("http://127.0.0.1/").unwrap(),
+            1,
+            destination.clone(),
+        ));
+        // A prompt-keep decision parks the record in `Cancelled`; its local
+        // path is the pre-existing collision target the download never
+        // created, so `:delete` must refuse to touch it.
+        app.downloads.history().transition(id, |_| DownloadStatus::Cancelled);
+        app.state.view.downloads = Some(DownloadsPanel { query: String::new(), selected: Some(id) });
+
+        app.dispatch(AppAction::Downloads(DownloadsAction::Delete)).await.unwrap();
+        assert!(app.state.pending.is_none(), "no deletion may be staged for a cancelled prompt-keep record");
+        assert!(app.state.status.error.is_some(), "refusal must be surfaced to the user");
+        assert!(destination.exists(), "the pre-existing collision target must survive");
+
+        // The confirmation-time re-check covers Cancelled too: re-insert as
+        // Completed, stage the deletion, then park the record back in
+        // Cancelled before confirming; the file must survive.
+        app.downloads.history().insert(record_with_status(id, destination.clone(), DownloadStatus::Completed));
+        app.dispatch(AppAction::Downloads(DownloadsAction::Delete)).await.unwrap();
+        assert!(app.state.pending.is_some(), "a completed download may be staged for deletion");
+        app.downloads.history().insert(record_with_status(id, destination.clone(), DownloadStatus::Cancelled));
         app.dispatch(AppAction::Confirm).await.unwrap();
         assert!(destination.exists(), "confirm must refuse to remove the pre-existing collision target");
     }

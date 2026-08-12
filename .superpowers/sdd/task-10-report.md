@@ -19,7 +19,7 @@
 
 ## Commits
 
-- `c6f6dec` — `feat: add media handlers downloads and session history` (16 files, +2248 −74)
+- `10c49b6` — `feat: add media handlers downloads and session history` (16 files, +2248 −74)
 
 ## Test evidence
 
@@ -162,3 +162,67 @@ Total across the four focused targets: 72 passed, 0 failed.
 
 - The parked-wait regression uses `#[tokio::test(start_paused = true)]` (dev-only `test-util`); hyper/reqwest drives request lifecycles on real timers, so the test restores real time with `tokio::time::resume()` before the download performs its network request.
 - `App` now implements `Drop` (calls `downloads.shutdown()`); this made moving fields out of `App` illegal, which broke one existing application test line (`detail.unwrap()` → `detail.clone().unwrap()`).
+
+---
+
+# Task 10 re-review fixes: delete guard restricted to Completed (2026-08-12)
+
+## Changed files
+
+- `src/app/mod.rs`: `DownloadsAction::Delete` staging in `downloads_action` now refuses unless the record's status is `DownloadStatus::Completed` (previously only `Prompting` was refused); the confirmation-time re-check in `confirm_pending` likewise refuses unless the record is still `Completed` (previously only re-checked `Prompting`). Existing test `delete_is_refused_while_collision_prompt_is_pending` updated to stage through `Completed`; new regression test `delete_is_refused_for_cancelled_prompt_keep_record` added (staging refusal plus confirmation re-check for a `Cancelled` prompt-keep record).
+
+## Fix details per review finding
+
+- **Important — `:delete` removed files the download never created**: a non-Completed record can still own a `local_path` that is a pre-existing collision target (Prompting, or a prompt-keep outcome parked in `Cancelled`) or a path the download never produced (Pending, Downloading, Cancelled, Failed). Deleting via `:delete` destroyed those user files. Staging now requires `status == Completed`, and the confirmation re-check requires the record to still be `Completed` at confirm time; every other status refuses with an error surfaced in the status line and the pre-existing file is left untouched. Regressions: `delete_is_refused_while_collision_prompt_is_pending` (updated), `delete_is_refused_for_cancelled_prompt_keep_record` (new — both the staging refusal and the confirmation-time re-check for a `Cancelled` prompt-keep record pointing at a pre-existing file).
+
+## Test evidence
+
+### `cargo test --test media` (17 passed, 0 failed)
+
+```
+running 17 tests
+test collision_prompt_wait_parks_instead_of_spinning ... ok
+test download_completes_and_renames_atomically ... ok
+test cancelled_download_is_recorded_in_session_history ... ok
+test explicit_handler_configuration_wins_over_mailcap ... ok
+test kitty_is_selected_only_when_enabled_and_supported ... ok
+test kitty_requires_terminal_support_even_when_enabled ... ok
+test mailcap_is_default_even_when_kitty_is_available ... ok
+test mime_resolution_prefers_metadata_then_header_then_filename ... ok
+test retry_prompt_collision_parks_record_in_prompting ... ok
+test history_search_filters_by_filename_and_url ... ok
+test download_records_profile_instance_and_timestamp ... ok
+test prompt_collision_waits_for_resolution ... ok
+test unique_name_collision_appends_suffix ... ok
+test unsupported_types_return_metadata_only ... ok
+test stale_temp_cleanup_matches_exact_pattern_only ... ok
+test retry_removes_stale_temp_before_reusing_temp_path ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+### `cargo test --test application` (35 passed, 0 failed)
+
+```
+test result: ok. 35 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+```
+
+### `cargo test --lib` (8 passed, 0 failed) — contains the delete-guard regressions
+
+```
+running 8 tests
+test app::tests::empty_feed_page_leaves_selection_none ... ok
+test app::tests::delete_is_refused_for_cancelled_prompt_keep_record ... ok
+test app::tests::delete_is_refused_while_collision_prompt_is_pending ... ok
+test app::tests::queues_text_and_escape_while_action_is_in_flight ... ok
+test app::tests::quit_key_routes_through_quit_action ... ok
+test app::tests::pending_refresh_snapshot_is_visible_before_action_completes ... ok
+test app::tests::quit_action_shuts_down_downloads_and_clears_history ... ok
+test app::tests::detached_refresh_error_clears_pending_and_is_retryable ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
+```
+
+## Notes
+
+- `SessionDownloadHistory::transition` is write-once for terminal statuses (`is_terminal` guard), so the confirmation-path regressions re-insert the record with the target status instead of `transition`-ing away from `Completed` — mirroring reality, where only `retry()` (`reset` → `Pending` → `Prompting`) moves a finished record back out of `Completed`.
