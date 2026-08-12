@@ -28,6 +28,8 @@ command/search line.
 | `Enter` | open | open the selected post (or download) |
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
+| `y` | confirm | confirm the pending destructive action |
+| `n` | cancel | cancel the pending destructive action |
 | `i` | insert | enter Insert mode |
 | `v` | visual | enter Visual mode |
 | `:` | command | enter Command mode |
@@ -36,8 +38,10 @@ command/search line.
 | `Esc` | back | back / cancel |
 
 Motions accept numeric counts: `3j` moves down three positions (clamped to
-the list). Keys pressed while a network action is in flight are queued and
-applied when the action completes.
+the list). A digit that begins a registered keymap sequence is part of that
+mapping, not a count (for example with a `2r` mapping, `2r` fires the mapped
+command instead of counting two refreshes). Keys pressed while a network
+action is in flight are queued and applied when the action completes.
 
 ## Command line
 
@@ -63,6 +67,8 @@ secrets typed for `:login` never linger on screen.
 | `:reply <text>` | reply to the selected post |
 | `:edit <title>` | retitle the selected post |
 | `:delete` | delete the selected post (download with the panel open) |
+| `:confirm` / `:yes` | confirm the pending destructive action |
+| `:cancel` | cancel the pending destructive action |
 | `:vote <score>` | vote on the selected post |
 | `:save` | save the selected post |
 | `:subscribe` | subscribe to the selected post's community |
@@ -83,6 +89,10 @@ secrets typed for `:login` never linger on screen.
 
 Destructive actions (`:delete`, post/comment creation, and download deletion)
 require an explicit confirmation before any network or filesystem activity.
+When a confirmation is pending, the status line shows
+`[PENDING] Confirmation required before network activity.`; confirm with
+`y` (or `:confirm`/`:yes`) and cancel with `n` (or `:cancel`). `Esc` also
+cancels the pending action.
 
 ## Remapping
 
@@ -90,6 +100,6 @@ Configure `[keymaps]` in the config file (see
 [Configuration](configuration.md)) or use `:set keymap <name> <keys>`, where
 `<name>` is a documented command name such as `down`, `up`, `open`,
 `refresh`, `insert`, `visual`, `command`, `search`, `search-backward`,
-`back`, or `quit`. The new sequence replaces the command's default binding,
-and multi-key sequences (for example `jk`) participate in prefix matching.
-Keymaps take effect on the next launch.
+`back`, `quit`, `confirm`, or `cancel`. The new sequence replaces the
+command's default binding, and multi-key sequences (for example `jk`)
+participate in prefix matching. Keymaps take effect on the next launch.

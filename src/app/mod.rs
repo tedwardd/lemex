@@ -419,6 +419,24 @@ impl App {
                 self.quit = true;
                 Ok(())
             }
+            Command::Confirm => {
+                // User-reachable confirmation for staged destructive actions
+                // (default key `y`); a no-op unless a confirmation is pending.
+                if self.state.status.confirmation_pending {
+                    self.confirm_pending().await
+                } else {
+                    Ok(())
+                }
+            }
+            Command::Cancel => {
+                // User-reachable cancellation (default key `n`); acts only on
+                // a staged confirmation, so the key never swallows unrelated
+                // input when nothing is pending.
+                if self.state.status.confirmation_pending {
+                    self.cancel_pending();
+                }
+                Ok(())
+            }
             Command::Refresh => {
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Retry).await;
@@ -690,12 +708,16 @@ impl App {
 
     async fn switch_profile(&mut self, id: ProfileId) -> Result<()> {
         self.requests.clear();
-        let profile = match self
-            .profile_store
-            .load()?
-            .into_iter()
-            .find(|profile| profile.id == id)
-        {
+        // A profile-store read failure must never terminate the TUI: surface
+        // it in the status line and stay in the current profile.
+        let profiles = match self.profile_store.load() {
+            Ok(profiles) => profiles,
+            Err(error) => {
+                self.state.status.failure(error.to_string());
+                return Ok(());
+            }
+        };
+        let profile = match profiles.into_iter().find(|profile| profile.id == id) {
             Some(profile) => profile,
             None => {
                 self.state
@@ -765,6 +787,10 @@ impl App {
                 search: (!search.is_empty()).then_some(search),
                 ..FeedQuery::home()
             };
+            // A new search starts a fresh pagination cursor; the previous
+            // feed's `next_page` is stale and must not be reused by LoadMore
+            // (a failed search would otherwise mix pages from the old query).
+            self.state.view.next_page = None;
             self.state.mode = Mode::Normal;
             self.state.view.compose.clear();
             return self.refresh_feed().await;
@@ -931,6 +957,22 @@ impl App {
                     Ok(())
                 }
             },
+            // Confirmation commands resolve a staged destructive action. They
+            // run before the downloads-panel catch-all so confirming a staged
+            // download deletion works with the panel open; with no
+            // confirmation pending, `:cancel` falls through to the panel's
+            // download-cancel when the panel is open.
+            "confirm" | "yes" if self.state.status.confirmation_pending => {
+                self.confirm_pending().await
+            }
+            "confirm" | "yes" => {
+                self.state.status.failure("nothing to confirm");
+                Ok(())
+            }
+            "cancel" if self.state.status.confirmation_pending || self.state.pending.is_some() => {
+                self.cancel_pending();
+                Ok(())
+            }
             _ if self.state.view.downloads_active() => self.submit_downloads_command(trimmed).await,
             other => {
                 self.state

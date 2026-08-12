@@ -31,6 +31,45 @@ fn normal_decimal_prefix_applies_to_motion() {
 }
 
 #[test]
+fn digit_leading_keymap_sequence_prefers_mapping_over_count() {
+    let mut keymaps = std::collections::HashMap::new();
+    // A multi-key sequence that begins with a digit must be reachable: the
+    // digit joins prefix matching instead of accumulating a motion count.
+    keymaps.insert("refresh".to_owned(), "2r".to_owned());
+    let mut engine = InputEngine::default().with_keymaps(&keymaps);
+
+    assert_eq!(engine.handle(key('2')), Command::Noop);
+    assert_eq!(engine.handle(key('r')), Command::Refresh);
+
+    // An exact single-digit mapping wins over counting that digit too.
+    let mut single = std::collections::HashMap::new();
+    single.insert("open".to_owned(), "3".to_owned());
+    let mut engine = InputEngine::default().with_keymaps(&single);
+    assert_eq!(engine.handle(key('3')), Command::Open);
+}
+
+#[test]
+fn discarded_pending_sequence_resets_accumulated_count() {
+    let mut engine = InputEngine::default();
+
+    assert_eq!(engine.handle(key('2')), Command::Noop);
+    // `x` is unmapped and no mapping begins with it: the pending sequence is
+    // discarded and the accumulated count must not leak into later keys.
+    assert_eq!(engine.handle(key('x')), Command::Noop);
+    assert_eq!(engine.handle(key('j')), Command::MoveDown { count: 1 });
+
+    // The same reset applies to a partially typed multi-key sequence.
+    let mut keymaps = std::collections::HashMap::new();
+    keymaps.insert("refresh".to_owned(), "gg".to_owned());
+    let mut engine = InputEngine::default().with_keymaps(&keymaps);
+    assert_eq!(engine.handle(key('4')), Command::Noop);
+    assert_eq!(engine.handle(key('g')), Command::Noop); // prefix of "gg"
+    assert_eq!(engine.handle(key('x')), Command::Noop); // discards "4" and "g"
+    assert_eq!(engine.handle(key('g')), Command::Noop); // still a prefix
+    assert_eq!(engine.handle(key('g')), Command::Refresh);
+}
+
+#[test]
 fn visual_decimal_prefix_applies_to_motion() {
     let mut engine = InputEngine::default();
 

@@ -1,17 +1,31 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
-    MoveDown { count: u32 },
-    MoveUp { count: u32 },
-    MoveLeft { count: u32 },
-    MoveRight { count: u32 },
+    MoveDown {
+        count: u32,
+    },
+    MoveUp {
+        count: u32,
+    },
+    MoveLeft {
+        count: u32,
+    },
+    MoveRight {
+        count: u32,
+    },
     Open,
     Refresh,
     EnterInsert,
     EnterVisual,
     EnterCommand,
-    EnterSearch { backward: bool },
+    EnterSearch {
+        backward: bool,
+    },
     Back,
     Quit,
+    /// Confirm the pending destructive action (default key: `y`).
+    Confirm,
+    /// Cancel the pending destructive action (default key: `n`).
+    Cancel,
     Text(String),
     SubmitLine(String),
     Noop,
@@ -37,6 +51,8 @@ impl Command {
             "search-backward" => Some(Command::EnterSearch { backward: true }),
             "back" => Some(Command::Back),
             "quit" => Some(Command::Quit),
+            "confirm" => Some(Command::Confirm),
+            "cancel" => Some(Command::Cancel),
             _ => None,
         }
     }

@@ -116,15 +116,21 @@ async fn login_preserves_instance_base_path() {
 }
 
 #[tokio::test]
-async fn unknown_site_version_does_not_claim_capabilities() {
+async fn site_reports_authenticated_user_id_from_my_user() {
     let api = fixture_api_with_body(
-        r#"{"site_view":{"site":{"name":"Unknown","version":"1.0.0"},"local_site":{}}}"#,
+        r#"{"site_view":{"site":{"name":"Fixture","version":"0.19.5"},"local_site":{}},"my_user":{"local_user_view":{"local_user":{"id":1,"person_id":42}}}}"#,
     );
     let site = api.site(&anonymous_context()).await.unwrap();
-    assert!(!site.capabilities.supports_login);
-    assert!(!site.capabilities.supports_feed);
-    assert!(!site.capabilities.supports_post);
-    assert!(!site.capabilities.supports_mutations);
+    assert_eq!(site.name, "Fixture");
+    assert_eq!(site.user_id, Some(UserId(42)));
+
+    // Without a `my_user` block (anonymous request, or a server that omits
+    // it) the user id is absent rather than fabricated.
+    let anonymous = fixture_api_with_body(
+        r#"{"site_view":{"site":{"name":"Fixture","version":"0.19.5"},"local_site":{}}}"#,
+    );
+    let site = anonymous.site(&anonymous_context()).await.unwrap();
+    assert_eq!(site.user_id, None);
 }
 
 #[tokio::test]

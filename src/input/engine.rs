@@ -26,6 +26,8 @@ impl InputEngine {
         mappings.insert('l', Command::MoveRight { count: 1 });
         mappings.insert('r', Command::Refresh);
         mappings.insert('q', Command::Quit);
+        mappings.insert('y', Command::Confirm);
+        mappings.insert('n', Command::Cancel);
         mappings.insert('i', Command::EnterInsert);
         mappings.insert('v', Command::EnterVisual);
         mappings.insert(':', Command::EnterCommand);
@@ -115,12 +117,20 @@ impl InputEngine {
 
     fn handle_mapped(&mut self, key: KeyCode) -> Command {
         if let KeyCode::Char(character @ '0'..='9') = key {
-            self.count = self
-                .count
-                .saturating_mul(10)
-                .saturating_add(character as u32 - '0' as u32);
-            self.pending.clear();
-            return Command::Noop;
+            // A digit counts a motion only when no registered mapping begins
+            // with it; digit-leading keymap sequences (for example a `2j`
+            // mapping) must stay reachable, so such a digit joins pending
+            // prefix matching instead of accumulating a count.
+            let begins_a_mapping =
+                self.mappings.has_prefix(key) || self.mappings.resolve(key).is_some();
+            if !begins_a_mapping {
+                self.count = self
+                    .count
+                    .saturating_mul(10)
+                    .saturating_add(character as u32 - '0' as u32);
+                self.pending.clear();
+                return Command::Noop;
+            }
         }
 
         self.pending.push(key);
@@ -128,6 +138,9 @@ impl InputEngine {
         else {
             if !self.mappings.has_prefix(self.pending.as_slice()) {
                 self.pending.clear();
+                // A discarded pending sequence also abandons any accumulated
+                // count, so a later key never inherits the stale multiplier.
+                self.count = 0;
             }
             return Command::Noop;
         };

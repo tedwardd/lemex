@@ -207,6 +207,16 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "mutation",
     },
     HelpEntry {
+        command: "y / :confirm | :yes",
+        description: "confirm the pending destructive action",
+        group: "mutation",
+    },
+    HelpEntry {
+        command: "n / :cancel",
+        description: "cancel the pending destructive action",
+        group: "mutation",
+    },
+    HelpEntry {
         command: ":vote <score>",
         description: "vote on the selected post",
         group: "mutation",
@@ -293,6 +303,10 @@ pub fn contextual_help(mode: Mode) -> &'static [HelpItem] {
             HelpItem {
                 key: "i",
                 action: "compose",
+            },
+            HelpItem {
+                key: "y/n",
+                action: "confirm/cancel",
             },
             HelpItem {
                 key: "q",

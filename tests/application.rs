@@ -10,6 +10,7 @@ use std::{
 use tokio::sync::Notify;
 
 use async_trait::async_trait;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use lemmy::{
     api::{
         CommentView, FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView, SiteInfo,
@@ -23,6 +24,7 @@ use lemmy::{
     cache::{CacheStore, CachedFeed, FeedKey, MemoryCache},
     domain::{Mutation, PostId, Profile, ProfileContext, ProfileId},
     error::{AppError, Result},
+    input::{Command, InputEngine},
     profiles::{CredentialStore, MemoryCredentialStore, ProfileStore},
 };
 use serde_json::json;
@@ -437,6 +439,199 @@ async fn delete_is_staged_until_confirmed_and_cancelled_once() {
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     app.dispatch(AppAction::Confirm).await.unwrap();
     assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+/// P0 regression: the confirmation gate is user-reachable. Pressing `y`
+/// through the real input engine confirms a staged destructive action
+/// (dispatching the mutation), and `n` cancels it without any API call.
+#[tokio::test]
+async fn confirm_and_cancel_keys_drive_staged_destructive_action() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(
+        Arc::new(api),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    // Confirm path: stage a delete, press `y` through the real engine.
+    app.dispatch(AppAction::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    assert!(app.state.status.confirmation_pending);
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    let mut engine = InputEngine::new();
+    let command = engine.handle(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+    assert_eq!(command, Command::Confirm);
+    app.dispatch(AppAction::Input(command)).await.unwrap();
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "confirming with y must dispatch the staged mutation"
+    );
+    assert!(!app.state.status.confirmation_pending);
+    assert!(app.state.pending.is_none());
+
+    // Cancel path: stage another delete, press `n` through the real engine.
+    app.dispatch(AppAction::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    assert!(app.state.status.confirmation_pending);
+    let mut engine = InputEngine::new();
+    let command = engine.handle(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+    assert_eq!(command, Command::Cancel);
+    app.dispatch(AppAction::Input(command)).await.unwrap();
+    assert!(!app.state.status.confirmation_pending);
+    assert!(app.state.pending.is_none());
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "cancelling with n must never dispatch the mutation"
+    );
+
+    // With nothing pending, y/n are no-ops (no API call, no status churn).
+    let mut engine = InputEngine::new();
+    app.dispatch(AppAction::Input(
+        engine.handle(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
+    ))
+    .await
+    .unwrap();
+    app.dispatch(AppAction::Input(
+        engine.handle(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+    ))
+    .await
+    .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+/// The `:confirm`/`:yes`/`:cancel` command arms are the command-line path to
+/// the same confirmation gate.
+#[tokio::test]
+async fn confirm_and_cancel_commands_resolve_staged_destructive_action() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(
+        Arc::new(api),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    assert!(app.state.status.confirmation_pending);
+    app.dispatch(AppAction::Input(Command::SubmitLine("yes".into())))
+        .await
+        .unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert!(!app.state.status.confirmation_pending);
+
+    // `:confirm` with nothing staged is a failure, not a network call.
+    app.dispatch(AppAction::Input(Command::SubmitLine("confirm".into())))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.status.error.as_deref(),
+        Some("nothing to confirm")
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+
+    app.dispatch(AppAction::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    app.dispatch(AppAction::Input(Command::SubmitLine("cancel".into())))
+        .await
+        .unwrap();
+    assert!(app.state.pending.is_none());
+    assert!(!app.state.status.confirmation_pending);
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+/// Submitting a `/` or `?` search resets the pagination cursor: after a
+/// failed search, LoadMore must be refused instead of reusing the previous
+/// feed's stale `next_page`.
+#[tokio::test]
+async fn failed_search_resets_stale_cursor_so_load_more_is_refused() {
+    let (api, requests) = fixture_api_with_status_count(500);
+    let mut app = App::new(
+        Arc::new(api),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "old feed")];
+    app.state.view.next_page = Some(2);
+
+    // Drive `/rust` through the real input engine: `/`, text, Enter.
+    let mut engine = InputEngine::new();
+    let slash = engine.handle(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE));
+    assert_eq!(slash, Command::EnterSearch { backward: false });
+    app.dispatch(AppAction::Input(slash)).await.unwrap();
+    for character in "rust".chars() {
+        app.dispatch(AppAction::Input(
+            engine.handle(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)),
+        ))
+        .await
+        .unwrap();
+    }
+    let enter = engine.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+    assert_eq!(enter, Command::SubmitLine("rust".into()));
+    app.dispatch(AppAction::Input(enter)).await.unwrap();
+
+    // The search itself failed (500); the stale cursor must be gone and
+    // LoadMore must be refused without touching the network.
+    assert!(app.state.status.error.is_some());
+    assert_eq!(
+        app.state.view.next_page, None,
+        "a new search must reset the previous feed's next_page"
+    );
+    let calls_before = requests.load(Ordering::SeqCst);
+    app.dispatch(AppAction::LoadMore).await.unwrap();
+    assert_eq!(app.state.status.message, "no more posts to load");
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        calls_before,
+        "LoadMore after a failed search must not reuse the stale cursor"
+    );
+}
+
+/// A profile-store read failure during `:profile <id>` must surface in the
+/// status line instead of terminating the TUI.
+#[tokio::test]
+async fn switch_profile_surfaces_store_read_failure_in_status() {
+    let path = std::env::temp_dir().join(format!(
+        "lemmy-application-broken-switch-{}.toml",
+        std::process::id()
+    ));
+    std::fs::write(&path, "this is not [valid toml").unwrap();
+    let store = ProfileStore::new(&path);
+    let mut app = App::with_profile_store(
+        Arc::new(fixture_api("feed.json")),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+        store,
+    );
+
+    let result = app
+        .dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from(
+            "other",
+        ))))
+        .await;
+    assert!(
+        result.is_ok(),
+        "a profile-store read failure must not terminate the TUI"
+    );
+    assert!(
+        app.state.status.error.is_some(),
+        "the read failure must be surfaced via status.failure"
+    );
+    assert_eq!(
+        app.state.active.profile.id,
+        ProfileId::from("fixture"),
+        "the active profile must be unchanged"
+    );
+    let _ = std::fs::remove_file(&path);
 }
 
 #[tokio::test]

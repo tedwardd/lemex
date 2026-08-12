@@ -29,6 +29,10 @@ struct FixtureRoute {
     /// When set, the first N requests answer 500 (a transient failure the
     /// client retries) and later requests answer the configured body.
     transient_failures: Option<Arc<AtomicUsize>>,
+    /// Additional (path, body) routes served when `path` does not match, so
+    /// one server can answer the follow-up requests a flow makes (for
+    /// example the `/site` call that derives the login user id).
+    extra_paths: Vec<(String, String)>,
 }
 
 pub struct FixtureServer {
@@ -74,6 +78,7 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                 requests: route.requests.clone(),
                 require_auth: route.require_auth,
                 transient_failures: route.transient_failures.clone(),
+                extra_paths: route.extra_paths.clone(),
             };
             tokio::spawn(async move {
                 let mut request = vec![0_u8; 8192];
@@ -121,27 +126,30 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                     .split('?')
                     .next()
                     .unwrap_or_default();
-                if route
-                    .path
-                    .as_deref()
-                    .is_some_and(|path| path != requested_path)
-                {
-                    write_response(
-                        &mut stream,
-                        404,
-                        r#"{"error":"fixture route not found"}"#,
-                        false,
-                    )
-                    .await;
-                    return;
-                }
-                write_response(
-                    &mut stream,
-                    route.status,
-                    &route.body.unwrap_or_else(|| "{}".into()),
-                    route.malformed_body,
-                )
-                .await;
+                let body = match route.path.as_deref() {
+                    Some(path) if path == requested_path => {
+                        route.body.clone().unwrap_or_else(|| "{}".into())
+                    }
+                    Some(_) => match route
+                        .extra_paths
+                        .iter()
+                        .find(|(path, _)| path == requested_path)
+                    {
+                        Some((_, body)) => body.clone(),
+                        None => {
+                            write_response(
+                                &mut stream,
+                                404,
+                                r#"{"error":"fixture route not found"}"#,
+                                false,
+                            )
+                            .await;
+                            return;
+                        }
+                    },
+                    None => route.body.clone().unwrap_or_else(|| "{}".into()),
+                };
+                write_response(&mut stream, route.status, &body, route.malformed_body).await;
             });
         }
     });
@@ -191,6 +199,7 @@ pub fn fixture_api_with_body(body: &str) -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     api_for(server, base, Duration::from_secs(2))
@@ -206,6 +215,7 @@ pub fn fixture_api_with_status(path: &str, status: u16) -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     api_for(server, base, Duration::from_secs(2))
@@ -222,6 +232,7 @@ pub fn fixture_api_with_status_count(status: u16) -> (HttpLemmyApi, Arc<AtomicUs
         requests: Some(requests.clone()),
         require_auth: false,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), requests)
@@ -237,6 +248,7 @@ pub fn truncated_body_fixture_api() -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     api_for(server, base, Duration::from_secs(2))
@@ -248,6 +260,7 @@ pub fn login_fixture_api(path: &str) -> (HttpLemmyApi, Url) {
         path.trim_end_matches('/').to_owned() + "/"
     );
     let body = fixture_body("login.json").expect("fixture exists");
+    let site_body = fixture_body("site.json").expect("fixture exists");
     let (base, server) = start_server(FixtureRoute {
         path: Some(normalized),
         status: 200,
@@ -257,6 +270,9 @@ pub fn login_fixture_api(path: &str) -> (HttpLemmyApi, Url) {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        // Login derives the user id from the authenticated `/site` response;
+        // serve the my_user-bearing fixture on that route too.
+        extra_paths: vec![("/api/v3/site".to_owned(), site_body)],
     })
     .expect("fixture server starts");
     let instance_url = base
@@ -274,6 +290,7 @@ pub fn timeout_fixture_api() -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     api_for(server, base, Duration::from_millis(50))
@@ -294,6 +311,7 @@ pub fn fixture_api_requiring_auth(body: &str) -> (HttpLemmyApi, Arc<AtomicUsize>
         requests: Some(requests.clone()),
         require_auth: true,
         transient_failures: None,
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), requests)
@@ -317,6 +335,7 @@ pub fn fixture_api_with_transient_failures(
         requests: None,
         require_auth: false,
         transient_failures: Some(remaining.clone()),
+        extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), remaining)

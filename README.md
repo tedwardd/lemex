@@ -66,6 +66,7 @@ the TUI.
 | `:profile`, `:profile <id>`, `:profile-new`, `:profile-delete` | manage profiles |
 | `:login`, `:logout`, `:whoami` | authentication |
 | `:vote <score>`, `:save`, `:subscribe`, `:reply`, `:edit`, `:delete` | interact |
+| `y` / `n`, `:confirm`, `:yes`, `:cancel` | confirm / cancel destructive actions |
 | `:media`, `:download-media`, `:downloads` | view and download media |
 | `:set ...`, `:help`, `:quit` | configuration, help, exit |
 

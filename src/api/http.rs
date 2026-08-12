@@ -1,8 +1,8 @@
 use super::{
-    Capabilities, CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail,
-    PostView, SiteInfo,
+    CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
+    SiteInfo,
 };
-use crate::domain::{CommentId, Mutation, PostId, ProfileContext, Session, UserId};
+use crate::domain::{CommentId, Mutation, PostId, Profile, ProfileContext, Session, UserId};
 use crate::error::{AppError, Result};
 use reqwest::{Client, Response, StatusCode};
 use serde_json::{Value, json};
@@ -300,19 +300,19 @@ impl LemmyApi for HttpLemmyApi {
         let version = site.get("version").and_then(Value::as_str).ok_or_else(|| {
             AppError::Network("site: response did not contain site version".into())
         })?;
-        let recognized_version = version.split('.').next() == Some("0")
-            && matches!(version.split('.').nth(1), Some("18" | "19"));
-        let observed_v3_shape = site_view.get("local_site").is_some_and(Value::is_object);
-        let core_v3 = recognized_version && observed_v3_shape;
+        // The authenticated user's id lives in the `my_user` block, which the
+        // server includes only when the request carries a session.
+        let user_id = response
+            .get("my_user")
+            .and_then(|my_user| my_user.get("local_user_view"))
+            .and_then(|view| view.get("local_user"))
+            .and_then(|local_user| local_user.get("person_id"))
+            .and_then(Value::as_i64)
+            .map(UserId);
         Ok(SiteInfo {
             name: name.to_owned(),
             version: version.to_owned(),
-            capabilities: Capabilities {
-                supports_login: core_v3,
-                supports_feed: core_v3,
-                supports_post: core_v3,
-                supports_mutations: core_v3,
-            },
+            user_id,
         })
     }
 
@@ -373,6 +373,8 @@ impl LemmyApi for HttpLemmyApi {
     }
 
     async fn login(&self, request: LoginRequest) -> Result<Session> {
+        let profile = request.profile.clone();
+        let instance_url = request.instance_url.clone();
         let endpoint_base = if let Some(mut base) = self.base_url.clone() {
             if request.instance_url.path() != "/" && !request.instance_url.path().is_empty() {
                 base.set_path(request.instance_url.path());
@@ -389,14 +391,31 @@ impl LemmyApi for HttpLemmyApi {
         let token = response.get("jwt").and_then(Value::as_str).ok_or_else(|| {
             AppError::Authentication("login response did not contain a session token".into())
         })?;
-        let user_id = response
-            .get("person_id")
-            .and_then(Value::as_i64)
-            .unwrap_or_default();
-        Ok(Session {
+        let mut session = Session {
             token: crate::domain::SecretString::from(token),
-            user_id: UserId(user_id),
-        })
+            // Lemmy's login response carries no user identity (only the JWT
+            // and a registration flag); the id is derived from the
+            // authenticated `/site` `my_user` block below.
+            user_id: UserId(0),
+        };
+        let context = ProfileContext {
+            profile: Profile {
+                id: profile,
+                instance_url,
+                account_label: None,
+            },
+            session: Some(session.clone()),
+        };
+        // Enrichment is best-effort: a flaky `/site` after a successful login
+        // must not fail the login itself, and some servers omit `my_user`.
+        if let Ok(site) = self.site(&context).await
+            && let Some(user_id) = site.user_id
+        {
+            session.user_id = user_id;
+        } else {
+            tracing::warn!("could not derive login user id from /site my_user");
+        }
+        Ok(session)
     }
 
     async fn mutate(&self, ctx: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {

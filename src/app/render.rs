@@ -31,9 +31,14 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     .block(Block::default().borders(Borders::ALL).title("Session"));
     frame.render_widget(header, areas[0]);
 
+    // Help wins over the downloads panel: `:help` while the panel is open
+    // must still be visible (`render_content` shows help when `model.help`
+    // is set); the panel reappears once help is closed with `Esc`.
     match &model.downloads {
-        Some(downloads) => render_downloads(frame, areas.as_ref(), downloads),
-        None => render_content(frame, areas.as_ref(), model),
+        Some(downloads) if model.help.is_none() => {
+            render_downloads(frame, areas.as_ref(), downloads)
+        }
+        _ => render_content(frame, areas.as_ref(), model),
     }
 
     let compose = Paragraph::new(if model.compose.is_empty() {
@@ -308,5 +313,81 @@ fn network_style(model: &RenderModel) -> Style {
         _ => Style::default()
             .fg(Color::Green)
             .add_modifier(Modifier::BOLD),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        app::Status,
+        domain::{Profile, ProfileContext, ProfileId},
+        input::Mode,
+    };
+    use ratatui::backend::TestBackend;
+    use url::Url;
+
+    fn model(help: Option<String>, downloads: bool) -> RenderModel {
+        let context = ProfileContext {
+            profile: Profile {
+                id: ProfileId::from("fixture"),
+                instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+                account_label: Some("fixture".into()),
+            },
+            session: None,
+        };
+        RenderModel {
+            mode: Mode::Normal,
+            posts: Vec::new(),
+            selected: None,
+            detail: None,
+            compose: String::new(),
+            search: String::new(),
+            has_more: false,
+            status: Status::ready(&context),
+            downloads: downloads.then(|| DownloadsRender {
+                query: String::new(),
+                selected: None,
+                records: Vec::new(),
+            }),
+            help,
+        }
+    }
+
+    fn rendered(model: &RenderModel) -> String {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|frame| render(frame, model))
+            .expect("render into test backend");
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn help_renders_above_open_downloads_panel() {
+        let text = rendered(&model(Some("profile".into()), true));
+        assert!(
+            text.contains("Help — \"profile\""),
+            "open help must be visible while the downloads panel is open"
+        );
+        assert!(
+            !text.contains("Session downloads"),
+            "the downloads panel must not cover open help"
+        );
+    }
+
+    #[test]
+    fn downloads_panel_renders_when_help_is_closed() {
+        let text = rendered(&model(None, true));
+        assert!(
+            text.contains("Session downloads"),
+            "closing help must restore the downloads panel"
+        );
     }
 }

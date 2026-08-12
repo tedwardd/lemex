@@ -3,9 +3,8 @@ mod http;
 
 pub use http::HttpLemmyApi;
 
-use crate::domain::{CommunityId, Mutation, PostId, ProfileContext, ProfileId, Session};
+use crate::domain::{CommunityId, Mutation, PostId, ProfileContext, ProfileId, Session, UserId};
 use crate::error::Result;
-use serde::{Deserialize, Serialize};
 use std::fmt;
 use url::Url;
 
@@ -93,31 +92,13 @@ impl fmt::Debug for LoginRequest {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Capabilities {
-    pub supports_login: bool,
-    pub supports_feed: bool,
-    pub supports_post: bool,
-    pub supports_mutations: bool,
-}
-
-impl Capabilities {
-    pub fn supports(&self, operation: &str) -> bool {
-        match operation {
-            "login" => self.supports_login,
-            "feed" => self.supports_feed,
-            "post" => self.supports_post,
-            "mutation" => self.supports_mutations,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SiteInfo {
     pub name: String,
     pub version: String,
-    pub capabilities: Capabilities,
+    /// The authenticated user's id, present only when `/site` is called with
+    /// a session and the server returned a `my_user` block.
+    pub user_id: Option<UserId>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
