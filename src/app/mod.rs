@@ -114,7 +114,7 @@ impl App {
                     Ok(config) => config,
                     Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); }
                 };
-                let replacing = config.profiles.iter().any(|existing| existing.id == profile.id);
+                let replacing = self.state.active.profile.id == profile.id || config.profiles.iter().any(|existing| existing.id == profile.id);
                 if replacing {
                     self.repository.invalidate_profile_context(&profile.id);
                 }

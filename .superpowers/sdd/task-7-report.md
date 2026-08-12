@@ -182,3 +182,30 @@ Output:
 ```text
 cargo test: 23 passed (1 suite, 0.11s)
 ```
+
+## Task 7 active unpersisted same-ID replacement fix
+
+### Changed files
+
+- `src/app/mod.rs`: Treats an active profile context with the replacement ID as a replacement even when `ProfileStore`/config has no matching profile, then invalidates repository refresh context epochs before activating the new profile.
+- `tests/application.rs`: Added an `App::new` regression with an active unpersisted profile, an in-flight refresh, and same-ID `ProfileCommand::New`; the old refresh response must not overwrite replacement cache data.
+- `.superpowers/sdd/task-7-report.md`: Appended this focused fix evidence.
+
+### Fix details
+
+- `ProfileCommand::New` now computes replacement as `active_profile.id == new_profile.id || configured_profile.id == new_profile.id`. This covers active profiles created outside persisted configuration while preserving configured replacement behavior.
+- The existing repository context invalidation runs for both replacement cases before credentials are removed and the new context is activated, so refreshes captured from the old instance cannot write to the replacement cache.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 24 passed (1 suite, 0.11s)
+```

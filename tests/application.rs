@@ -381,6 +381,28 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
     let _ = std::fs::remove_file(path);
 }
 
+#[tokio::test]
+async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
+    let store = lemmy::profiles::default_store();
+    let original = store.load_config().unwrap();
+    let id = ProfileId::from(format!("active-unpersisted-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    assert!(!original.profiles.iter().any(|profile| profile.id == id));
+    let old = Profile { id: id.clone(), instance_url: Url::parse("http://old.example/").unwrap(), account_label: Some("old".into()) };
+    let cache = Arc::new(MemoryCache::default());
+    cache.write_feed(&id, &FeedKey::from("home"), &CachedFeed::new(json!({ "items": [post_json(1, "cached")], "next_page": null }), 1, false)).unwrap();
+    let api = Arc::new(ProfileReplacementRaceApi::default());
+    let mut app = App::new(api.clone(), cache.clone(), ProfileContext { profile: old, session: None }, Arc::new(MemoryCredentialStore::default()));
+    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh)).await.unwrap();
+    api.started.notified().await;
+    app.dispatch(AppAction::Profile(ProfileCommand::New(ProfileDraft { id: id.clone(), instance_url: Url::parse("https://new.example/").unwrap(), account_label: Some("new".into()) }))).await.unwrap();
+    api.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let cached = cache.read_feed(&id, &FeedKey::from("home")).unwrap().unwrap();
+    let title = cached.entity["items"][0]["title"].clone();
+    store.save_config(&original).unwrap();
+    assert_eq!(title, "cached");
+}
+
 
 #[tokio::test]
 async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
