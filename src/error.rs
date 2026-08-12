@@ -18,4 +18,4 @@ pub enum AppError {
     InvalidCommand(String),
 }
 
-pub type Result<T, E = AppError> = std::result::Result<T, E>;
+pub type Result<T> = std::result::Result<T, AppError>;
