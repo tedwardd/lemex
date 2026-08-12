@@ -4,11 +4,12 @@ pub mod render;
 pub mod repository;
 pub mod state;
 
-use std::{collections::HashMap, sync::Arc, thread, time::Duration};
+use std::{collections::{HashMap, VecDeque}, sync::Arc, thread, time::Duration};
 
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event};
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
+
 
 pub use actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
 pub use repository::{CachedRead, Repository};
@@ -61,6 +62,7 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
         let mut app = Some(app);
         let mut model = app.as_ref().expect("application is present").render_model();
         let mut action_task: Option<tokio::task::JoinHandle<(App, Result<()>)>> = None;
+        let mut queued_actions = VecDeque::new();
         let mut redraw = true;
         let mut quit = false;
 
@@ -70,6 +72,13 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
                     .draw(|frame| render::render(frame, &model))
                     .map_err(|error| crate::error::AppError::Terminal(error.to_string()))?;
                 redraw = false;
+            }
+
+            if action_task.is_none() {
+                if let Some(action) = queued_actions.pop_front() {
+                    start_action(&mut app, &mut model, &mut action_task, action, &mut redraw);
+                    continue;
+                }
             }
 
             if let Some(task) = action_task.as_mut() {
@@ -84,11 +93,12 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
                     }
                     _ = ticks.tick() => redraw = true,
                     event = input_rx.recv() => match event {
-                        Some(Ok(Event::Key(key))) if input.mode() == crate::input::Mode::Normal && key.code == KeyCode::Char('q') => {
-                            if let Some(task) = action_task.take() { task.abort(); }
-                            quit = true;
+                        Some(Ok(event)) => {
+                            if queue_terminal_event(event, &mut input, &mut queued_actions, &mut redraw) {
+                                if let Some(task) = action_task.take() { task.abort(); }
+                                quit = true;
+                            }
                         }
-                        Some(Ok(_)) => {}
                         Some(Err(error)) => return Err(error),
                         None => quit = true,
                     }
@@ -99,31 +109,14 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
             if app.as_ref().is_some_and(App::is_quit) { break; }
             tokio::select! {
                 _ = ticks.tick() => {
-                    let owned = app.take().expect("application is present");
-                    action_task = Some(tokio::spawn(async move {
-                        let mut app = owned;
-                        let result = app.dispatch(AppAction::Tick).await;
-                        (app, result)
-                    }));
+                    start_action(&mut app, &mut model, &mut action_task, AppAction::Tick, &mut redraw);
                 }
                 event = input_rx.recv() => match event {
-                    Some(Ok(Event::Key(key))) => {
-                        let command = input.handle(key);
-                        if !matches!(command, crate::input::Command::Noop) {
-                            if matches!(command, crate::input::Command::Quit) {
-                                quit = true;
-                            } else {
-                                let owned = app.take().expect("application is present");
-                                action_task = Some(tokio::spawn(async move {
-                                    let mut app = owned;
-                                    let result = app.dispatch(command.into()).await;
-                                    (app, result)
-                                }));
-                            }
+                    Some(Ok(event)) => {
+                        if queue_terminal_event(event, &mut input, &mut queued_actions, &mut redraw) {
+                            quit = true;
                         }
                     }
-                    Some(Ok(Event::Resize(_, _))) => redraw = true,
-                    Some(Ok(_)) => {}
                     Some(Err(error)) => return Err(error),
                     None => quit = true,
                 }
@@ -136,6 +129,44 @@ async fn run_terminal_async(app: App, mut terminal: DefaultTerminal) -> Result<(
     let _ = stop_tx.send(());
     let _ = input_thread.join();
     result
+}
+
+fn queue_terminal_event(
+    event: Event,
+    input: &mut crate::input::InputEngine,
+    queued_actions: &mut VecDeque<AppAction>,
+    redraw: &mut bool,
+) -> bool {
+    match event {
+        Event::Key(key) => {
+            let command = input.handle(key);
+            if command == crate::input::Command::Quit { return true; }
+            if command != crate::input::Command::Noop {
+                queued_actions.push_back(command.into());
+            }
+        }
+        Event::Resize(_, _) => *redraw = true,
+        _ => {}
+    }
+    false
+}
+
+fn start_action(
+    app: &mut Option<App>,
+    model: &mut RenderModel,
+    action_task: &mut Option<tokio::task::JoinHandle<(App, Result<()>)>>,
+    action: AppAction,
+    redraw: &mut bool,
+) {
+    let mut owned = app.take().expect("application is present");
+    owned.prepare_action(&action);
+    *model = owned.render_model();
+    *redraw = true;
+    *action_task = Some(tokio::spawn(async move {
+        let mut app = owned;
+        let result = app.dispatch(action).await;
+        (app, result)
+    }));
 }
 
 pub struct App {
@@ -177,6 +208,12 @@ impl App {
 
     pub fn render_model(&self) -> RenderModel { self.state.render_model() }
     pub fn is_quit(&self) -> bool { self.quit }
+
+    fn prepare_action(&mut self, action: &AppAction) {
+        if matches!(action, AppAction::Input(Command::Refresh)) || (matches!(action, AppAction::Confirm) && self.state.pending.is_some()) {
+            self.state.status.pending = true;
+        }
+    }
 
     pub async fn dispatch(&mut self, action: AppAction) -> Result<()> {
         match action {
@@ -393,6 +430,7 @@ self.state.status.message = format!("confirm deletion of post {:?}", id);
                 Err(error) => self.state.status.failure(error.to_string()),
             } } else {},
             ApiResult::Comments { request, post, result, .. } => if request.identity == RequestIdentity::Comments(post) && self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == post) { match result {
+
                 Ok(comments) => { if let Some(detail) = &mut self.state.view.detail { detail.comments = comments; } self.state.status.success("comments loaded"); }
                 Err(error) => self.state.status.failure(error.to_string()),
             } } else {},
@@ -403,5 +441,46 @@ fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>) -> Option<
     match draft.operation.as_str() {
         "create_comment" | "reply" => Some(Mutation::CreateComment(CreateCommentRequest { post: selected?, content: draft.content.clone() })),
         _ => None,
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use std::sync::Arc;
+    use url::Url;
+
+    #[test]
+    fn queues_text_and_escape_while_action_is_in_flight() {
+        let mut input = crate::input::InputEngine::new();
+        let mut queued = VecDeque::new();
+        let mut redraw = false;
+        assert!(!queue_terminal_event(Event::Key(KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE)), &mut input, &mut queued, &mut redraw));
+        assert!(!queue_terminal_event(Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)), &mut input, &mut queued, &mut redraw));
+        assert!(!queue_terminal_event(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)), &mut input, &mut queued, &mut redraw));
+        assert!(matches!(queued.pop_front(), Some(AppAction::Input(Command::EnterInsert))));
+        assert!(matches!(queued.pop_front(), Some(AppAction::Input(Command::Text(text))) if text == "x"));
+        assert!(matches!(queued.pop_front(), Some(AppAction::Input(Command::Back))));
+        assert!(queued.is_empty());
+    }
+
+    #[tokio::test]
+    async fn pending_refresh_snapshot_is_visible_before_action_completes() {
+        let context = ProfileContext {
+            profile: Profile { id: ProfileId::from("fixture"), instance_url: Url::parse("http://127.0.0.1/").unwrap(), account_label: Some("fixture".into()) },
+            session: None,
+        };
+        let app = App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            context,
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        );
+        let action = AppAction::Input(Command::Refresh);
+        let mut model = app.render_model();
+        let mut app = app;
+        app.prepare_action(&action);
+        model = app.render_model();
+        assert!(model.status.pending);
     }
 }
