@@ -13,7 +13,7 @@ id_type!(CommunityId);
 id_type!(UserId);
 
 /// Fields required to create a post through the adapter.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CreatePostRequest {
     pub community: CommunityId,
     pub name: String,
@@ -21,8 +21,7 @@ pub struct CreatePostRequest {
     pub url: Option<Url>,
 }
 
-/// Fields that may be changed on an existing post.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct EditPostRequest {
     pub id: PostId,
     pub name: Option<String>,
@@ -31,21 +30,21 @@ pub struct EditPostRequest {
 }
 
 /// Fields required to create a comment.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct CreateCommentRequest {
     pub post: PostId,
     pub content: String,
 }
 
 /// Fields that may be changed on an existing comment.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct EditCommentRequest {
     pub id: CommentId,
     pub content: String,
 }
 
 /// A user-visible mutation independent of Lemmy API-version request shapes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Mutation {
     VotePost { id: PostId, score: i8 },
     VoteComment { id: CommentId, score: i8 },

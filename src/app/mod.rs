@@ -2,35 +2,55 @@ pub mod actions;
 pub mod repository;
 pub mod state;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-pub use actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft};
+pub use actions::{ApiResult, AppAction, ProfileCommand, ProfileDraft, RequestIdentity, RequestToken};
 pub use repository::{CachedRead, Repository};
 pub use state::{AppState, DraftStore, RenderModel, Status, View};
 use crate::{
     api::{FeedQuery, LemmyApi, MutationResult},
-    cache::{CacheStore, Draft},
+    cache::Draft,
     domain::{CreateCommentRequest, Mutation, Profile, ProfileContext, ProfileId},
     error::Result,
     input::{Command, Mode},
-    profiles::CredentialStore,
+    profiles::{default_store, CredentialStore, ProfileStore},
 };
 
 pub struct App {
     pub state: AppState,
     pub repository: Repository,
+    profile_store: ProfileStore,
+    requests: HashMap<RequestIdentity, RequestToken>,
+    next_generation: u64,
     quit: bool,
 }
 
 impl App {
     pub fn new(
         api: Arc<dyn LemmyApi>,
-        cache: Arc<dyn CacheStore>,
+        cache: Arc<dyn crate::cache::CacheStore>,
         active: ProfileContext,
         credentials: Arc<dyn CredentialStore>,
     ) -> Self {
+        Self::with_profile_store(api, cache, active, credentials, default_store())
+    }
+
+    pub fn with_profile_store(
+        api: Arc<dyn LemmyApi>,
+        cache: Arc<dyn crate::cache::CacheStore>,
+        active: ProfileContext,
+        credentials: Arc<dyn CredentialStore>,
+        profile_store: ProfileStore,
+    ) -> Self {
         let state = AppState::new(active, cache.clone());
-        Self { state, repository: Repository::new(api, cache, credentials), quit: false }
+        Self { state, repository: Repository::new(api, cache, credentials), profile_store, requests: HashMap::new(), next_generation: 0, quit: false }
+    }
+
+    pub fn begin_request(&mut self, identity: RequestIdentity) -> RequestToken {
+        self.next_generation = self.next_generation.wrapping_add(1);
+        let token = RequestToken { generation: self.next_generation, identity: identity.clone() };
+        self.requests.insert(identity, token.clone());
+        token
     }
 
     pub fn render_model(&self) -> RenderModel { self.state.render_model() }
@@ -42,9 +62,10 @@ impl App {
             AppAction::Profile(command) => self.dispatch_profile(command).await,
             AppAction::SubmitDraft(id) => self.submit_draft(id).await,
             AppAction::OpenSelected => self.open_selected().await,
-            AppAction::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; Ok(()) }
+            AppAction::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
             AppAction::DeletePost(id) => self.delete_post(id).await,
-            AppAction::Confirm => Ok(()),
+            AppAction::Confirm => self.confirm_pending().await,
+            AppAction::Cancel => { self.cancel_pending(); Ok(()) }
             AppAction::ApiResult(result) => { self.apply_api_result(result); Ok(()) }
             AppAction::Tick => Ok(()),
             AppAction::Quit => { self.quit = true; Ok(()) }
@@ -54,7 +75,7 @@ impl App {
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Open => self.open_selected().await,
-            Command::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; Ok(()) }
+            Command::Back => { self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
             Command::Quit => { self.quit = true; Ok(()) }
             Command::Refresh => self.refresh_feed().await,
             Command::MoveDown { count } => { self.move_selection(count as isize); Ok(()) }
@@ -88,11 +109,13 @@ impl App {
     }
 
     async fn switch_profile(&mut self, id: ProfileId) -> Result<()> {
+        let profile = match self.profile_store.load()?.into_iter().find(|profile| profile.id == id) {
+            Some(profile) => profile,
+            None => { self.state.status.failure(format!("profile {id} is not configured")); return Ok(()); }
+        };
         let session = match self.repository.session(&id).await { Ok(session) => session, Err(error) => { self.state.status.failure(error.to_string()); return Ok(()); } };
-        let mut profile = self.state.active.profile.clone();
-        profile.id = id;
-        let context = ProfileContext { profile, session };
-        self.state.switch_context(context);
+        self.requests.clear();
+        self.state.switch_context(ProfileContext { profile, session });
         if let Ok(Some(read)) = self.repository.cached_feed(&self.state.active, &FeedQuery::home()) {
             self.state.view.posts = read.value.items;
             self.state.view.stale = read.stale;
@@ -105,14 +128,11 @@ impl App {
     async fn refresh_feed(&mut self) -> Result<()> {
         let context = self.state.active.clone();
         self.state.status.pending = true;
+        let profile = context.profile.id.clone();
+        let request = self.begin_request(RequestIdentity::Feed);
         match self.repository.feed(&context, FeedQuery::home()).await {
-            Ok(read) => {
-                self.state.view.posts = read.value.items;
-                self.state.view.stale = read.stale;
-                self.state.status.stale = read.stale;
-                if let Some(error) = read.refresh_error { self.state.status.failure(format!("stale cache: {error}")); self.state.status.stale = true; } else { self.state.status.success("feed refreshed"); }
-            }
-            Err(error) => self.state.status.failure(error.to_string()),
+            Ok(read) => self.apply_api_result(ApiResult::Feed { profile, request, result: Ok(read.value), stale: read.stale }),
+            Err(error) => self.apply_api_result(ApiResult::Feed { profile, request, result: Err(error), stale: false }),
         }
         Ok(())
     }
@@ -120,19 +140,34 @@ impl App {
     async fn open_selected(&mut self) -> Result<()> {
         let Some(id) = self.state.selected_post() else { return Ok(()); };
         let profile = self.state.active.profile.id.clone();
-        match self.repository.post(&self.state.active, id).await {
-            Ok(detail) => self.apply_api_result(ApiResult::Post { profile, result: Ok(detail) }),
-            Err(error) => self.apply_api_result(ApiResult::Post { profile, result: Err(error) }),
-        }
+        let request = self.begin_request(RequestIdentity::Post(id));
+        let result = self.repository.post(&self.state.active, id).await;
+        self.apply_api_result(ApiResult::Post { profile, request, result });
         Ok(())
     }
 
     async fn delete_post(&mut self, id: crate::PostId) -> Result<()> {
-        let profile = self.state.active.profile.id.clone();
-        let mutation = Mutation::DeletePost(id);
-        let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
-        self.apply_api_result(ApiResult::Mutation { profile, draft: None, mutation, result });
+        self.state.pending = Some(crate::app::actions::PendingAction::DeletePost { profile: self.state.active.profile.id.clone(), id });
+        self.state.status.pending = true;
+self.state.status.message = format!("confirm deletion of post {:?}", id);
+        self.state.status.error = None;
         Ok(())
+    }
+
+    async fn confirm_pending(&mut self) -> Result<()> {
+        let Some(crate::app::actions::PendingAction::DeletePost { profile, id }) = self.state.pending.take() else { return Ok(()); };
+        if profile != self.state.active.profile.id { self.cancel_pending(); return Ok(()); }
+        self.state.status.pending = true;
+        let mutation = Mutation::DeletePost(id);
+        let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
+        let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
+        self.apply_api_result(ApiResult::Mutation { profile, request, draft: None, mutation, result });
+        Ok(())
+    }
+
+    fn cancel_pending(&mut self) {
+        self.state.pending = None;
+        if self.state.status.pending { self.state.status.pending = false; self.state.status.success("cancelled"); }
     }
 
     async fn submit_draft(&mut self, id: crate::cache::DraftId) -> Result<()> {
@@ -140,8 +175,9 @@ impl App {
         let mutation = mutation_for_draft(&draft, self.state.selected_post());
         let Some(mutation) = mutation else { self.state.status.failure("unsupported draft operation"); return Ok(()); };
         let profile = self.state.active.profile.id.clone();
+        let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
         let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
-        self.apply_api_result(ApiResult::Mutation { profile, draft: Some(id), mutation, result });
+        self.apply_api_result(ApiResult::Mutation { profile, request, draft: Some(id), mutation, result });
         Ok(())
     }
 
@@ -153,13 +189,15 @@ impl App {
     }
 
     fn apply_api_result(&mut self, result: ApiResult) {
-        let profile = match &result { ApiResult::Feed { profile, .. } | ApiResult::Post { profile, .. } | ApiResult::Mutation { profile, .. } | ApiResult::Comments { profile, .. } => profile };
-        if profile != &self.state.active.profile.id { return; }
+        let (profile, request) = match &result {
+            ApiResult::Feed { profile, request, .. } | ApiResult::Post { profile, request, .. } | ApiResult::Mutation { profile, request, .. } | ApiResult::Comments { profile, request, .. } => (profile, request),
+        };
+        if profile != &self.state.active.profile.id || self.requests.get(&request.identity) != Some(request) { return; }
         match result {
             ApiResult::Feed { result, stale, .. } => match result { Ok(page) => { self.state.view.posts = page.items; self.state.view.stale = stale; self.state.status.stale = stale; self.state.status.success("feed loaded"); }, Err(error) => self.state.status.failure(error.to_string()) },
-            ApiResult::Post { result, .. } => match result { Ok(detail) => { self.state.view.detail = Some(detail); self.state.mode = Mode::Normal; self.state.status.success("post loaded"); }, Err(error) => self.state.status.failure(error.to_string()) },
-            ApiResult::Mutation { result, draft, .. } => match result { Ok(MutationResult { success: true, post, .. }) => { if let Some(post) = post { if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post; } } if let Some(id) = draft { self.state.drafts.mark_completed(id); } self.state.status.success("saved"); }, Ok(_) => self.state.status.failure("mutation was not confirmed"), Err(error) => self.state.status.failure(error.to_string()) },
-            ApiResult::Comments { result, .. } => match result { Ok(comments) => { if let Some(detail) = &mut self.state.view.detail { detail.comments = comments; } self.state.status.success("comments loaded"); }, Err(error) => self.state.status.failure(error.to_string()) },
+            ApiResult::Post { request, result, .. } => match result { Ok(detail) if matches!(request.identity, RequestIdentity::Post(id) if id == detail.post.id) => { self.state.view.detail = Some(detail); self.state.mode = Mode::Normal; self.state.status.success("post loaded"); }, Ok(_) => {}, Err(error) => self.state.status.failure(error.to_string()) },
+            ApiResult::Mutation { request, mutation, result, draft, .. } => if request.identity != RequestIdentity::Mutation(mutation) { } else { match result { Ok(MutationResult { success: true, post, .. }) => { if let Some(post) = post { if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post; } } if let Some(id) = draft { self.state.drafts.mark_completed(id); } self.state.status.success("saved"); }, Ok(_) => self.state.status.failure("mutation was not confirmed"), Err(error) => self.state.status.failure(error.to_string()) } },
+            ApiResult::Comments { request, post, result, .. } => match result { Ok(comments) if matches!(request.identity, RequestIdentity::Comments(id) if id == post) && self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == post) => { if let Some(detail) = &mut self.state.view.detail { detail.comments = comments; } self.state.status.success("comments loaded"); }, Ok(_) => {}, Err(error) => self.state.status.failure(error.to_string()) },
         }
     }
 }

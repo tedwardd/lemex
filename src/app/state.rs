@@ -7,6 +7,7 @@ use crate::{
     error::Result,
     input::Mode,
 };
+use super::actions::PendingAction;
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct View {
@@ -127,19 +128,19 @@ impl DraftStore {
         if let Ok(mut completed) = self.completed.lock() { completed.insert(id); }
     }
 }
-
 pub struct AppState {
     pub mode: Mode,
     pub active: ProfileContext,
     pub view: View,
     pub status: Status,
     pub drafts: DraftStore,
+    pub pending: Option<PendingAction>,
 }
 
 impl AppState {
     pub fn new(active: ProfileContext, cache: Arc<dyn CacheStore>) -> Self {
         let drafts = DraftStore::new(cache, active.profile.id.clone());
-        Self { mode: Mode::Normal, status: Status::ready(&active), active, view: View::default(), drafts }
+        Self { mode: Mode::Normal, status: Status::ready(&active), active, view: View::default(), drafts, pending: None }
     }
 
     pub fn select(&mut self, post: PostId) {
@@ -156,6 +157,7 @@ impl AppState {
         self.active = context;
         self.view.clear_profile_transient();
         self.drafts.set_profile(self.active.profile.id.clone());
+        self.pending = None;
         self.status = Status::ready(&self.active);
     }
 }

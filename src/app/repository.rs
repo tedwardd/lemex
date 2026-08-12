@@ -31,17 +31,23 @@ impl Repository {
 
     pub async fn feed(&self, context: &ProfileContext, query: FeedQuery) -> Result<CachedRead<Page<PostView>>> {
         let key = FeedKey::new(feed_key(&query));
-        let cached = self.cache.read_feed(&context.profile.id, &key)?;
-        let cached_page = cached.as_ref().and_then(|entry| page_from_value(&entry.entity).ok());
-        match self.api.feed(context, query).await {
-            Ok(page) => {
-                let entity = page_to_value(&page);
-                self.cache.write_feed(&context.profile.id, &key, &CachedFeed::new(entity, unix_now(), false))?;
-                Ok(CachedRead { value: page, stale: false, refresh_error: None })
+        let Some(mut cached) = self.cache.read_feed(&context.profile.id, &key)? else {
+            let page = self.api.feed(context, query).await?;
+            self.cache.write_feed(&context.profile.id, &key, &CachedFeed::new(page_to_value(&page), unix_now(), false))?;
+            return Ok(CachedRead { value: page, stale: false, refresh_error: None });
+        };
+        let page = page_from_value(&cached.entity)?;
+        cached.stale = true;
+        self.cache.write_feed(&context.profile.id, &key, &cached)?;
+        let api = self.api.clone();
+        let cache = self.cache.clone();
+        let context = context.clone();
+        tokio::spawn(async move {
+            if let Ok(page) = api.feed(&context, query).await {
+                let _ = cache.write_feed(&context.profile.id, &key, &CachedFeed::new(page_to_value(&page), unix_now(), false));
             }
-            Err(error) if cached_page.is_some() => Ok(CachedRead { value: cached_page.expect("checked above"), stale: true, refresh_error: Some(error) }),
-            Err(error) => Err(error),
-        }
+        });
+        Ok(CachedRead { value: page, stale: true, refresh_error: None })
     }
 
     pub fn cached_feed(&self, context: &ProfileContext, query: &FeedQuery) -> Result<Option<CachedRead<Page<PostView>>>> {
@@ -57,6 +63,7 @@ impl Repository {
 
     pub async fn mutate(&self, context: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
         let result = self.api.mutate(context, mutation).await?;
+        if !result.success { return Ok(result); }
         if let Some(post) = &result.post {
             let key = FeedKey::new("home");
             if let Ok(Some(mut cached)) = self.cache.read_feed(&context.profile.id, &key) {

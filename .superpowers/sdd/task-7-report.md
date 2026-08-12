@@ -29,3 +29,38 @@
 ## Concerns
 
 - `ProfileCommand::Login` and `Delete` retain an explicit actionable status because the existing profile boundary does not provide interactive login/delete request data; no credentials or profiles are deleted implicitly.
+
+
+## Task 7 review correction pass
+
+### Changed files
+
+- `src/app/actions.rs`: Added profile-scoped request identities/tokens, pending destructive-action state, and explicit cancellation.
+- `src/app/state.rs`: Added pending-action storage and clear-on-context-switch behavior.
+- `src/app/mod.rs`: Made DeletePost stage-only; Confirm consumes staged deletion once; Cancel/Back clear it; validated profile, request generation/identity, post target, and comment target before applying results; resolved switched profiles from `ProfileStore` metadata.
+- `src/app/repository.rs`: Returned cached feeds immediately, persisted stale metadata before background refresh, and only updated mutation cache entries for confirmed success.
+- `src/domain/lemmy.rs`: Added hashability for mutation request identity.
+- `tests/application.rs`: Added regressions for confirmation/cancellation, stale same-profile post/comment results, destination profile metadata, cache-first stale refresh, and unsuccessful mutation cache protection.
+- `.superpowers/sdd/task-7-report.md`: Appended this correction-pass evidence.
+
+### Fix details
+
+- Delete requests now create a pending destructive action without contacting the adapter. Confirm takes ownership of that action before invoking the adapter, so repeated confirmation cannot repeat the call. Cancel and Back clear pending state.
+- Every application request receives a monotonically increasing generation plus operation identity. Results are ignored unless both profile and current token match; post and comment results additionally must match the requested/active post context.
+- Profile switches load the destination `Profile` from the configured `ProfileStore`; instance URL and account label are never inherited from the current profile.
+- Repository mutation cache writes are gated on `MutationResult.success`; unsuccessful results leave cached posts and drafts untouched.
+- Feed reads return a cached page immediately, mark it stale durably, and refresh asynchronously. Successful refresh replaces the stale row; failed refresh leaves stale metadata persisted.
+
+### Focused verification
+
+Command:
+
+```text
+cargo test --test application
+```
+
+Output:
+
+```text
+cargo test: 8 passed (1 suite, 0.10s)
+```
