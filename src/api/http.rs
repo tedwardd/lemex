@@ -238,11 +238,12 @@ impl LemmyApi for HttpLemmyApi {
         let body = self.auth_body(ctx, body);
         let request = self.auth_request(self.client.post(self.endpoint(ctx, path)?).json(&body), ctx);
         let response = self.mutation_request(request, path).await?;
+        let success = response.get("success").and_then(Value::as_bool).unwrap_or(response.get("error").is_none());
         let comment = response.get("comment_view").map(|value| {
             let comment = value.get("comment").unwrap_or(value);
             normalize_comment(value, PostId(number(comment, "post_id")))
         });
-        Ok(MutationResult { success: true, post: response.get("post_view").map(normalize_post).transpose()?, comment, message: string(&response, "message") })
+        Ok(MutationResult { success, post: response.get("post_view").map(normalize_post).transpose()?, comment, message: string(&response, "message") })
     }
 }
 

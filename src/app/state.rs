@@ -9,20 +9,27 @@ use crate::{
 };
 use super::actions::PendingAction;
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct View {
     pub posts: Vec<PostView>,
     pub detail: Option<PostDetail>,
     pub selected: Option<usize>,
     pub compose: String,
     pub stale: bool,
+    pub next_page: Option<u32>,
+    pub feed_query: crate::api::FeedQuery,
+    pub search: String,
+}
+
+impl Default for View {
+    fn default() -> Self {
+        Self { posts: Vec::new(), detail: None, selected: None, compose: String::new(), stale: false, next_page: None, feed_query: crate::api::FeedQuery::home(), search: String::new() }
+    }
 }
 
 impl View {
     pub fn selected_post(&self) -> Option<PostId> {
-        self.selected
-            .and_then(|index| self.posts.get(index))
-            .map(|post| post.id)
+        self.selected.and_then(|index| self.posts.get(index)).map(|post| post.id)
     }
 
     pub fn clear_profile_transient(&mut self) {
@@ -31,6 +38,9 @@ impl View {
         self.selected = None;
         self.compose.clear();
         self.stale = false;
+        self.next_page = None;
+        self.feed_query = crate::api::FeedQuery::home();
+        self.search.clear();
     }
 
     pub fn selected_comments(&self) -> &[CommentView] {
@@ -106,16 +116,39 @@ impl DraftStore {
     pub fn set_profile(&mut self, profile: ProfileId) {
         self.profile = profile;
     }
+    pub fn begin_comment_draft(&self) -> Draft { self.begin_draft("create_comment", "comment".into()) }
 
-    pub fn begin_comment_draft(&self) -> Draft {
-        let id = DraftId::new(format!("comment-{}", self.sequence.fetch_add(1, Ordering::Relaxed)));
-        let draft = Draft::new(id, self.profile.clone(), "create_comment", String::new());
+    pub fn begin_post_draft(&self) -> Draft { self.begin_draft("create_post", "Untitled".into()) }
+
+    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft { self.begin_draft("edit_post", id.0.to_string()) }
+
+    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft { self.begin_draft("edit_comment", id.0.to_string()) }
+
+    fn begin_draft(&self, operation: &str, content: String) -> Draft {
+        let id = DraftId::new(format!("{}-{}", operation, self.sequence.fetch_add(1, Ordering::Relaxed)));
+        let draft = Draft::new(id, self.profile.clone(), operation, content);
         let _ = self.backend.save_draft(draft.clone());
         draft
     }
 
+    pub fn validate(&self, draft: &Draft) -> Result<()> {
+        if draft.profile != self.profile { return Err(crate::error::AppError::Authorization("draft belongs to another profile".into())); }
+        match draft.operation.as_str() {
+            "create_post" => if draft.content.lines().next().is_none_or(|title| title.trim().is_empty()) { Err(crate::error::AppError::InvalidCommand("post title is required".into())) } else { Ok(()) },
+            "create_comment" | "reply" | "edit_comment" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) },
+            "edit_post" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("post edit content is required".into())) } else { Ok(()) },
+            _ => Err(crate::error::AppError::InvalidCommand(format!("unsupported draft operation: {}", draft.operation))),
+        }
+    }
+
     pub fn save(&self, draft: Draft) -> Result<()> {
         self.backend.save_draft(draft)
+    }
+
+    pub fn update(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
+        let mut draft = self.draft(id).ok_or_else(|| crate::error::AppError::Storage("draft not found".into()))?;
+        draft.content = content.into();
+        self.save(draft)
     }
 
     pub fn draft(&self, id: &DraftId) -> Option<Draft> {
@@ -131,6 +164,7 @@ impl DraftStore {
         if let Ok(mut completed) = self.completed.lock() { completed.entry(self.profile.clone()).or_default().insert(id); }
     }
 }
+
 pub struct AppState {
     pub mode: Mode,
     pub active: ProfileContext,
@@ -147,14 +181,21 @@ impl AppState {
     }
 
     pub fn select(&mut self, post: PostId) {
-        self.view.selected = self.view.posts.iter().position(|candidate| candidate.id == post).or(Some(0).filter(|_| self.view.posts.is_empty()));
+        self.view.selected = self.view.posts.iter().position(|candidate| candidate.id == post);
         if self.view.posts.is_empty() { self.view.selected = None; }
     }
 
+    pub fn select_index(&mut self, index: usize) { self.view.selected = (index < self.view.posts.len()).then_some(index); }
+    pub fn selected_index(&self) -> usize { self.view.selected.unwrap_or_default() }
     pub fn selected_post(&self) -> Option<PostId> { self.view.selected_post() }
     pub fn selected_comments(&self) -> &[CommentView] { self.view.selected_comments() }
     pub fn begin_comment_draft(&self) -> Draft { self.drafts.begin_comment_draft() }
+    pub fn begin_post_draft(&self) -> Draft { self.drafts.begin_post_draft() }
+    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft { self.drafts.begin_edit_post_draft(id) }
+    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft { self.drafts.begin_edit_comment_draft(id) }
     pub fn draft(&self, id: DraftId) -> Option<Draft> { self.drafts.draft(&id) }
+
+    pub fn update_draft(&self, id: &DraftId, content: impl Into<String>) -> Result<()> { self.drafts.update(id, content) }
 
     pub fn switch_context(&mut self, context: ProfileContext) {
         self.active = context;
@@ -172,6 +213,8 @@ pub struct RenderModel {
     pub selected: Option<usize>,
     pub detail: Option<PostDetail>,
     pub compose: String,
+    pub search: String,
+    pub has_more: bool,
     pub status: Status,
 }
 
@@ -183,6 +226,8 @@ impl AppState {
             selected: self.view.selected,
             detail: self.view.detail.clone(),
             compose: self.view.compose.clone(),
+            search: self.view.search.clone(),
+            has_more: self.view.next_page.is_some(),
             status: self.status.clone(),
         }
     }

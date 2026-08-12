@@ -54,6 +54,36 @@ fn failing_mutation_app() -> App {
 }
 
 #[tokio::test]
+async fn opening_post_preserves_feed_position_for_back_navigation() {
+    let mut app = fixture_app();
+    app.state.view.posts = (1..=5).map(|id| post_view(id, "post")).collect();
+    app.state.select_index(4);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    app.dispatch(AppAction::Back).await.unwrap();
+    assert_eq!(app.state.selected_index(), 4);
+}
+
+#[tokio::test]
+async fn destructive_delete_requires_confirmation_before_api_call() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(Arc::new(api), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    app.dispatch(AppAction::DeletePost(PostId(1))).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    app.dispatch(AppAction::Confirm).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn successful_post_submission_removes_draft_only_after_confirmation() {
+    let mut app = fixture_app();
+    let draft = app.state.begin_post_draft();
+    app.dispatch(AppAction::SubmitDraft(draft.id.clone())).await.unwrap();
+    assert!(app.state.draft(draft.id.clone()).is_some());
+    app.dispatch(AppAction::Confirm).await.unwrap();
+    assert!(app.state.draft(draft.id).is_none());
+}
+
+#[tokio::test]
 async fn profile_switch_changes_request_context_and_clears_selection() {
     let mut app = configured_fixture_app();
     app.state.select(lemmy::PostId(1));

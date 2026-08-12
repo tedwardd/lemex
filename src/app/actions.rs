@@ -24,6 +24,7 @@ pub struct RequestToken {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PendingAction {
     DeletePost { profile: ProfileId, id: PostId },
+    Mutation { profile: ProfileId, mutation: Mutation, draft: Option<DraftId> },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,9 +58,13 @@ pub enum AppAction {
     Input(Command),
     Profile(ProfileCommand),
     SubmitDraft(DraftId),
+    DiscardDraft(DraftId),
     OpenSelected,
+    OpenCommunity(crate::domain::CommunityId),
+    LoadMore,
     Back,
     DeletePost(PostId),
+    Mutate(Mutation),
     Confirm,
     Cancel,
     ApiResult(ApiResult),

@@ -17,7 +17,7 @@ pub use state::{AppState, DraftStore, RenderModel, Status, View};
 use crate::{
     api::{FeedQuery, LemmyApi, MutationResult},
     cache::Draft,
-    domain::{CreateCommentRequest, Mutation, Profile, ProfileContext, ProfileId},
+    domain::{CreateCommentRequest, CreatePostRequest, EditCommentRequest, EditPostRequest, Mutation, Profile, ProfileContext, ProfileId},
     error::Result,
     input::{Command, Mode},
     profiles::{default_store, CredentialStore, ProfileStore},
@@ -211,7 +211,7 @@ impl App {
 
     fn prepare_action(&mut self, action: &AppAction) {
         let is_confirm = matches!(action, AppAction::Confirm) && self.state.pending.is_some();
-        let is_network = matches!(action, AppAction::Input(Command::Refresh))
+        let is_network = matches!(action, AppAction::Input(Command::Refresh) | AppAction::OpenCommunity(_) | AppAction::LoadMore | AppAction::Mutate(_))
             || is_confirm
             || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some());
         if !is_network { return; }
@@ -229,9 +229,13 @@ impl App {
             AppAction::Input(command) => self.dispatch_command(command).await,
             AppAction::Profile(command) => self.dispatch_profile(command).await,
             AppAction::SubmitDraft(id) => self.submit_draft(id).await,
+            AppAction::DiscardDraft(id) => { self.state.drafts.mark_completed(id); self.state.status.success("draft discarded"); Ok(()) }
             AppAction::OpenSelected => self.open_selected().await,
+            AppAction::OpenCommunity(id) => self.open_community(id).await,
+            AppAction::LoadMore => self.load_more().await,
             AppAction::Back => { self.invalidate_content_requests(); self.state.view.detail = None; self.state.mode = Mode::Normal; self.cancel_pending(); Ok(()) }
             AppAction::DeletePost(id) => self.delete_post(id).await,
+            AppAction::Mutate(mutation) => self.start_mutation(mutation, None).await,
             AppAction::Confirm => self.confirm_pending().await,
             AppAction::Cancel => { self.cancel_pending(); Ok(()) }
             AppAction::ApiResult(result) => { self.apply_api_result(result); Ok(()) }
@@ -250,10 +254,11 @@ impl App {
             Command::MoveUp { count } => { self.move_selection(-(count as isize)); Ok(()) }
             Command::EnterInsert => { self.state.mode = Mode::Insert; Ok(()) }
             Command::EnterVisual => { self.state.mode = Mode::Visual; Ok(()) }
-            Command::EnterCommand => { self.state.mode = Mode::Command; Ok(()) }
-            Command::EnterSearch { backward } => { self.state.mode = if backward { Mode::SearchBackward } else { Mode::SearchForward }; Ok(()) }
+            Command::EnterCommand => { self.state.mode = Mode::Command; self.state.view.compose.clear(); Ok(()) }
+            Command::EnterSearch { backward } => { self.state.mode = if backward { Mode::SearchBackward } else { Mode::SearchForward }; self.state.view.compose.clear(); Ok(()) }
             Command::Text(text) => { self.state.view.compose.push_str(&text); Ok(()) }
-            Command::SubmitLine(_) | Command::MoveLeft { .. } | Command::MoveRight { .. } | Command::Noop => Ok(()),
+            Command::SubmitLine(line) => self.submit_line(line).await,
+            Command::MoveLeft { .. } | Command::MoveRight { .. } | Command::Noop => Ok(()),
         }
     }
 
@@ -329,10 +334,46 @@ impl App {
         let context = self.state.active.clone();
         self.state.status.pending = true;
         let profile = context.profile.id.clone();
+        let query = self.state.view.feed_query.clone();
         let request = self.begin_request(RequestIdentity::Feed);
-        match self.repository.feed_with_generation(&context, FeedQuery::home(), request.generation).await {
+        match self.repository.feed_with_generation(&context, query, request.generation).await {
             Ok(read) => self.apply_api_result(ApiResult::Feed { profile, request, result: Ok(read.value), stale: read.stale }),
             Err(error) => self.apply_api_result(ApiResult::Feed { profile, request, result: Err(error), stale: false }),
+        }
+        Ok(())
+    }
+
+    async fn submit_line(&mut self, line: String) -> Result<()> {
+        let value = if line.is_empty() { self.state.view.compose.clone() } else { line };
+        if matches!(self.state.mode, Mode::SearchForward | Mode::SearchBackward) {
+            self.state.view.search = value.trim().to_owned();
+            self.state.view.feed_query = FeedQuery { search: (!self.state.view.search.is_empty()).then(|| self.state.view.search.clone()), ..FeedQuery::home() };
+            self.state.mode = Mode::Normal;
+            return self.refresh_feed().await;
+        }
+        self.state.mode = Mode::Normal;
+        Ok(())
+    }
+
+    async fn open_community(&mut self, community: crate::domain::CommunityId) -> Result<()> {
+        self.state.view.feed_query = FeedQuery { community: Some(community), ..FeedQuery::home() };
+        self.state.view.next_page = None;
+        self.refresh_feed().await
+    }
+
+    async fn load_more(&mut self) -> Result<()> {
+        let Some(page) = self.state.view.next_page else { return Ok(()); };
+        let mut query = self.state.view.feed_query.clone();
+        query.page = Some(page);
+        let result = self.repository.api.feed(&self.state.active, query).await;
+        match result {
+            Ok(next) => {
+                let known = self.state.view.posts.iter().map(|post| post.id).collect::<std::collections::HashSet<_>>();
+                self.state.view.posts.extend(next.items.into_iter().filter(|post| !known.contains(&post.id)));
+                self.state.view.next_page = next.next_page;
+                self.state.status.success("more posts loaded");
+            }
+            Err(error) => self.state.status.failure(error.to_string()),
         }
         Ok(())
     }
@@ -350,21 +391,44 @@ impl App {
         self.state.pending = Some(crate::app::actions::PendingAction::DeletePost { profile: self.state.active.profile.id.clone(), id });
         self.state.status.pending = false;
         self.state.status.confirmation_pending = true;
-        self.state.status.message = format!("confirm deletion of post {:?}", id);
+        self.state.status.message = format!("confirm deletion of post {} on {}", id.0, self.state.status.instance_url);
         self.state.status.error = None;
         Ok(())
     }
 
+    async fn start_mutation(&mut self, mutation: Mutation, draft: Option<crate::cache::DraftId>) -> Result<()> {
+        if matches!(mutation, Mutation::CreatePost(_) | Mutation::DeletePost(_) | Mutation::DeleteComment(_)) {
+            self.state.pending = Some(crate::app::actions::PendingAction::Mutation { profile: self.state.active.profile.id.clone(), mutation, draft });
+            self.state.status.pending = false;
+            self.state.status.confirmation_pending = true;
+            self.state.status.message = format!("confirm destructive action on {}", self.state.status.instance_url);
+            return Ok(())
+        }
+        let profile = self.state.active.profile.id.clone();
+        let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
+        let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
+        self.apply_api_result(ApiResult::Mutation { profile, request, draft, mutation, result });
+        Ok(())
+    }
+
     async fn confirm_pending(&mut self) -> Result<()> {
-        let Some(crate::app::actions::PendingAction::DeletePost { profile, id }) = self.state.pending.take() else { return Ok(()); };
+        let pending = self.state.pending.take();
+        let (profile, mutation, draft) = match pending {
+            Some(crate::app::actions::PendingAction::DeletePost { profile, id }) => (profile, Mutation::DeletePost(id), None),
+            Some(crate::app::actions::PendingAction::Mutation { profile, mutation, draft }) => (profile, mutation, draft),
+            None => return Ok(()),
+        };
         if profile != self.state.active.profile.id { self.cancel_pending(); return Ok(()); }
         self.state.status.confirmation_pending = false;
         self.state.status.pending = true;
-        let mutation = Mutation::DeletePost(id);
         let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
         let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
-        self.apply_api_result(ApiResult::Mutation { profile, request, draft: None, mutation, result });
+        self.apply_api_result(ApiResult::Mutation { profile, request, draft, mutation, result });
         Ok(())
+    }
+
+    fn invalidate_content_requests(&mut self) {
+        self.requests.retain(|identity, _| !matches!(identity, RequestIdentity::Post(_) | RequestIdentity::Comments(_)));
     }
     fn cancel_pending(&mut self) {
         let had_confirmation = self.state.pending.is_some() || self.state.status.confirmation_pending;
@@ -372,15 +436,11 @@ impl App {
         self.state.status.confirmation_pending = false;
         if self.state.status.pending || had_confirmation { self.state.status.success("cancelled"); }
     }
-
-    fn invalidate_content_requests(&mut self) {
-        self.requests.retain(|identity, _| !matches!(identity, RequestIdentity::Post(_) | RequestIdentity::Comments(_)));
-    }
-
     fn poll_feed_refresh(&mut self) {
         let Some(request) = self.requests.get(&RequestIdentity::Feed).cloned() else { return; };
         let context = self.state.active.clone();
-        if let Ok(Some((generation, result))) = self.repository.take_completed_feed(&context, &FeedQuery::home()) {
+        let query = self.state.view.feed_query.clone();
+        if let Ok(Some((generation, result))) = self.repository.take_completed_feed(&context, &query) {
             if generation == request.generation {
                 self.apply_api_result(ApiResult::Feed { profile: context.profile.id, request, result: result.map(|read| read.value), stale: false });
             }
@@ -394,13 +454,11 @@ impl App {
             self.state.status.failure("select a post before submitting a comment");
             return Ok(());
         }
+        if let Err(error) = self.state.drafts.validate(&draft) { self.state.status.failure(error.to_string()); return Ok(()); }
         let Some(mutation) = mutation_for_draft(&draft, selected) else { self.state.status.failure("unsupported draft operation"); return Ok(()); };
-        let profile = self.state.active.profile.id.clone();
-        let request = self.begin_request(RequestIdentity::Mutation(mutation.clone()));
-        let result = self.repository.mutate(&self.state.active, mutation.clone()).await;
-        self.apply_api_result(ApiResult::Mutation { profile, request, draft: Some(id), mutation, result });
-        Ok(())
+        self.start_mutation(mutation, Some(id)).await
     }
+
 
 
     fn move_selection(&mut self, delta: isize) {
@@ -418,7 +476,11 @@ impl App {
         match result {
             ApiResult::Feed { result, stale, .. } => match result {
                 Ok(page) => {
+                    let selected_id = self.state.selected_post();
+                    let selected_index = self.state.view.selected.unwrap_or_default();
                     self.state.view.posts = page.items;
+                    self.state.view.next_page = page.next_page;
+                    self.state.view.selected = selected_id.and_then(|id| self.state.view.posts.iter().position(|post| post.id == id)).or_else(|| (!self.state.view.posts.is_empty()).then_some(selected_index.min(self.state.view.posts.len() - 1)));
                     self.state.view.stale = stale;
                     self.state.status.stale = stale;
                     if stale {
@@ -439,13 +501,21 @@ impl App {
                 Err(_) => {},
             },
             ApiResult::Mutation { request, mutation, result, draft, .. } => if request.identity == RequestIdentity::Mutation(mutation.clone()) { match result {
-                Ok(MutationResult { success: true, post, .. }) => {
-                    if let Mutation::DeletePost(id) = mutation {
-                        self.state.view.posts.retain(|candidate| candidate.id != id);
-                        if self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == id) { self.state.view.detail = None; self.state.mode = Mode::Normal; }
-                        self.state.view.selected = self.state.view.selected.and_then(|selected| if self.state.view.posts.is_empty() { None } else { Some(selected.min(self.state.view.posts.len() - 1)) });
-                    } else if let Some(post) = post {
-                        if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post; }
+                Ok(MutationResult { success: true, post, comment, .. }) => {
+                    match mutation {
+                        Mutation::DeletePost(id) => {
+                            self.state.view.posts.retain(|candidate| candidate.id != id);
+                            if self.state.view.detail.as_ref().is_some_and(|detail| detail.post.id == id) { self.state.view.detail = None; self.state.mode = Mode::Normal; }
+                            self.state.view.selected = self.state.view.selected.and_then(|selected| if self.state.view.posts.is_empty() { None } else { Some(selected.min(self.state.view.posts.len() - 1)) });
+                        }
+                        Mutation::DeleteComment(id) => if let Some(detail) = &mut self.state.view.detail { detail.comments.retain(|comment| comment.id != id); },
+                        _ => if let Some(post) = post {
+                            if let Some(existing) = self.state.view.posts.iter_mut().find(|candidate| candidate.id == post.id) { *existing = post.clone(); }
+                            else if matches!(mutation, Mutation::CreatePost(_)) { self.state.view.posts.push(post.clone()); }
+                            if let Some(detail) = &mut self.state.view.detail { if detail.post.id == post.id { detail.post = post; } }
+                        } else if let Some(comment) = comment {
+                            if let Some(detail) = &mut self.state.view.detail { if let Some(existing) = detail.comments.iter_mut().find(|item| item.id == comment.id) { *existing = comment.clone(); } else { detail.comments.push(comment); } }
+                        },
                     }
                     if let Some(id) = draft { self.state.drafts.mark_completed(id); }
                     self.state.status.success("saved");
@@ -462,8 +532,26 @@ impl App {
     }
 }
 fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>) -> Option<Mutation> {
+    let mut lines = draft.content.lines();
     match draft.operation.as_str() {
         "create_comment" | "reply" => Some(Mutation::CreateComment(CreateCommentRequest { post: selected?, content: draft.content.clone() })),
+        "create_post" => {
+            let name = lines.next()?.trim().to_owned();
+            if name.is_empty() { return None; }
+            let body = lines.collect::<Vec<_>>().join("\n");
+            Some(Mutation::CreatePost(CreatePostRequest { community: selected.map(|id| crate::CommunityId(id.0)).unwrap_or(crate::CommunityId(1)), name, body: (!body.is_empty()).then_some(body), url: None }))
+        }
+        "edit_post" => {
+            let id = lines.next()?.trim().parse().ok().map(crate::PostId)?;
+            let name = lines.next().map(str::to_owned);
+            let body = lines.collect::<Vec<_>>().join("\n");
+            Some(Mutation::EditPost(EditPostRequest { id, name, body: (!body.is_empty()).then_some(body), url: None }))
+        }
+        "edit_comment" => {
+            let id = lines.next()?.trim().parse().ok().map(crate::CommentId)?;
+            let content = lines.collect::<Vec<_>>().join("\n");
+            Some(Mutation::EditComment(EditCommentRequest { id, content }))
+        }
         _ => None,
     }
 }

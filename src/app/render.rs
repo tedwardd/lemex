@@ -35,15 +35,17 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
         .split(areas[1]);
 
-    let posts = model
+    let mut post_items = model
         .posts
         .iter()
         .map(|post| ListItem::new(format!("{}  {}", post.id.0, post.title)))
         .collect::<Vec<_>>();
+    if model.has_more { post_items.push(ListItem::new("… more posts available (load more)")); }
+    let posts = post_items;
     let mut list_state = ListState::default();
     list_state.select(selected_index(model));
     let primary = List::new(posts)
-        .block(Block::default().borders(Borders::ALL).title("Primary content"))
+        .block(Block::default().borders(Borders::ALL).title(if model.search.is_empty() { "Primary content" } else { "Search results" }))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
         .highlight_symbol("▶ ");
     frame.render_stateful_widget(primary, body[0], &mut list_state);
