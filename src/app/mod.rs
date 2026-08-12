@@ -344,10 +344,10 @@ impl App {
     }
 
     async fn submit_line(&mut self, line: String) -> Result<()> {
-        let value = if line.is_empty() { self.state.view.compose.clone() } else { line };
         if matches!(self.state.mode, Mode::SearchForward | Mode::SearchBackward) {
-            self.state.view.search = value.trim().to_owned();
-            self.state.view.feed_query = FeedQuery { search: (!self.state.view.search.is_empty()).then(|| self.state.view.search.clone()), ..FeedQuery::home() };
+            let search = line.trim().to_owned();
+            self.state.view.search = search.clone();
+            self.state.view.feed_query = FeedQuery { search: (!search.is_empty()).then_some(search), ..FeedQuery::home() };
             self.state.mode = Mode::Normal;
             return self.refresh_feed().await;
         }
@@ -357,12 +357,16 @@ impl App {
 
     async fn open_community(&mut self, community: crate::domain::CommunityId) -> Result<()> {
         self.state.view.feed_query = FeedQuery { community: Some(community), ..FeedQuery::home() };
+        self.state.view.search.clear();
         self.state.view.next_page = None;
         self.refresh_feed().await
     }
 
     async fn load_more(&mut self) -> Result<()> {
-        let Some(page) = self.state.view.next_page else { return Ok(()); };
+        let Some(page) = self.state.view.next_page else {
+            self.state.status.success("no more posts to load");
+            return Ok(());
+        };
         let mut query = self.state.view.feed_query.clone();
         query.page = Some(page);
         let result = self.repository.api.feed(&self.state.active, query).await;
@@ -449,13 +453,19 @@ impl App {
 
     async fn submit_draft(&mut self, id: crate::cache::DraftId) -> Result<()> {
         let Some(draft) = self.state.draft(id.clone()) else { return Ok(()); };
-        let selected = self.state.selected_post();
+        let selected_post = self.state.view.selected.and_then(|index| self.state.view.posts.get(index));
+        let selected = selected_post.map(|post| post.id);
+        let community = selected_post.map(|post| post.community_id);
         if matches!(draft.operation.as_str(), "create_comment" | "reply") && selected.is_none() {
             self.state.status.failure("select a post before submitting a comment");
             return Ok(());
         }
+        if draft.operation.as_str() == "create_post" && community.is_none() {
+            self.state.status.failure("select a post in the target community before creating a post");
+            return Ok(());
+        }
         if let Err(error) = self.state.drafts.validate(&draft) { self.state.status.failure(error.to_string()); return Ok(()); }
-        let Some(mutation) = mutation_for_draft(&draft, selected) else { self.state.status.failure("unsupported draft operation"); return Ok(()); };
+        let Some(mutation) = mutation_for_draft(&draft, selected, community) else { self.state.status.failure("unsupported draft operation"); return Ok(()); };
         self.start_mutation(mutation, Some(id)).await
     }
 
@@ -531,15 +541,27 @@ impl App {
         }
     }
 }
-fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>) -> Option<Mutation> {
+fn mutation_for_draft(draft: &Draft, selected: Option<crate::PostId>, community: Option<crate::CommunityId>) -> Option<Mutation> {
     let mut lines = draft.content.lines();
     match draft.operation.as_str() {
         "create_comment" | "reply" => Some(Mutation::CreateComment(CreateCommentRequest { post: selected?, content: draft.content.clone() })),
         "create_post" => {
+            let community = community?;
             let name = lines.next()?.trim().to_owned();
             if name.is_empty() { return None; }
-            let body = lines.collect::<Vec<_>>().join("\n");
-            Some(Mutation::CreatePost(CreatePostRequest { community: selected.map(|id| crate::CommunityId(id.0)).unwrap_or(crate::CommunityId(1)), name, body: (!body.is_empty()).then_some(body), url: None }))
+            // Draft layout: title, optional link line, then body. A link line
+            // is consumed only when it parses as a URL.
+            let mut body = Vec::new();
+            let mut url = None;
+            if let Some(candidate) = lines.next() {
+                match url::Url::parse(candidate.trim()) {
+                    Ok(parsed) => url = Some(parsed),
+                    Err(_) => body.push(candidate),
+                }
+            }
+            body.extend(lines);
+            let body = body.join("\n");
+            Some(Mutation::CreatePost(CreatePostRequest { community, name, body: (!body.is_empty()).then_some(body), url }))
         }
         "edit_post" => {
             let id = lines.next()?.trim().parse().ok().map(crate::PostId)?;

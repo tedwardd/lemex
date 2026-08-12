@@ -76,11 +76,105 @@ async fn destructive_delete_requires_confirmation_before_api_call() {
 #[tokio::test]
 async fn successful_post_submission_removes_draft_only_after_confirmation() {
     let mut app = fixture_app();
+    app.state.view.posts = vec![post_view(1, "target")];
+    app.state.select(PostId(1));
     let draft = app.state.begin_post_draft();
     app.dispatch(AppAction::SubmitDraft(draft.id.clone())).await.unwrap();
     assert!(app.state.draft(draft.id.clone()).is_some());
     app.dispatch(AppAction::Confirm).await.unwrap();
     assert!(app.state.draft(draft.id).is_none());
+}
+
+#[tokio::test]
+async fn untouched_edit_drafts_fail_local_validation() {
+    let mut app = fixture_app();
+    let post_draft = app.state.begin_edit_post_draft(PostId(5));
+    app.dispatch(AppAction::SubmitDraft(post_draft.id.clone())).await.unwrap();
+    assert_eq!(app.state.status.error.as_deref(), Some("invalid command: post title is required"));
+    assert!(app.state.draft(post_draft.id).is_some());
+    let comment_draft = app.state.begin_edit_comment_draft(lemmy::CommentId(6));
+    app.dispatch(AppAction::SubmitDraft(comment_draft.id.clone())).await.unwrap();
+    assert_eq!(app.state.status.error.as_deref(), Some("invalid command: comment content is required"));
+    assert!(app.state.draft(comment_draft.id).is_some());
+}
+
+#[tokio::test]
+async fn valid_edit_post_draft_strips_id_line_and_submits() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(Arc::new(api), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    let draft = app.state.begin_edit_post_draft(PostId(5));
+    app.state.update_draft(&draft.id, "5\nEdited title\nEdited body").unwrap();
+    app.dispatch(AppAction::SubmitDraft(draft.id)).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn search_submission_uses_engine_line_not_stale_compose() {
+    let mut app = fixture_app();
+    app.state.mode = lemmy::input::Mode::SearchForward;
+    app.state.view.compose = "stale buffer".into();
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(String::new()))).await.unwrap();
+    assert_eq!(app.state.view.search, "");
+    assert!(app.state.view.feed_query.search.is_none());
+
+    app.state.mode = lemmy::input::Mode::SearchForward;
+    app.state.view.compose = "stale buffer".into();
+    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine("fresh query".into()))).await.unwrap();
+    assert_eq!(app.state.view.search, "fresh query");
+    assert_eq!(app.state.view.feed_query.search.as_deref(), Some("fresh query"));
+}
+
+#[tokio::test]
+async fn load_more_without_next_page_clears_pending_status() {
+    let mut app = fixture_app();
+    app.state.view.next_page = None;
+    app.state.status.pending = true;
+    app.dispatch(AppAction::LoadMore).await.unwrap();
+    assert!(!app.state.status.pending);
+    assert_eq!(app.state.status.message, "no more posts to load");
+}
+
+#[tokio::test]
+async fn open_community_clears_search_label_state() {
+    let mut app = fixture_app();
+    app.state.view.search = "rust".into();
+    app.dispatch(AppAction::OpenCommunity(lemmy::CommunityId(3))).await.unwrap();
+    assert!(app.state.view.search.is_empty());
+    assert_eq!(app.state.view.feed_query.community, Some(lemmy::CommunityId(3)));
+}
+
+#[tokio::test]
+async fn create_post_draft_wires_title_link_and_body() {
+    let api = Arc::new(CapturingPostApi::default());
+    let mut app = App::new(api.clone(), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    let mut post = post_view(7, "target");
+    post.community_id = lemmy::CommunityId(3);
+    app.state.view.posts = vec![post];
+    app.state.select(PostId(7));
+    let draft = app.state.begin_post_draft();
+    app.state.update_draft(&draft.id, "A post title\nhttps://example.com/article\nSome body").unwrap();
+    app.dispatch(AppAction::SubmitDraft(draft.id.clone())).await.unwrap();
+    app.dispatch(AppAction::Confirm).await.unwrap();
+    let captured = api.captured.lock().unwrap().clone().expect("create post mutation captured");
+    match captured {
+        Mutation::CreatePost(request) => {
+            assert_eq!(request.name, "A post title");
+            assert_eq!(request.url, Some(Url::parse("https://example.com/article").unwrap()));
+            assert_eq!(request.body.as_deref(), Some("Some body"));
+            assert_eq!(request.community, lemmy::CommunityId(3));
+        }
+        other => panic!("expected CreatePost, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn create_post_without_community_target_fails_before_request() {
+    let (api, requests) = fixture_api_with_status_count(200);
+    let mut app = App::new(Arc::new(api), Arc::new(MemoryCache::default()), fixture_context(), Arc::new(MemoryCredentialStore::default()));
+    let draft = app.state.begin_post_draft();
+    app.dispatch(AppAction::SubmitDraft(draft.id)).await.unwrap();
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(app.state.status.error.as_deref(), Some("select a post in the target community before creating a post"));
 }
 
 #[tokio::test]
@@ -310,6 +404,23 @@ impl LemmyApi for SuccessfulCommentApi {
     async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
     async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> { Ok(MutationResult { success: true, post: None, comment: None, message: None }) }
+}
+
+#[derive(Clone, Default)]
+struct CapturingPostApi {
+    captured: Arc<std::sync::Mutex<Option<Mutation>>>,
+}
+
+#[async_trait]
+impl LemmyApi for CapturingPostApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> { Err(AppError::Network("unused".into())) }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> { Err(AppError::Network("unused".into())) }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> { Err(AppError::Network("unused".into())) }
+    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> { Err(AppError::Network("unused".into())) }
+    async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        *self.captured.lock().unwrap() = Some(mutation);
+        Ok(MutationResult { success: true, post: None, comment: None, message: None })
+    }
 }
 
 #[tokio::test]

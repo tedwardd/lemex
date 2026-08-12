@@ -135,8 +135,20 @@ impl DraftStore {
         if draft.profile != self.profile { return Err(crate::error::AppError::Authorization("draft belongs to another profile".into())); }
         match draft.operation.as_str() {
             "create_post" => if draft.content.lines().next().is_none_or(|title| title.trim().is_empty()) { Err(crate::error::AppError::InvalidCommand("post title is required".into())) } else { Ok(()) },
-            "create_comment" | "reply" | "edit_comment" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) },
-            "edit_post" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("post edit content is required".into())) } else { Ok(()) },
+            "create_comment" | "reply" => if draft.content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) },
+            "edit_comment" => {
+                // The first line is the object id; the extracted content is the rest.
+                let mut lines = draft.content.lines();
+                let _ = lines.next();
+                let content = lines.collect::<Vec<_>>().join("\n");
+                if content.trim().is_empty() { Err(crate::error::AppError::InvalidCommand("comment content is required".into())) } else { Ok(()) }
+            }
+            "edit_post" => {
+                // The first line is the object id; the extracted title is the next line.
+                let mut lines = draft.content.lines();
+                let _ = lines.next();
+                if lines.next().is_none_or(|title| title.trim().is_empty()) { Err(crate::error::AppError::InvalidCommand("post title is required".into())) } else { Ok(()) }
+            }
             _ => Err(crate::error::AppError::InvalidCommand(format!("unsupported draft operation: {}", draft.operation))),
         }
     }
