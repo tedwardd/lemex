@@ -1,10 +1,25 @@
 use lemmy::api::fixtures::{
-    anonymous_context, authenticated_context, fixture_api, fixture_api_with_body,
-    fixture_api_with_status, fixture_api_with_status_count, login_fixture_api, timeout_fixture_api,
-    truncated_body_fixture_api,
+    anonymous_context, authenticated_context, fixture_api, fixture_api_recording_user_agent,
+    fixture_api_with_body, fixture_api_with_status, fixture_api_with_status_count,
+    login_fixture_api, timeout_fixture_api, truncated_body_fixture_api,
 };
 use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
 use lemmy::{AppError, Mutation, PostId, SecretString, UserId};
+
+#[tokio::test]
+async fn client_sends_descriptive_user_agent() {
+    let (api, user_agent) = fixture_api_recording_user_agent("{}");
+    let _ = api.feed(&anonymous_context(), FeedQuery::home()).await;
+    let captured = user_agent
+        .lock()
+        .expect("fixture UA lock")
+        .clone()
+        .expect("fixture must have recorded a User-Agent header");
+    assert!(
+        captured.starts_with("lemmy-client/"),
+        "client must send a descriptive User-Agent identifying the app, got {captured:?}"
+    );
+}
 
 #[tokio::test]
 async fn feed_response_normalizes_into_domain_posts() {

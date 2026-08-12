@@ -28,6 +28,11 @@ impl HttpLemmyApi {
         let client = Client::builder()
             .use_rustls_tls()
             .timeout(timeout)
+            // reqwest sends no User-Agent with these features, and at least
+            // one public Lemmy edge resets connections that carry none.
+            // Identify the client explicitly instead of relying on the
+            // header being absent.
+            .user_agent(concat!("lemmy-client/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| AppError::Network(format!("could not build HTTP client: {error}")))?;
         Ok(Self {

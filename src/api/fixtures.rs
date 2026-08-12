@@ -5,7 +5,7 @@ use std::{
     net::TcpListener as StdTcpListener,
     path::PathBuf,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -33,6 +33,11 @@ struct FixtureRoute {
     /// one server can answer the follow-up requests a flow makes (for
     /// example the `/site` call that derives the login user id).
     extra_paths: Vec<(String, String)>,
+    /// When set, the raw `User-Agent` header of the first request is
+    /// captured here so tests can assert the client identifies itself
+    /// instead of sending the generic reqwest default (which at least one
+    /// public Lemmy edge resets the connection on).
+    user_agent: Option<Arc<Mutex<Option<String>>>>,
 }
 
 pub struct FixtureServer {
@@ -79,6 +84,7 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                 require_auth: route.require_auth,
                 transient_failures: route.transient_failures.clone(),
                 extra_paths: route.extra_paths.clone(),
+                user_agent: route.user_agent.clone(),
             };
             tokio::spawn(async move {
                 let mut request = vec![0_u8; 8192];
@@ -91,6 +97,19 @@ fn start_server(route: FixtureRoute) -> Result<(Url, Arc<FixtureServer>)> {
                     return;
                 }
                 let request = String::from_utf8_lossy(&request);
+                if let Some(capture) = &route.user_agent {
+                    let value = request
+                        .lines()
+                        .find(|line| line.to_ascii_lowercase().starts_with("user-agent:"))
+                        .and_then(|line| line.split_once(':'))
+                        .map(|(_, value)| value.trim().to_owned())
+                        .unwrap_or_default();
+                    if let Ok(mut guard) = capture.lock()
+                        && guard.is_none()
+                    {
+                        *guard = Some(value);
+                    }
+                }
                 if route.require_auth && !request.to_ascii_lowercase().contains("authorization:") {
                     write_response(
                         &mut stream,
@@ -199,6 +218,7 @@ pub fn fixture_api_with_body(body: &str) -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -215,6 +235,7 @@ pub fn fixture_api_with_status(path: &str, status: u16) -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -232,6 +253,7 @@ pub fn fixture_api_with_status_count(status: u16) -> (HttpLemmyApi, Arc<AtomicUs
         requests: Some(requests.clone()),
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -248,6 +270,7 @@ pub fn truncated_body_fixture_api() -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -270,6 +293,7 @@ pub fn login_fixture_api(path: &str) -> (HttpLemmyApi, Url) {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         // Login derives the user id from the authenticated `/site` response;
         // serve the my_user-bearing fixture on that route too.
         extra_paths: vec![("/api/v3/site".to_owned(), site_body)],
@@ -290,6 +314,7 @@ pub fn timeout_fixture_api() -> HttpLemmyApi {
         requests: None,
         require_auth: false,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -311,6 +336,7 @@ pub fn fixture_api_requiring_auth(body: &str) -> (HttpLemmyApi, Arc<AtomicUsize>
         requests: Some(requests.clone()),
         require_auth: true,
         transient_failures: None,
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
@@ -335,10 +361,32 @@ pub fn fixture_api_with_transient_failures(
         requests: None,
         require_auth: false,
         transient_failures: Some(remaining.clone()),
+        user_agent: None,
         extra_paths: Vec::new(),
     })
     .expect("fixture server starts");
     (api_for(server, base, Duration::from_secs(2)), remaining)
+}
+
+/// A fixture server that answers every request with `body` and captures the
+/// raw `User-Agent` header of the first request, so tests can assert the
+/// client identifies itself instead of sending the generic reqwest default.
+pub fn fixture_api_recording_user_agent(body: &str) -> (HttpLemmyApi, Arc<Mutex<Option<String>>>) {
+    let user_agent = Arc::new(Mutex::new(None));
+    let (base, server) = start_server(FixtureRoute {
+        path: None,
+        status: 200,
+        body: Some(body.into()),
+        delay: None,
+        malformed_body: false,
+        requests: None,
+        require_auth: false,
+        transient_failures: None,
+        extra_paths: Vec::new(),
+        user_agent: Some(user_agent.clone()),
+    })
+    .expect("fixture server starts");
+    (api_for(server, base, Duration::from_secs(2)), user_agent)
 }
 
 pub fn anonymous_context() -> ProfileContext {
