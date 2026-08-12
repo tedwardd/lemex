@@ -163,7 +163,7 @@ pub enum AppError {
 }
 ```
 
-`src/lib.rs` exports `pub mod error;`. `src/main.rs` parses no arguments yet, returns an explicit terminal-boundary error, and contains no business logic.
+`src/lib.rs` exports `pub mod error;` and `pub use error::{AppError, Result};`. `src/main.rs` parses no arguments yet, returns an explicit terminal-boundary error, and contains no business logic.
 
 - [ ] **Step 4: Run the focused test and verify success**
 
@@ -235,6 +235,7 @@ fn colon_enters_command_mode_and_enter_submits_line() { let mut engine = InputEn
 #[test]
 fn escape_returns_insert_and_visual_to_normal() { let mut engine = InputEngine::default(); engine.handle(key('i')); assert_eq!(engine.mode(), Mode::Insert); engine.handle(escape()); assert_eq!(engine.mode(), Mode::Normal); engine.handle(key('v')); assert_eq!(engine.mode(), Mode::Visual); engine.handle(escape()); assert_eq!(engine.mode(), Mode::Normal); }
 ```
+The test module defines `key(char) -> KeyEvent`, `enter() -> KeyEvent`, and `escape() -> KeyEvent` helpers using crossterm’s `KeyEvent::new`.
 
 - [ ] **Step 2: Run the tests and verify they fail**
 
@@ -287,8 +288,23 @@ pub struct ActiveProfile { pub profile: Profile, pub authenticated: bool }
 
 pub struct AppConfig { pub profiles: Vec<Profile>, pub keymaps: HashMap<String, String>, pub media: MediaConfig, pub cache: CacheConfig }
 impl AppConfig {
+    pub fn from_toml(source: &str) -> Result<Self>;
+    pub fn to_toml(&self) -> Result<String>;
     pub fn load(path: &Path) -> Result<Self>;
     pub fn write_atomic(&self, path: &Path) -> Result<()>;
+}
+
+pub enum Mutation {
+    VotePost { id: PostId, score: i8 },
+    VoteComment { id: CommentId, score: i8 },
+    SavePost { id: PostId, saved: bool },
+    Subscribe { community: CommunityId, subscribed: bool },
+    CreatePost(CreatePostRequest),
+    EditPost(EditPostRequest),
+    DeletePost(PostId),
+    CreateComment(CreateCommentRequest),
+    EditComment(EditCommentRequest),
+    DeleteComment(CommentId),
 }
 ```
 
@@ -308,7 +324,6 @@ fn duplicate_profile_ids_are_rejected() {
     let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://one.test'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://two.test'\n";
     assert!(matches!(AppConfig::from_toml(source), Err(AppError::Configuration(_))));
 }
-
 #[test]
 fn credential_like_fields_are_rejected() {
     let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\npassword = 'secret'\n";
@@ -323,7 +338,7 @@ Expected: FAIL because configuration and profile types do not exist.
 
 - [ ] **Step 3: Implement domain and TOML types**
 
-Use `serde` for non-secret config only. Define explicit `ProfileId`, `Profile`, `MediaConfig`, `CacheConfig`, and Lemmy entity types. Store instance URLs as parsed `url::Url`; reject non-HTTP(S) URLs and duplicate profile IDs. Define `PostId`, `CommentId`, `CommunityId`, `UserId`, `MediaRef`, and `DownloadRecord` as typed identifiers or newtypes.
+Use `serde` for non-secret config only. Define explicit `ProfileId`, `Profile`, `MediaConfig`, `CacheConfig`, and Lemmy entity types. Store instance URLs as parsed `url::Url`; reject non-HTTP(S) URLs and duplicate profile IDs. Define `PostId`, `CommentId`, `CommunityId`, `UserId`, `MediaRef`, `DownloadRecord`, `CreatePostRequest`, `EditPostRequest`, `CreateCommentRequest`, and `EditCommentRequest` as typed domain values or newtypes. `Mutation` is owned by `src/domain/lemmy.rs` so the API adapter and application actions share one definition.
 
 - [ ] **Step 4: Implement XDG paths and atomic writes**
 
@@ -491,6 +506,7 @@ async fn expired_session_is_classified_as_authentication_error() { let api = fix
 #[tokio::test]
 async fn mutation_timeout_is_not_reported_as_confirmed_failure() { let api = timeout_fixture_api(); let result = api.mutate(&authenticated_context(), Mutation::DeletePost(PostId(1))).await; assert!(matches!(result, Err(AppError::Network(message)) if message.contains("uncertain"))); }
 ```
+The test module defines `fixture_api`, `fixture_api_with_status`, `timeout_fixture_api`, `anonymous_context`, and `authenticated_context` using the fixture server in `src/api/fixtures.rs`.
 
 - [ ] **Step 2: Run tests and verify failure**
 
@@ -532,7 +548,8 @@ git commit -m "feat: add fixture-backed Lemmy HTTP adapter"
 **Interfaces:**
 
 ```rust
-pub enum AppAction { Input(Command), ApiResult(ApiResult), Tick, Quit }
+pub enum ProfileCommand { Switch(ProfileId), List, New(ProfileDraft), Login, Logout, WhoAmI, Delete(ProfileId) }
+pub enum AppAction { Input(Command), Profile(ProfileCommand), SubmitDraft(DraftId), OpenSelected, Back, DeletePost(PostId), Confirm, ApiResult(ApiResult), Tick, Quit }
 pub struct AppState { pub mode: Mode, pub active: ProfileContext, pub view: View, pub status: Status, pub drafts: DraftStore }
 pub struct App { pub state: AppState }
 impl App {
@@ -540,6 +557,8 @@ impl App {
     pub fn render_model(&self) -> RenderModel;
 }
 ```
+
+The test module defines `fixture_app` and `failing_mutation_app` with injected fixture API, cache, profile, and credential services. Task 11 consumes `ProfileCommand` rather than redefining it.
 
 - [ ] **Step 1: Write tests for profile switching, selection preservation, draft safety, and error status**
 
@@ -640,20 +659,7 @@ git commit -m "feat: add ratatui shell and terminal lifecycle"
 
 **Interfaces:**
 
-```rust
-pub enum Mutation {
-    VotePost { id: PostId, score: i8 },
-    VoteComment { id: CommentId, score: i8 },
-    SavePost { id: PostId, saved: bool },
-    Subscribe { community: CommunityId, subscribed: bool },
-    CreatePost(CreatePostRequest),
-    EditPost(EditPostRequest),
-    DeletePost(PostId),
-    CreateComment(CreateCommentRequest),
-    EditComment(EditCommentRequest),
-    DeleteComment(CommentId),
-}
-```
+Task 3 owns the `Mutation` enum and request types in `src/domain/lemmy.rs`. This task consumes those types while adding action handlers for browsing, composition, validation, confirmation, and personal mutations.
 
 - [ ] **Step 1: Write failing tests for feed navigation, search, draft submission, and mutation confirmation**
 
@@ -716,14 +722,19 @@ git commit -m "feat: add Lemmy browsing and personal mutations"
 **Interfaces:**
 
 ```rust
+pub struct TerminalCapabilities { pub kitty: bool }
 pub enum MediaHandler { Mailcap { command: String }, KittyInline, External { command: String }, MetadataOnly }
+pub struct MediaPolicyConfig { pub kitty_enabled: bool, pub mailcap_enabled: bool }
+impl MediaPolicyConfig { pub fn select(&self, media: &MediaRef, capabilities: &TerminalCapabilities) -> MediaHandler; }
 pub struct DownloadManager;
 impl DownloadManager {
     pub async fn start(&self, request: DownloadRequest) -> Result<DownloadId>;
     pub async fn cancel(&self, id: DownloadId) -> Result<()>;
+    pub fn history(&self) -> &SessionDownloadHistory;
 }
-pub trait MediaPolicy { fn select(&self, media: &MediaRef, capabilities: &TerminalCapabilities) -> MediaHandler; }
 ```
+
+The test module defines `image_media`, `test_download_manager`, and `slow_download_request` helpers locally.
 
 - [ ] **Step 1: Write failing tests for MIME precedence, Kitty opt-in, collision policy, cancellation, and history**
 
@@ -783,8 +794,9 @@ git add src/media src/domain/media.rs src/app tests/media.rs
 
 **Interfaces:**
 
+Task 7 defines `ProfileCommand` and `AppAction`. This task adds the profile command executor and session lifecycle implementation.
+
 ```rust
-pub enum ProfileCommand { List, Switch(ProfileId), New(ProfileDraft), Login, Logout, WhoAmI, Delete(ProfileId) }
 pub async fn execute_profile_command(&mut self, command: ProfileCommand) -> Result<()>;
 ```
 
@@ -851,7 +863,7 @@ Cover launch, feed navigation, post/thread opening, draft preservation, profile 
 - [ ] **Step 2: Run the smoke tests and verify any failures**
 
 Run: `cargo test --test smoke -- --test-threads=1`
-Expected: failures identify missing end-to-end wiring rather than compilation placeholders.
+Expected: failures identify missing end-to-end wiring rather than incomplete code paths.
 
 - [ ] **Step 3: Fix only integration defects exposed by the scenarios**
 
@@ -915,7 +927,7 @@ git add .github Cargo.toml tests README.md docs
 ## Plan self-review
 
 - **Spec coverage:** Every goal, functional requirement, privacy rule, roadmap phase, testing category, and release acceptance criterion has a named task and verification command.
-- **Placeholder scan:** The plan contains no unresolved placeholders or unspecified implementation step. The local store is explicitly SQLite through `rusqlite`; each named helper is assigned to a test support module before its first use.
+- **Completeness scan:** The plan contains no unresolved stand-ins or unspecified implementation step. The local store is explicitly SQLite through `rusqlite`; each named helper is assigned to the same task's test module before its first use.
 - **Type consistency:** `ProfileId`, `ProfileContext`, `Session`, `LemmyApi`, `Mutation`, `MediaHandler`, `DownloadManager`, `AppAction`, `AppState`, and `App` are introduced before later tasks consume them.
 - **Scope:** The plan excludes moderation, persistent download history, offline mutation queueing, and embedded browsing as required by the approved specification.
 - **Verification:** Each task has a failing test, a focused implementation, a passing command, and a commit boundary. The final smoke suite exercises the full release contract.
