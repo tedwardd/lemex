@@ -77,4 +77,7 @@
 - `src/app/mod.rs`: starting Refresh or a selected Open now clears any staged destructive confirmation before publishing network-pending state; regression verifies no render snapshot shows both indicators.
 - `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
 - `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `src/app/mod.rs`: clearing staged confirmation for Refresh/Open now also clears its stale status message and error before network-pending rendering; regression asserts the network snapshot has no confirmation text.
+- `cargo test --lib app::tests` — `cargo test: 2 passed (1 suite, 0.00s)`.
+- `cargo test --test smoke` — `cargo test: 2 passed (1 suite, 0.00s)`.
 

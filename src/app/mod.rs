@@ -218,6 +218,8 @@ impl App {
         if !is_confirm {
             self.state.pending = None;
             self.state.status.confirmation_pending = false;
+            self.state.status.message.clear();
+            self.state.status.error = None;
         }
         self.state.status.pending = true;
     }
@@ -528,6 +530,7 @@ mod tests {
         assert!(app.state.pending.is_none());
         assert!(!network.status.confirmation_pending);
         assert!(network.status.pending);
+        assert!(network.status.message.is_empty());
         assert!(!confirmation.status.pending);
 
         let request = app.begin_request(RequestIdentity::Feed);
