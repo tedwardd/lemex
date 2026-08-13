@@ -399,6 +399,7 @@ impl App {
                 | AppAction::Mutate(_)
                 | AppAction::Media
                 | AppAction::DownloadMedia
+                | AppAction::Profile(ProfileCommand::Login | ProfileCommand::Logout,)
         ) || is_confirm
             || (matches!(action, AppAction::OpenSelected) && self.state.selected_post().is_some());
         if !is_network {
@@ -776,21 +777,31 @@ impl App {
         // not persist on screen or in state after the attempt, whether the
         // login succeeds or fails.
         self.state.view.compose.clear();
-        match crate::profiles::login(
-            self.repository.api.as_ref(),
-            self.repository.credentials.as_ref(),
-            request,
+        // The credential-store write can block (a locked or prompting macOS
+        // Keychain, an unavailable Secret Service); without a deadline a
+        // hung store would leave the login silently in flight with no
+        // feedback and no session. Bound the whole attempt and say so.
+        match tokio::time::timeout(
+            Duration::from_secs(30),
+            crate::profiles::login(
+                self.repository.api.as_ref(),
+                self.repository.credentials.as_ref(),
+                request,
+            ),
         )
         .await
         {
-            Ok(session) => {
+            Ok(Ok(session)) => {
                 let user = session.user_id.0;
                 self.state.active.session = Some(session);
                 self.state
                     .status
                     .success(format!("logged in as user {user}"));
             }
-            Err(error) => self.state.status.failure(error.to_string()),
+            Ok(Err(error)) => self.state.status.failure(error.to_string()),
+            Err(_) => self.state.status.failure(
+                "login timed out after 30 seconds — check the connection and that the OS credential store (macOS Keychain) is available and unlocked",
+            ),
         }
         Ok(())
     }
