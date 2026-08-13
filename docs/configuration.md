@@ -10,8 +10,8 @@ profiles can be added from inside the TUI with
 
 | Item | Default | Override |
 | --- | --- | --- |
-| Config file | `~/.config/lemmy/config.toml` | `$XDG_CONFIG_HOME/lemmy/config.toml` |
-| Cache directory | `~/.cache/lemmy/` | `$XDG_CACHE_HOME/lemmy/` (or `cache.directory`) |
+| Config file | `~/.config/levim/config.toml` | `$XDG_CONFIG_HOME/levim/config.toml` |
+| Cache directory | `~/.cache/levim/` | `$XDG_CACHE_HOME/levim/` (or `cache.directory`) |
 | Download directory | `<cache directory>/downloads` | `media.download_directory` |
 | Cache database | `<cache directory>/cache.sqlite3` | — |
 
@@ -86,14 +86,17 @@ with a warning. Keymaps take effect on the next launch. See
 
 ```toml
 [media]
-kitty_enabled = false        # Kitty graphics rendering is opt-in
 mailcap_enabled = true       # mailcap is the default media handler
-download_directory = "/data/lemmy-downloads"
+download_directory = "/data/levim-downloads"
 collision_policy = "prompt"  # prompt | overwrite | unique-name
 
 [media.handlers]
 "image/png" = "feh %s"
 ```
+
+A legacy `kitty_enabled` key in `[media]` is still accepted for backward
+compatibility with older configs, but inline kitty rendering was removed and
+the key has no effect.
 
 Handler precedence and the download behavior are documented in
 [Media](media.md). Changes made with `:set` inside the client are written to
@@ -104,7 +107,7 @@ directory, and the cache size take effect on the next launch.
 
 ```toml
 [cache]
-directory = "/var/cache/lemmy"
+directory = "/var/cache/levim"
 max_size_bytes = 268435456
 ```
 
@@ -128,7 +131,6 @@ level = "info"   # trace | debug | info | warn | error
 | Command | Effect |
 | --- | --- |
 | `:set keymap <name> <keys>` | configure a key mapping (next launch) |
-| `:set media kitty on\|off` | toggle Kitty media rendering |
 | `:set media mailcap on\|off` | toggle mailcap handler use |
 | `:set download-dir <path>` | set the download directory |
 | `:set collision-policy <prompt\|overwrite\|unique-name>` | set collision policy |

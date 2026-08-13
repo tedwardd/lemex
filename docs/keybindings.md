@@ -21,30 +21,28 @@ command/search line.
 
 | Key | Command | Purpose |
 | --- | --- | --- |
-| `h` | move left | move selection left |
-| `j` | move down | move selection down |
-| `k` | move up | move selection up |
+| `h` / `l` | (reserved) | no-op |
+| `j` / `k` | move / scroll | move the selection; with the detail/thread pane open, scroll the thread instead (the pane takes focus) |
 | `gg` / `G` | jump | jump to the top / bottom of the feed (`N gg` / `N G` jump to row N) |
-| `l` | move right | move selection right |
 | `Enter` | open | open the selected post (or download) |
+| `o` | open media | open the selected post's media through the configured handler |
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
-| `>` | next page | flip to the next feed page (replaces the list) |
-| `<` | previous page | flip back to the previous feed page |
+| `n` | next page | flip to the next feed page (replaces the list; feed pane focused) |
+| `p` | previous page | flip back to the previous feed page |
 
 Feed pages are sized to the primary content pane: each fetch (first page,
-`>`, `<`, refresh, search) requests exactly as many posts as fit your
+`n`, `p`, refresh, search) requests exactly as many posts as fit your
 current terminal height, and a resize re-sizes subsequent pages. With no
 terminal size known yet, the fixed 20-post default is used.
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |
-| `n` | cancel | cancel the pending destructive action |
+| `Esc` | back / cancel | close the thread/pane, cancel the pending action, or back out |
 | `i` | insert | enter Insert mode |
 | `v` | visual | enter Visual mode |
 | `:` | command | enter Command mode |
 | `/` | search | search forward |
 | `?` | search | search backward |
-| `Esc` | back | back / cancel |
 
 Motions accept numeric counts: `3j` moves down three positions (clamped to
 the list). A digit that begins a registered keymap sequence is part of that
@@ -74,6 +72,7 @@ every submission so secrets typed for `:login` never linger on screen.
 | `:post` | open the selected post |
 | `:search <query>` | search posts (filters download history with the panel open) |
 | `:open` | open the selected post |
+| `:close` | close the detail/thread pane, returning to the content-only view |
 | `:refresh` | refresh the current view |
 | `:reply <text>` | reply to the selected post |
 | `:edit <title>` | retitle the selected post |
@@ -102,17 +101,16 @@ Destructive actions (`:delete`, post/comment creation, and download deletion)
 require an explicit confirmation before any network or filesystem activity.
 When a confirmation is pending, the status line shows
 `[PENDING] Confirmation required before network activity.`; confirm with
-`y` (or `:confirm`/`:yes`) and cancel with `n` (or `:cancel`). `Esc` also
-cancels the pending action.
+`y` (or `:confirm`/`:yes`) and cancel with `Esc` (or `:cancel`).
 
 ## Remapping
 
 Configure `[keymaps]` in the config file (see
 [Configuration](configuration.md)) or use `:set keymap <name> <keys>`, where
 `<name>` is a documented command name such as `down`, `up`, `go-to-first`
-(or `top`), `go-to-last` (or `bottom`), `open`, `refresh`, `next-page`,
-`previous-page`, `insert`, `visual`, `command`,
-`search`, `search-backward`, `back`, `quit`, `scroll-detail-down`,
-`scroll-detail-up`, `confirm`, or `cancel`. The new sequence replaces the
+(or `top`), `go-to-last` (or `bottom`), `open`, `media` (or `open-media`),
+`refresh`, `next-page`, `previous-page`, `close-pane` (or `close`), `insert`,
+`visual`, `command`, `search`, `search-backward`, `back`, `quit`,
+`scroll-detail-down`, `scroll-detail-up`, `confirm`, or `cancel`. The new sequence replaces the
 command's default binding, and multi-key sequences (for example `jk`)
 participate in prefix matching. Keymaps take effect on the next launch.

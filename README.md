@@ -1,4 +1,4 @@
-# lemmy — a terminal client for Lemmy
+# levim — a Vim-like terminal client for Lemmy
 
 A Linux-first, Vim-like terminal client for [Lemmy](https://join-lemmy.org/).
 Browse feeds, open posts and threads, manage multiple instance/account
@@ -17,9 +17,9 @@ ratatui terminal shell.
   action requires confirmation.
 - **Cache and drafts** — profile-scoped SQLite cache and drafts survive
   restarts; failed submissions keep your draft.
-- **Media** — mailcap is the default media handler, Kitty graphics rendering
-  is an explicit opt-in, and `:download-media` fetches asynchronously with
-  per-session download history.
+- **Media** — mailcap (or a configured handler) opens media externally;
+  `:download-media` fetches asynchronously with per-session download
+  history, reusing already-downloaded files within the session.
 - **Resilience** — bounded retries on transient network failures, stale-cache
   reads while refreshing, and clean terminal restoration on every exit path.
 
@@ -29,11 +29,11 @@ Requires a stable Rust toolchain (see `rust-toolchain.toml`).
 
 ```sh
 cargo build --release
-./target/release/lemmy
+./target/release/levim
 ```
 
-`lemmy --help` prints usage and the command index and exits without starting
-the TUI.
+`levim --help` prints usage and the command index and exits without starting
+the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 
 ## Quick start
 
@@ -41,9 +41,9 @@ the TUI.
    (see [Configuration](docs/configuration.md)) — the client refuses to
    start with zero profiles. Once running, `:profile-new <id> <instance-url>`
    adds further profiles.
-2. Launch `lemmy`.
-3. `:feed` loads the home feed; `j`/`k` move, `Enter` opens a post, `Esc`
-   goes back.
+2. Launch `levim`.
+3. `:feed` loads the home feed; `j`/`k` move, `n`/`p` flip pages, `Enter`
+   opens a post (j/k then scroll the thread), `Esc` closes it.
 4. `:login <username> <password>` signs in; the session is stored in the OS
    credential store.
 5. `:help` (or `:help <topic>`) shows the searchable command index.
@@ -54,7 +54,7 @@ the TUI.
 - [Configuration](docs/configuration.md) — config file, profiles, cache,
   keymaps, media settings, logging, troubleshooting.
 - [Keybindings](docs/keybindings.md) — modes, keys, commands, and remapping.
-- [Media](docs/media.md) — mailcap precedence, Kitty opt-in, downloads, and
+- [Media](docs/media.md) — handler precedence, scratch files, downloads, and
   current-session history.
 
 ## Command summary
@@ -66,11 +66,11 @@ the TUI.
 | `:profile`, `:profile <id>`, `:profile-new`, `:profile-delete` | manage profiles |
 | `:login`, `:logout`, `:whoami` | authentication |
 | `:vote <score>`, `:save`, `:subscribe`, `:reply`, `:edit`, `:delete` | interact |
-| `y` / `n`, `:confirm`, `:yes`, `:cancel` | confirm / cancel destructive actions |
-| `:media`, `:download-media`, `:downloads` | view and download media |
-| `:set ...`, `:help`, `:quit` | configuration, help, exit |
+| `y` / `Esc`, `:confirm`, `:yes`, `:cancel` | confirm / cancel destructive actions |
+| `o`, `:media`, `:download-media`, `:downloads` | view and download media |
+| `:close`, `:set ...`, `:help`, `:quit` | pane, configuration, help, exit |
 
-Run `lemmy --help` or `:help` inside the client for the complete list.
+Run `levim --help` or `:help` inside the client for the complete list.
 
 ## Development
 
