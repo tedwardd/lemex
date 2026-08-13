@@ -18,6 +18,11 @@ fn ctrl(character: char) -> KeyEvent {
 }
 
 #[test]
+fn o_opens_the_selected_media() {
+    assert_eq!(InputEngine::default().handle(key('o')), Command::OpenMedia);
+}
+
+#[test]
 fn greater_than_loads_the_next_feed_page() {
     assert_eq!(InputEngine::default().handle(key('>')), Command::NextPage);
 }

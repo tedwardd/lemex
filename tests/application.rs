@@ -1502,7 +1502,7 @@ async fn close_restores_the_content_only_view() {
 }
 
 #[tokio::test]
-async fn media_command_opens_the_detail_pane() {
+async fn media_command_keeps_the_content_only_view() {
     let mut app = App::with_media(
         Arc::new(fixture_api("feed.json")),
         Arc::new(MemoryCache::default()),
@@ -1529,12 +1529,50 @@ async fn media_command_opens_the_detail_pane() {
         .await
         .unwrap();
     assert!(
-        app.state.view.detail_open,
-        ":media must split off the detail pane when a thread or media view is requested"
+        !app.state.view.detail_open,
+        ":media spawns an external handler, so the detail pane must not appear"
     );
     assert!(
         app.state.status.message.contains("metadata only"),
         "with no handler configured the media command falls back to metadata"
+    );
+}
+
+#[tokio::test]
+async fn open_media_key_dispatches_the_media_command() {
+    let mut app = App::with_media(
+        Arc::new(fixture_api("feed.json")),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+        MediaConfig {
+            mailcap_enabled: false,
+            ..MediaConfig::default()
+        },
+    );
+    app.state.view.posts = vec![PostView {
+        id: PostId(1),
+        title: "With media".into(),
+        body: None,
+        url: Some(Url::parse("https://example.com/photo.png").unwrap()),
+        community_id: lemmy::CommunityId(1),
+        creator_id: lemmy::UserId(1),
+        score: 0,
+        comments: 0,
+        published: None,
+    }];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::Input(Command::OpenMedia))
+        .await
+        .unwrap();
+    assert!(
+        !app.state.view.detail_open,
+        "the o key must not open the detail pane either"
+    );
+    assert!(
+        app.state.status.message.contains("metadata only"),
+        "the o key must run the media handler, got {:?}",
+        app.state.status.message
     );
 }
 

@@ -155,7 +155,7 @@ static HELP_ENTRIES: &[HelpEntry] = &[
     },
     // Media
     HelpEntry {
-        command: ":media",
+        command: "o / :media",
         description: "open the selected post's media through the configured handler",
         group: "media",
     },
@@ -309,7 +309,11 @@ pub fn contextual_help(mode: Mode) -> &'static [HelpItem] {
             },
             HelpItem {
                 key: "Enter",
-                action: "open",
+                action: "open thread",
+            },
+            HelpItem {
+                key: "o",
+                action: "open media",
             },
             HelpItem {
                 key: "Ctrl-d/u",

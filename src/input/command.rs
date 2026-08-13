@@ -21,6 +21,9 @@ pub enum Command {
         count: u32,
     },
     Open,
+    /// Open the selected post's media through the configured handler
+    /// (default key: `o`; equivalent to `:media`).
+    OpenMedia,
     Refresh,
     /// Flip to the next feed page, replacing the list (default key: `>`).
     NextPage,
@@ -73,6 +76,7 @@ impl Command {
             "left" => Some(Command::MoveLeft { count: 1 }),
             "right" => Some(Command::MoveRight { count: 1 }),
             "open" => Some(Command::Open),
+            "media" | "open-media" => Some(Command::OpenMedia),
             "refresh" => Some(Command::Refresh),
             "next-page" | "load-more" => Some(Command::NextPage),
             "previous-page" => Some(Command::PreviousPage),

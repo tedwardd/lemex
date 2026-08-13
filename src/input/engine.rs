@@ -27,6 +27,8 @@ impl InputEngine {
         mappings.insert("gg", Command::GoToFirst { count: 1 });
         mappings.insert('G', Command::GoToLast { count: 1 });
         mappings.insert('r', Command::Refresh);
+        // Vim-style open: `o` opens the selected post's media externally.
+        mappings.insert('o', Command::OpenMedia);
         mappings.insert('>', Command::NextPage);
         mappings.insert('<', Command::PreviousPage);
         mappings.insert('q', Command::Quit);

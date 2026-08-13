@@ -440,6 +440,12 @@ impl App {
                 }
                 self.open_selected().await
             }
+            Command::OpenMedia => {
+                if self.state.view.downloads_active() {
+                    return self.downloads_action(DownloadsAction::Reopen).await;
+                }
+                self.open_media_selected().await
+            }
             Command::Back => self.close_detail_pane().await,
             Command::ClosePane => self.close_detail_pane().await,
             Command::Quit => {
@@ -1452,9 +1458,8 @@ impl App {
             self.state.status.failure("selected post has no media URL");
             return Ok(());
         };
-        // Kit images render into the detail pane, so the split must exist
-        // before the escape sequence is emitted.
-        self.state.view.detail_open = true;
+        // Media opens in an external handler (mailcap or a configured
+        // command), so the detail/thread pane must not appear.
         self.open_media(media, None).await
     }
 
