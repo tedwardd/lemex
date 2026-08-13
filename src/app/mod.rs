@@ -150,11 +150,22 @@ async fn run_terminal_async(
                             height.saturating_sub(3 + 11),
                         );
                         let cell_px = kitty::cell_pixels();
-                        let cells = kitty::image_dimensions(&path)
-                            .map(|image| kitty::fit_cells(image, area, cell_px));
+                        let placement = match kitty::image_dimensions(&path) {
+                            Some(image) if cell_px != (0, 0) => {
+                                let (cols, rows) = kitty::fit_cells(image, area, cell_px);
+                                kitty::ImagePlacement::Rect { cols, rows }
+                            }
+                            // Cell size unknown: fit the columns and let the
+                            // terminal derive the rows from the source
+                            // aspect, which is distortion-free by the
+                            // protocol. A partial TIOCGWINSZ pixel value is
+                            // treated as unknown too.
+                            Some(_) => kitty::ImagePlacement::FitColumns { cols: area.0 },
+                            None => kitty::ImagePlacement::Native,
+                        };
                         let _ = stdout
                             .write_all(format!("\x1b[{start_row};{start_col}H").as_bytes());
-                        if let Ok(bytes) = kitty::render_file(&path, cells) {
+                        if let Ok(bytes) = kitty::render_file(&path, placement) {
                             let _ = stdout.write_all(&bytes);
                         }
                     }
@@ -1717,7 +1728,7 @@ impl App {
         // owns the terminal and emits the escape sequence during its next
         // redraw, serialized with the ratatui frame so raw bytes cannot
         // corrupt the screen.
-        match kitty::render_file(&path, None) {
+        match kitty::render_file(&path, kitty::ImagePlacement::Native) {
             Ok(_) => {
                 self.kitty_render_pending = Some(path);
                 self.kitty_image_active = true;

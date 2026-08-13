@@ -63,23 +63,38 @@ pub fn environment_is_ssh(
         .any(|value| !value.is_empty())
 }
 
+/// How to place a transmitted image in the terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImagePlacement {
+    /// Scale to an exact cell rectangle whose pixel aspect matches the
+    /// source (used when the cell pixel size is known).
+    Rect { cols: u16, rows: u16 },
+    /// Fit to these columns; the terminal derives the rows from the source
+    /// image aspect ratio, which the protocol guarantees to be
+    /// distortion-free (used when the cell pixel size is unknown).
+    FitColumns { cols: u16 },
+    /// Render at native size at the cursor (used when the image dimensions
+    /// cannot be determined).
+    Native,
+}
+
 /// Produce the escape sequences that transmit and place a raster file through
-/// the Kitty graphics protocol. `cells` optionally scales the display to the
-/// given column/row rectangle (aspect fitted by the terminal); the placement
-/// happens at the cursor position when the final chunk arrives, so the caller
-/// moves the cursor first. `C=1` keeps the cursor from jumping after the
-/// placement, and `q=2` suppresses error responses. `a=T` both transmits and
-/// displays, so no separate `a=p` is needed.
-pub fn render_file(path: &Path, cells: Option<(u16, u16)>) -> Result<Vec<u8>> {
+/// the Kitty graphics protocol. The placement happens at the cursor position
+/// when the final chunk arrives, so the caller moves the cursor first. `C=1`
+/// keeps the cursor from jumping after the placement, and `q=2` suppresses
+/// error responses. `a=T` both transmits and displays, so no separate `a=p`
+/// is needed.
+pub fn render_file(path: &Path, placement: ImagePlacement) -> Result<Vec<u8>> {
     let bytes = fs::read(path)
         .map_err(|error| AppError::Media(format!("cannot read {}: {error}", path.display())))?;
     if bytes.is_empty() {
         return Err(AppError::Media("cannot render an empty media file".into()));
     }
     let format = format_code(path);
-    let placement = match cells {
-        Some((cols, rows)) => format!(",c={cols},r={rows},C=1"),
-        None => ",C=1".to_owned(),
+    let placement = match placement {
+        ImagePlacement::Rect { cols, rows } => format!(",c={cols},r={rows},C=1"),
+        ImagePlacement::FitColumns { cols } => format!(",c={cols},C=1"),
+        ImagePlacement::Native => ",C=1".to_owned(),
     };
     let encoded = base64_encode(&bytes);
     let chunk_size = 4096usize;
@@ -149,8 +164,10 @@ pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
 
 /// Cell pixel dimensions from `TIOCGWINSZ` (the kitty protocol docs require
 /// this to size images correctly). Returns `(0, 0)` when the terminal does
-/// not report pixel sizes; callers then fall back to a square-cell
-/// assumption.
+/// not report pixel sizes — including when only one axis is reported, since
+/// a partial value would make the cell aspect nonsense and distort the
+/// image. Callers then fall back to the distortion-free columns-only
+/// placement.
 pub fn cell_pixels() -> (u32, u32) {
     let mut size: libc::winsize = unsafe { std::mem::zeroed() };
     let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0
@@ -162,10 +179,14 @@ pub fn cell_pixels() -> (u32, u32) {
     if cols == 0 || rows == 0 {
         return (0, 0);
     }
-    (
+    let (cell_w, cell_h) = (
         u32::from(size.ws_xpixel) / cols,
         u32::from(size.ws_ypixel) / rows,
-    )
+    );
+    if cell_w == 0 || cell_h == 0 {
+        return (0, 0);
+    }
+    (cell_w, cell_h)
 }
 
 /// Largest cell rectangle whose pixel aspect ratio equals the image's,
@@ -313,7 +334,8 @@ mod tests {
             0, 0, 4, 0, 0, 0, 2, 8, 6,
         ];
         std::fs::write(&path, png).ok();
-        let bytes = super::render_file(&path, Some((20, 10))).unwrap();
+        let bytes =
+            super::render_file(&path, super::ImagePlacement::Rect { cols: 20, rows: 10 }).unwrap();
         let text = String::from_utf8_lossy(&bytes);
         assert!(text.starts_with("\x1b_Ga=T,f=100,q=2,c=20,r=10,C=1,m="));
         assert!(
@@ -324,6 +346,17 @@ mod tests {
             text.contains("m=0"),
             "the final chunk must end the transmission"
         );
+
+        // Unknown cell size: columns-only placement, rows derived by the
+        // terminal from the source aspect (distortion-free per the spec).
+        let bytes =
+            super::render_file(&path, super::ImagePlacement::FitColumns { cols: 20 }).unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("c=20,C=1") && !text.contains(",r="),
+            "columns-only placement must not send rows"
+        );
+
         let _ = std::fs::remove_file(&path);
     }
 
