@@ -15,6 +15,10 @@ crossterm = "0.29"
 # every supported platform must name its real store here.
 keyring = { version = "3", features = [
     "linux-native-sync-persistent",
+    # Compile the Secret Service's dbus dependency from source: the dbus
+    # crate otherwise needs system libdbus-1-dev headers, which GitHub's
+    # ubuntu runners do not ship.
+    "vendored",
     "apple-native",
     "windows-native",
 ] }
