@@ -1,0 +1,75 @@
+# examples/mailcap.linux — media handlers for levim on Linux
+#
+# Uses common Linux viewers; install them with your package manager:
+#   imv (images), mpv (video/audio), zathura (pdf/epub),
+#   libreoffice (office documents)
+# Everything else falls through to xdg-open, the desktop default opener.
+# Commands run without a shell; %s is the downloaded local file.
+# The test= predicates are ignored by levim (which never runs shell
+# logic) and only help other mailcap consumers skip GUI handlers on
+# headless hosts.
+#
+# Install: copy to ~/.mailcap (levim reads it before /etc/mailcap).
+
+# --- Images ---
+image/png;         imv %s; test=test -n "$DISPLAY"
+image/jpeg;        imv %s; test=test -n "$DISPLAY"
+image/gif;         imv %s; test=test -n "$DISPLAY"
+image/webp;        imv %s; test=test -n "$DISPLAY"
+image/avif;        imv %s; test=test -n "$DISPLAY"
+image/jxl;         imv %s; test=test -n "$DISPLAY"
+image/bmp;         imv %s; test=test -n "$DISPLAY"
+image/tiff;        imv %s; test=test -n "$DISPLAY"
+image/x-icon;      imv %s; test=test -n "$DISPLAY"
+image/svg+xml;     imv %s; test=test -n "$DISPLAY"
+image/*;           imv %s; test=test -n "$DISPLAY"
+
+# --- Video ---
+video/mp4;          mpv --force-window=yes %s
+video/webm;         mpv --force-window=yes %s
+video/quicktime;    mpv --force-window=yes %s
+video/x-matroska;   mpv --force-window=yes %s
+video/ogg;          mpv --force-window=yes %s
+video/mpeg;         mpv --force-window=yes %s
+video/*;            mpv --force-window=yes %s
+
+# --- Audio ---
+audio/mpeg;   mpv %s
+audio/ogg;    mpv %s
+audio/wav;    mpv %s
+audio/flac;   mpv %s
+audio/mp4;    mpv %s
+audio/aac;    mpv %s
+audio/opus;   mpv %s
+audio/*;      mpv %s
+
+# --- Documents ---
+application/pdf;             zathura %s
+application/epub+zip;        zathura %s
+
+text/plain;                  xdg-open %s
+text/markdown;               xdg-open %s
+text/html;                   xdg-open %s
+text/csv;                    xdg-open %s
+application/json;            xdg-open %s
+
+application/zip;             xdg-open %s
+application/gzip;            xdg-open %s
+application/x-tar;           xdg-open %s
+application/x-7z-compressed; xdg-open %s
+
+# --- Office ---
+application/msword;                          libreoffice %s
+application/vnd.ms-excel;                    libreoffice %s
+application/vnd.ms-powerpoint;               libreoffice %s
+application/rtf;                             libreoffice %s
+application/vnd.oasis.opendocument.text;     libreoffice %s
+application/vnd.oasis.opendocument.spreadsheet; libreoffice %s
+application/vnd.oasis.opendocument.presentation; libreoffice %s
+application/vnd.openxmlformats-officedocument.wordprocessingml.document;   libreoffice %s
+application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;         libreoffice %s
+application/vnd.openxmlformats-officedocument.presentationml.presentation; libreoffice %s
+
+# --- Fallback ---
+application/octet-stream; xdg-open %s
+*/*;                      xdg-open %s

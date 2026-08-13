@@ -1,0 +1,68 @@
+# examples/mailcap.macos — media handlers for levim on macOS
+#
+# Every handler is the `open` command: macOS's built-in opener, which
+# launches the default application registered for the file's type
+# (Preview for images/PDF, QuickTime for video, Music for audio, ...).
+# Commands run without a shell; %s is the downloaded local file.
+#
+# If a type has no default app (e.g. webm/mkv without VLC/IINA), `open`
+# reports an error instead of opening nothing.
+#
+# Install: copy to ~/.mailcap (levim reads it before /etc/mailcap).
+
+# --- Images ---
+image/png;         open %s
+image/jpeg;        open %s
+image/gif;         open %s
+image/webp;        open %s
+image/avif;        open %s
+image/jxl;         open %s
+image/bmp;         open %s
+image/tiff;        open %s
+image/x-icon;      open %s
+image/svg+xml;     open %s
+image/*;           open %s
+
+# --- Video ---
+video/mp4;         open %s
+video/webm;        open %s
+video/quicktime;   open %s
+video/x-matroska;  open %s
+video/ogg;         open %s
+video/mpeg;        open %s
+video/*;           open %s
+
+# --- Audio ---
+audio/mpeg;        open %s
+audio/ogg;         open %s
+audio/wav;         open %s
+audio/flac;        open %s
+audio/mp4;         open %s
+audio/aac;         open %s
+audio/opus;        open %s
+audio/*;           open %s
+
+# --- Documents ---
+application/pdf;           open %s
+application/epub+zip;      open %s
+text/plain;                open %s
+text/markdown;             open %s
+text/html;                 open %s
+text/csv;                  open %s
+application/json;          open %s
+application/zip;           open %s
+application/gzip;          open %s
+application/x-tar;         open %s
+application/x-7z-compressed; open %s
+
+# --- Office (default apps; LibreOffice if installed) ---
+application/msword;                                          open %s
+application/vnd.ms-excel;                                    open %s
+application/vnd.ms-powerpoint;                               open %s
+application/vnd.openxmlformats-officedocument.wordprocessingml.document; open %s
+application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;       open %s
+application/vnd.openxmlformats-officedocument.presentationml.presentation; open %s
+
+# --- Fallback ---
+application/octet-stream; open %s
+*/*;                      open %s

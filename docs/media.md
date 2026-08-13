@@ -22,8 +22,11 @@ picks the first handler that applies:
 ## Mailcap
 
 Entries are loaded from `$MAILCAPS` (a `:`-separated list) or, when unset,
-from `~/.mailcap` and `/etc/mailcap`. Parsing never evaluates shell logic:
-`test=` predicates are ignored, and the command template is tokenized with
+from `~/.mailcap` and `/etc/mailcap`. Ready-made examples live in
+`examples/mailcap.linux` (imv/mpv/zathura/libreoffice) and
+`examples/mailcap.macos` (the `open` command); copy the one for your
+platform to `~/.mailcap`. Parsing never evaluates shell logic: `test=`
+predicates are ignored, and the command template is tokenized with
 shell-like quote handling but executed directly with a safely constructed
 argv — no shell is involved. `%s` is substituted with the local media file,
 `%t` with the MIME type, and `%%` with a literal `%`; a template without
