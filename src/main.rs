@@ -87,6 +87,7 @@ lemmy — a terminal client for Lemmy
 Usage:
   lemmy            start the interactive terminal client
   lemmy --help     show this help and exit
+  lemmy --clean-temp   remove downloaded temp media files and exit
 
 The interactive client is a Vim-like modal TUI. Run :help inside the client
 for the full command index; a summary follows.";
@@ -101,14 +102,28 @@ fn print_help() {
 }
 
 fn main() -> Result<()> {
-    // The help path must exit successfully without entering the TUI (no
-    // config load, no runtime, no alternate screen), so it is checked before
-    // anything else runs.
-    if std::env::args()
-        .skip(1)
+    // Non-interactive paths are checked before anything else runs (no config
+    // load, no runtime, no alternate screen).
+    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
+    if arguments
+        .iter()
         .any(|argument| argument == "--help" || argument == "-h")
     {
         print_help();
+        return Ok(());
+    }
+    // One-shot sweep of the client's temp media subtree: crash leftovers,
+    // stale handler files, anything under our exclusively-owned directory.
+    // Honors $TMPDIR via std::env::temp_dir.
+    if arguments.iter().any(|argument| argument == "--clean-temp") {
+        let directory = lemmy::media::scratch_dir();
+        match lemmy::media::clean_scratch_dir() {
+            Ok(()) => println!("removed temp media files under {}", directory.display()),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
         return Ok(());
     }
     // One runtime for the whole process: startup session restoration and the

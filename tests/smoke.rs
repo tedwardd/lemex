@@ -781,6 +781,38 @@ fn reopening_the_same_media_reuses_the_cached_file() {
     );
 }
 
+/// `--clean-temp` sweeps the client's temp media subtree, resolving $TMPDIR
+/// per POSIX: a leftover file under $TMPDIR/lemmy-client is removed by the
+/// one-shot flag, which exits without entering the TUI.
+#[test]
+fn clean_temp_flag_removes_the_scratch_subtree_under_tmpdir() {
+    let binary = env!("CARGO_BIN_EXE_lemmy");
+    let tmp = std::env::temp_dir().join(format!("lemmy-tmpdir-test-{}", std::process::id()));
+    let scratch = tmp.join("lemmy-client");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::write(scratch.join("leftover.bin"), b"stale").unwrap();
+    let output = ProcessCommand::new(binary)
+        .env("TMPDIR", &tmp)
+        .arg("--clean-temp")
+        .output()
+        .expect("run lemmy --clean-temp");
+    assert!(
+        output.status.success(),
+        "`lemmy --clean-temp` must exit successfully, got {:?}",
+        output.status
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("removed temp media files"),
+        "the flag must report the sweep, got: {stdout}"
+    );
+    assert!(
+        !scratch.exists(),
+        "the scratch subtree under $TMPDIR must be removed"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 /// Media download and history inspection: `:download-media` fetches through a
 /// loopback server, the session downloads panel shows the completed record
 /// and filters it, a confirmed delete removes the local file, and quitting

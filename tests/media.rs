@@ -98,6 +98,36 @@ fn mailcap_is_the_default_handler() {
     assert!(matches!(handler, MediaHandler::Mailcap { .. }));
 }
 
+#[test]
+fn scratch_dir_is_nested_under_the_system_temp_dir() {
+    let directory = lemmy::media::scratch_dir();
+    assert!(
+        directory.starts_with(std::env::temp_dir()),
+        "the scratch dir must live under the system temp dir, got {}",
+        directory.display()
+    );
+    assert_eq!(
+        directory.file_name().and_then(|name| name.to_str()),
+        Some("lemmy-client"),
+        "the scratch dir is an exclusively-owned subdirectory"
+    );
+}
+
+#[test]
+fn clean_scratch_dir_removes_the_whole_subtree() {
+    let directory = lemmy::media::scratch_dir();
+    std::fs::create_dir_all(directory.join("nested")).unwrap();
+    std::fs::write(directory.join("stale.bin"), b"stale").unwrap();
+    std::fs::write(directory.join("nested/other.bin"), b"stale").unwrap();
+    lemmy::media::clean_scratch_dir().unwrap();
+    assert!(
+        !directory.exists(),
+        "the whole scratch subtree must be removed"
+    );
+    // A missing directory is not an error (idempotent sweep).
+    lemmy::media::clean_scratch_dir().unwrap();
+}
+
 #[tokio::test]
 async fn cancelled_download_is_recorded_in_session_history() {
     let manager = test_download_manager();

@@ -1509,7 +1509,14 @@ impl App {
         }) {
             return Some((existing.local_path.clone(), true));
         }
-        let scratch = std::env::temp_dir().join(filename_for(media));
+        let scratch_directory = match crate::media::ensure_scratch_dir() {
+            Ok(directory) => directory,
+            Err(error) => {
+                self.state.status.failure(error.to_string());
+                return None;
+            }
+        };
+        let scratch = scratch_directory.join(filename_for(media));
         let request = DownloadRequest {
             media: media.clone(),
             profile: self.state.active.profile.id.clone(),
