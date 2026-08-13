@@ -1463,6 +1463,64 @@ async fn detail_scroll_commands_move_and_clamp_the_offset() {
 }
 
 #[tokio::test]
+async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_closed() {
+    let api = Arc::new(ThreadApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "one"), post_view(2, "two")];
+    app.state.view.selected = Some(0);
+
+    // Pane closed (the default): j/k move the feed selection.
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.selected_index(), 1);
+    app.dispatch(AppAction::Input(Command::MoveUp { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.selected_index(), 0);
+
+    // Opening the thread focuses the pane: j/k scroll it and leave the
+    // feed selection untouched.
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(app.state.view.detail_open);
+    let selection_before = app.state.selected_index();
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 2 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.detail_scroll, 2,
+        "j scrolls the thread down one line per count"
+    );
+    assert_eq!(
+        app.state.selected_index(),
+        selection_before,
+        "the feed selection is untouched while the pane is focused"
+    );
+    app.dispatch(AppAction::Input(Command::MoveUp { count: 3 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.detail_scroll, 0,
+        "k scrolls back up and clamps at zero"
+    );
+    assert_eq!(app.state.selected_index(), selection_before);
+
+    // Closing the pane returns j/k to feed navigation.
+    app.dispatch(AppAction::Input(Command::ClosePane))
+        .await
+        .unwrap();
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.selected_index(), 1);
+}
+
+#[tokio::test]
 async fn detail_pane_is_closed_by_default_and_opens_with_a_thread() {
     let mut app = fixture_app();
     assert!(

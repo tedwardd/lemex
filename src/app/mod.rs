@@ -519,11 +519,23 @@ impl App {
                 self.previous_page().await
             }
             Command::MoveDown { count } => {
-                self.move_selection(count as isize);
+                // Opening the detail/thread pane focuses it: j/k then scroll
+                // the thread instead of moving the feed selection.
+                if self.state.view.detail_open {
+                    self.state.view.detail_scroll =
+                        self.state.view.detail_scroll.saturating_add(count as usize);
+                } else {
+                    self.move_selection(count as isize);
+                }
                 Ok(())
             }
             Command::MoveUp { count } => {
-                self.move_selection(-(count as isize));
+                if self.state.view.detail_open {
+                    self.state.view.detail_scroll =
+                        self.state.view.detail_scroll.saturating_sub(count as usize);
+                } else {
+                    self.move_selection(-(count as isize));
+                }
                 Ok(())
             }
             Command::GoToFirst { count } => {

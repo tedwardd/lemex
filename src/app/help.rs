@@ -125,7 +125,7 @@ static HELP_ENTRIES: &[HelpEntry] = &[
     },
     HelpEntry {
         command: "j/k",
-        description: "move down/up the selection",
+        description: "move down/up the selection; with the detail/thread pane open, scroll the thread (the pane takes focus)",
         group: "navigation",
     },
     HelpEntry {
@@ -305,7 +305,7 @@ pub fn contextual_help(mode: Mode) -> &'static [HelpItem] {
         Mode::Normal => &[
             HelpItem {
                 key: "j/k",
-                action: "move",
+                action: "move / scroll thread",
             },
             HelpItem {
                 key: "Enter",
