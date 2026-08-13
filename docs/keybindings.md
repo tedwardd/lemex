@@ -72,6 +72,7 @@ echoed as asterisks.
 | `:whoami` | show the active session user or anonymous |
 | `:feed` | show the home feed |
 | `:subscribed` | show your subscribed communities' feed (requires login) |
+| `:sort <name>` | set the feed sort — `Active` (default), `Hot`, `New`, `Old`, `TopDay`, `TopWeek`, `TopMonth`, `TopYear`, `TopAll`, `TopHour`, `TopSixHour`, `TopTwelveHour`, `MostComments`, `NewComments`; sticks for the session, so `:subscribed` after `:sort New` matches the web UI's `sort=New` |
 | `:community [<id>]` | open a community feed (defaults to the selected post's community) |
 | `:post` | open the selected post |
 | `:search <query>` | search posts (filters download history with the panel open) |

@@ -349,6 +349,13 @@ impl App {
         self.quit = true;
     }
 
+    /// The home feed query with the session's chosen sort applied.
+    fn home_query(&self) -> FeedQuery {
+        let mut query = FeedQuery::home();
+        query.sort = self.state.view.feed_sort.clone();
+        query
+    }
+
     /// Page size for the current terminal: exactly what fits the primary
     /// pane when the height is known, otherwise the fixed default.
     fn feed_limit(&self) -> u32 {
@@ -741,6 +748,41 @@ impl App {
     /// `:login <username> <password>` — credentials come from the compose
     /// buffer. The password is consumed in memory only: it is never written
     /// to config, logged, or echoed in status.
+    /// `:sort <name>` — set the sort order of the feed list (for example
+    /// `New`, `Hot`, `TopWeek`). The choice applies to the current view and
+    /// sticks for the session, so `:subscribed` after `:sort New` shows your
+    /// subscribed feed sorted by New, exactly like the web UI's
+    /// `listingType=Subscribed&sort=New`.
+    async fn sort_command(&mut self, args: &[&str]) -> Result<()> {
+        let [name] = args else {
+            self.state.status.failure(format!(
+                "usage: sort <{}>",
+                crate::api::FEED_SORTS.join("|")
+            ));
+            return Ok(());
+        };
+        let Some(canonical) = crate::api::FEED_SORTS
+            .iter()
+            .find(|candidate| candidate.eq_ignore_ascii_case(name))
+        else {
+            self.state.status.failure(format!(
+                "unknown sort {name:?}: use one of {}",
+                crate::api::FEED_SORTS.join(", ")
+            ));
+            return Ok(());
+        };
+        self.state.view.feed_sort = (*canonical).to_owned();
+        self.state.view.feed_query.sort = (*canonical).to_owned();
+        self.state.view.next_page = None;
+        self.refresh_feed().await?;
+        // The refresh already reported the load; add the sort change on top
+        // so the user knows the list re-sorted. Failures keep their error.
+        if self.state.status.error.is_none() {
+            self.state.status.success(format!("sorted by {canonical}"));
+        }
+        Ok(())
+    }
+
     async fn login_from_compose(&mut self) -> Result<()> {
         let mut tokens = self.state.view.compose.split_whitespace();
         let first = tokens.next().unwrap_or_default().trim_start_matches(':');
@@ -942,6 +984,7 @@ impl App {
             self.state.view.search = search.clone();
             self.state.view.feed_query = FeedQuery {
                 search: (!search.is_empty()).then_some(search),
+                sort: self.state.view.feed_sort.clone(),
                 ..FeedQuery::home()
             };
             // A new search starts a fresh pagination cursor; the previous
@@ -1030,7 +1073,7 @@ impl App {
                 Ok(())
             }
             "feed" if !self.state.view.downloads_active() => {
-                self.state.view.feed_query = FeedQuery::home();
+                self.state.view.feed_query = self.home_query();
                 self.state.view.search.clear();
                 self.state.view.next_page = None;
                 self.refresh_feed().await
@@ -1045,7 +1088,9 @@ impl App {
                         .failure("login first to view your subscribed feed");
                     return Ok(());
                 }
-                self.state.view.feed_query = FeedQuery::subscribed();
+                let mut query = FeedQuery::subscribed();
+                query.sort = self.state.view.feed_sort.clone();
+                self.state.view.feed_query = query;
                 self.state.view.search.clear();
                 self.state.view.next_page = None;
                 self.refresh_feed().await
@@ -1055,6 +1100,7 @@ impl App {
                 self.state.view.search = query.clone();
                 self.state.view.feed_query = FeedQuery {
                     search: (!query.is_empty()).then_some(query),
+                    sort: self.state.view.feed_sort.clone(),
                     ..FeedQuery::home()
                 };
                 self.state.view.next_page = None;
@@ -1083,7 +1129,7 @@ impl App {
             // while the panel is open so they never act on the hidden feed
             // selection.
             "feed" | "media" | "download-media" | "download_media" | "community" | "post"
-            | "reply" | "edit" | "vote" | "save" | "subscribe" | "subscribed"
+            | "reply" | "edit" | "vote" | "save" | "subscribe" | "subscribed" | "sort"
                 if self.state.view.downloads_active() =>
             {
                 self.state
@@ -1091,6 +1137,7 @@ impl App {
                     .failure("close the downloads panel before using content commands");
                 Ok(())
             }
+            "sort" => self.sort_command(&args).await,
             "media" => self.open_media_selected().await,
             "download-media" | "download_media" => self.download_media_selected().await,
             "community" => self.community_command(&args).await,
@@ -1399,6 +1446,7 @@ impl App {
     async fn open_community(&mut self, community: crate::domain::CommunityId) -> Result<()> {
         self.state.view.feed_query = FeedQuery {
             community: Some(community),
+            sort: self.state.view.feed_sort.clone(),
             ..FeedQuery::home()
         };
         self.state.view.search.clear();

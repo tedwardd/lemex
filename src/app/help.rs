@@ -104,6 +104,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: ":sort <name>",
+        description: "set the feed sort (Active, Hot, New, Old, TopDay, TopWeek, ...); sticks for the session",
+        group: "navigation",
+    },
+    HelpEntry {
         command: ":community [<id>]",
         description: "open a community feed (defaults to the selected post's community)",
         group: "navigation",

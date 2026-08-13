@@ -62,7 +62,7 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 
 | Command | Purpose |
 | --- | --- |
-| `:feed`, `:subscribed`, `:community [<id>]`, `:search <query>` | navigate content |
+| `:feed`, `:subscribed`, `:community [<id>]`, `:search <query>`, `:sort <name>` | navigate content |
 | `j`/`k`, `Enter`, `Esc`, `r` | move, open, back, refresh |
 | `:profile`, `:profile <id>`, `:profile-new`, `:profile-delete` | manage profiles |
 | `:login`, `:logout`, `:whoami` | authentication |

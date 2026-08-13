@@ -2096,6 +2096,95 @@ async fn subscribed_command_requires_login() {
 }
 
 #[tokio::test]
+async fn sort_command_sets_the_feed_sort_and_reloads() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("sort New".into())))
+        .await
+        .unwrap();
+
+    let queries = api.queries.lock();
+    assert_eq!(queries.len(), 1, "the re-sorted feed must be fetched");
+    assert_eq!(
+        queries[0].sort, "New",
+        "the request must carry the canonical sort, got {:?}",
+        queries[0].sort
+    );
+    assert!(
+        app.state.status.message.contains("sorted by New"),
+        "the status must confirm the sort, got {:?}",
+        app.state.status.message
+    );
+}
+
+#[tokio::test]
+async fn sort_choice_sticks_across_feed_commands() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut context = fixture_context();
+    context.session = Some(levim::Session {
+        user_id: levim::UserId(7),
+        token: levim::SecretString::from("fixture-token"),
+    });
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        context,
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("sort New".into())))
+        .await
+        .unwrap();
+    app.dispatch(AppAction::Input(Command::SubmitLine("subscribed".into())))
+        .await
+        .unwrap();
+
+    let queries = api.queries.lock();
+    assert_eq!(queries.len(), 2, "sort then subscribed = two fetches");
+    assert_eq!(queries[0].sort, "New");
+    assert_eq!(queries[1].sort, "New", "the chosen sort must stick");
+    assert_eq!(
+        queries[1].listing,
+        levim::api::FeedListing::Subscribed,
+        "the subscribed listing must keep the chosen sort"
+    );
+}
+
+#[tokio::test]
+async fn sort_command_rejects_unknown_names() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine(
+        "sort sideways".into(),
+    )))
+    .await
+    .unwrap();
+
+    assert!(
+        app.state
+            .status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("unknown sort")),
+        "unknown sorts must be rejected with the valid list, got {:?}",
+        app.state.status.error
+    );
+    assert!(api.queries.lock().is_empty(), "no request for a bad sort");
+}
+
+#[tokio::test]
 async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
     let path = std::env::temp_dir().join(format!(
         "levim-application-tombstone-switch-{}.toml",

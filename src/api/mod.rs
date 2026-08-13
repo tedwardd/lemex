@@ -29,6 +29,25 @@ pub enum FeedListing {
     Subscribed,
 }
 
+/// Sort orders Lemmy accepts for post listings (the `sort` query parameter),
+/// in canonical spelling. `:sort` accepts any of these case-insensitively.
+pub const FEED_SORTS: &[&str] = &[
+    "Active",
+    "Hot",
+    "New",
+    "Old",
+    "TopHour",
+    "TopSixHour",
+    "TopTwelveHour",
+    "TopDay",
+    "TopWeek",
+    "TopMonth",
+    "TopYear",
+    "TopAll",
+    "MostComments",
+    "NewComments",
+];
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeedQuery {
     pub sort: String,

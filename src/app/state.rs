@@ -32,6 +32,10 @@ pub struct View {
     pub page_history: Vec<Option<String>>,
     pub feed_query: crate::api::FeedQuery,
     pub search: String,
+    /// The sort applied to every feed load this session (`Active` by
+    /// default); `:sort <name>` changes it and it sticks until the next
+    /// `:sort`.
+    pub feed_sort: String,
     pub downloads: Option<DownloadsPanel>,
     /// Active help filter; `Some` shows the help index instead of content.
     pub help: Option<String>,
@@ -59,6 +63,7 @@ impl Default for View {
             page_history: Vec::new(),
             feed_query: crate::api::FeedQuery::home(),
             search: String::new(),
+            feed_sort: "Active".into(),
             downloads: None,
             help: None,
             detail_scroll: 0,
@@ -83,6 +88,10 @@ impl View {
         self.next_page = None;
         self.page_history.clear();
         self.feed_query = crate::api::FeedQuery::home();
+        // The chosen sort is a session preference, not profile data: keep it
+        // across profile switches so `:sort New` then switching instances
+        // still loads the new instance's feed sorted by New.
+        self.feed_query.sort = self.feed_sort.clone();
         self.search.clear();
         self.help = None;
     }

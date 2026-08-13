@@ -517,4 +517,18 @@ mod tests {
             "same community, different listing: keys must differ"
         );
     }
+
+    #[test]
+    fn sort_is_part_of_the_key() {
+        // Sorting is a server-side contract: a re-sorted feed is different
+        // content and must get its own cache row.
+        let active = FeedQuery::home();
+        let mut newest = FeedQuery::home();
+        newest.sort = "New".into();
+        assert_ne!(
+            feed_key(&active),
+            feed_key(&newest),
+            "different sorts must not share a cache key"
+        );
+    }
 }
