@@ -5,6 +5,7 @@ use std::{
 
 use async_trait::async_trait;
 use keyring::Entry;
+use keyring::mock::MockCredential;
 
 use crate::{
     AppError, Result,
@@ -77,8 +78,19 @@ impl KeyringCredentialStore {
     }
 
     fn entry(&self, profile: &ProfileId) -> Result<Entry> {
-        Entry::new(&self.service, &profile.to_string())
-            .map_err(|error| storage_error(profile, "open", error))
+        let entry = Entry::new(&self.service, &profile.to_string())
+            .map_err(|error| storage_error(profile, "open", error))?;
+        // keyring silently falls back to its in-memory mock store whenever
+        // no platform store is available (no Secret Service/keyutils on
+        // Linux, an unavailable Keychain on macOS). Refuse it: a session
+        // that only lives in memory is not secure storage and would vanish
+        // at exit without warning.
+        if entry.get_credential().is::<MockCredential>() {
+            return Err(AppError::Storage(format!(
+                "the OS credential store is unavailable for profile {profile}: keyring fell back to its in-memory mock store, which levim refuses. On Linux start a Secret Service provider (gnome-keyring or keepassxc); on macOS unlock the Keychain."
+            )));
+        }
+        Ok(entry)
     }
 }
 

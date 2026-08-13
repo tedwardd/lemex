@@ -10,7 +10,14 @@ path = "src/main.rs"
 [dependencies]
 async-trait = "0.1"
 crossterm = "0.29"
-keyring = { version = "3", features = ["linux-native-sync-persistent"] }
+# Platform credential stores: keyring has no default features and falls back
+# to an in-memory mock when none apply — the app refuses that fallback, so
+# every supported platform must name its real store here.
+keyring = { version = "3", features = [
+    "linux-native-sync-persistent",
+    "apple-native",
+    "windows-native",
+] }
 parking_lot = "0.12"
 ratatui = "0.30"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

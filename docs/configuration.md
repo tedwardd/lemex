@@ -154,9 +154,11 @@ persisted atomically before being applied.
   Add one to the config file and launch again; once running,
   `:profile-new <id> <instance-url>` adds further profiles.
 - **Login fails with a credential-store error** — the OS credential store is
-  unavailable or locked. On Linux, start a Secret Service provider (for
-  example `gnome-keyring` or `keepassxc` with Secret Service integration)
-  and unlock it; on macOS, unlock the Keychain — then try again.
+  unavailable or locked. The client refuses keyring's in-memory fallback
+  store, so sessions are never silently stored in memory. On Linux, start a
+  Secret Service provider (for example `gnome-keyring` or `keepassxc` with
+  Secret Service integration) and unlock it; on macOS, unlock the Keychain —
+  then try again.
 - **Media does not open** — confirm the MIME type resolves (see
   [Media](media.md)); with mailcap disabled and no explicit handler, media is
   reported as metadata-only by design.

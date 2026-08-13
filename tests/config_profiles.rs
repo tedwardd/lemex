@@ -6,6 +6,7 @@ use std::{
 };
 
 use async_trait::async_trait;
+use levim::profiles::KeyringCredentialStore;
 use levim::{
     AppConfig, AppError, ProfileId, SecretString, Session, UserId,
     api::{
@@ -55,6 +56,28 @@ async fn sessions_are_keyed_by_profile_id() {
             .token
             .expose_secret(),
         "token-two"
+    );
+}
+
+#[tokio::test]
+async fn keyring_store_refuses_the_in_memory_mock_backend() {
+    // keyring falls back to its mock store when no platform store applies;
+    // the client must refuse it so sessions are never silently stored in
+    // memory. Force the mock builder to exercise the refusal deterministically.
+    keyring::set_default_credential_builder(keyring::mock::default_credential_builder());
+    let store = KeyringCredentialStore::default();
+    let error = store
+        .get_session(&ProfileId::from("mock-target"))
+        .await
+        .unwrap_err();
+    let message = format!("{error}");
+    assert!(
+        message.contains("mock"),
+        "the mock store must be refused, got: {message}"
+    );
+    assert!(
+        message.contains("credential store is unavailable"),
+        "the refusal must explain the store is unavailable, got: {message}"
     );
 }
 
