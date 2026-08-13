@@ -147,16 +147,63 @@ pub fn image_dimensions(path: &Path) -> Option<(u32, u32)> {
     None
 }
 
-/// Largest cell rectangle with the image's aspect ratio that fits inside
-/// `area`, so the terminal scales the image without distortion.
-pub fn fit_cells(image: (u32, u32), area: (u16, u16)) -> (u16, u16) {
-    let (width, height) = (image.0.max(1) as f64, image.1.max(1) as f64);
-    let (max_cols, max_rows) = (area.0.max(1) as f64, area.1.max(1) as f64);
-    let scale = (max_cols / width).min(max_rows / height);
+/// Cell pixel dimensions from `TIOCGWINSZ` (the kitty protocol docs require
+/// this to size images correctly). Returns `(0, 0)` when the terminal does
+/// not report pixel sizes; callers then fall back to a square-cell
+/// assumption.
+pub fn cell_pixels() -> (u32, u32) {
+    let mut size: libc::winsize = unsafe { std::mem::zeroed() };
+    let ok = unsafe { libc::ioctl(libc::STDOUT_FILENO, libc::TIOCGWINSZ, &mut size) } == 0
+        || unsafe { libc::ioctl(libc::STDIN_FILENO, libc::TIOCGWINSZ, &mut size) } == 0;
+    if !ok {
+        return (0, 0);
+    }
+    let (cols, rows) = (u32::from(size.ws_col), u32::from(size.ws_row));
+    if cols == 0 || rows == 0 {
+        return (0, 0);
+    }
     (
-        (width * scale).floor().max(1.0) as u16,
-        (height * scale).floor().max(1.0) as u16,
+        u32::from(size.ws_xpixel) / cols,
+        u32::from(size.ws_ypixel) / rows,
     )
+}
+
+/// Largest cell rectangle whose pixel aspect ratio equals the image's,
+/// fitting inside `area` cells and accounting for non-square terminal cells.
+/// The ratio is solved exactly as the reduced fraction
+/// `rows/cols = (cell_w * h) / (cell_h * w)`, so the displayed pixel
+/// rectangle matches the source without distortion. `cell_px == (0, 0)`
+/// assumes square cells. When even one exact unit does not fit, a 1-cell
+/// strip along the image's long dimension is used.
+pub fn fit_cells(image: (u32, u32), area: (u16, u16), cell_px: (u32, u32)) -> (u16, u16) {
+    let cell_w = u64::from(cell_px.0.max(1));
+    let cell_h = u64::from(cell_px.1.max(1));
+    let (width, height) = (u64::from(image.0.max(1)), u64::from(image.1.max(1)));
+    let (max_cols, max_rows) = (u64::from(area.0.max(1)), u64::from(area.1.max(1)));
+
+    let (mut rows_unit, mut cols_unit) = (cell_w * height, cell_h * width);
+    let divisor = gcd(rows_unit, cols_unit);
+    rows_unit /= divisor;
+    cols_unit /= divisor;
+
+    let units = (max_cols / cols_unit).min(max_rows / rows_unit);
+    if units == 0 {
+        // One exact unit does not fit; fall back to a 1-cell strip along
+        // the image's longer dimension.
+        return if width * cell_h >= height * cell_w {
+            (area.0.max(1), 1)
+        } else {
+            (1, area.1.max(1))
+        };
+    }
+    ((units * cols_unit) as u16, (units * rows_unit) as u16)
+}
+
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a.max(1)
 }
 
 /// Kitty format code for common raster types; PNG is the safe default.
@@ -226,14 +273,36 @@ mod tests {
         assert_eq!(image_dimensions(Path::new("/nonexistent")), None);
     }
 
+    fn pixel_ratio(cols: u16, rows: u16, cell: (u32, u32)) -> f64 {
+        (f64::from(cols) * f64::from(cell.0)) / (f64::from(rows) * f64::from(cell.1))
+    }
+
     #[test]
     fn fit_cells_preserves_aspect_inside_the_area() {
-        // 400x200 image into a 30x10 area: fit by rows (10), cols = 20.
-        assert_eq!(fit_cells((400, 200), (30, 10)), (20, 10));
-        // Wide image into a narrow area: fit by cols.
-        assert_eq!(fit_cells((400, 100), (30, 10)), (30, 7));
+        // Square cells: a 2:1 image into a 30x10 area.
+        assert_eq!(fit_cells((400, 200), (30, 10), (8, 8)), (20, 10));
+        // Wide image into a narrow area: exact 4:1 within the grid.
+        assert_eq!(fit_cells((400, 100), (30, 10), (8, 8)), (28, 7));
         // Extreme aspect ratios still occupy at least one cell per side.
-        assert_eq!(fit_cells((5000, 1), (30, 10)), (30, 1));
+        assert_eq!(fit_cells((5000, 1), (30, 10), (8, 8)), (30, 1));
+    }
+
+    #[test]
+    fn fit_cells_uses_cell_pixel_aspect() {
+        // A 1:1 image in a 2:1 cell (8x16 px) occupies a 1:1 pixel rect.
+        let (cols, rows) = fit_cells((100, 100), (20, 10), (8, 16));
+        assert_eq!((cols, rows), (20, 10));
+        assert!((pixel_ratio(cols, rows, (8, 16)) - 1.0).abs() < 1e-9);
+
+        // A 4:1 image in the same cells keeps 4:1 in pixels, exactly.
+        let (cols, rows) = fit_cells((400, 100), (30, 10), (8, 16));
+        assert_eq!((cols, rows), (24, 3));
+        assert!((pixel_ratio(cols, rows, (8, 16)) - 4.0).abs() < 1e-9);
+
+        // A tall 1:4 image stays 1:4.
+        let (cols, rows) = fit_cells((100, 400), (30, 10), (8, 16));
+        assert!((pixel_ratio(cols, rows, (8, 16)) - 0.25).abs() < 1e-9);
+        assert!(cols <= 30 && rows <= 10, "the rect stays inside the area");
     }
 
     #[test]

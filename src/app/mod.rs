@@ -149,8 +149,9 @@ async fn run_terminal_async(
                             width.saturating_sub(start_col),
                             height.saturating_sub(3 + 11),
                         );
+                        let cell_px = kitty::cell_pixels();
                         let cells = kitty::image_dimensions(&path)
-                            .map(|image| kitty::fit_cells(image, area));
+                            .map(|image| kitty::fit_cells(image, area, cell_px));
                         let _ = stdout
                             .write_all(format!("\x1b[{start_row};{start_col}H").as_bytes());
                         if let Ok(bytes) = kitty::render_file(&path, cells) {

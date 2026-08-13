@@ -947,6 +947,7 @@ dependencies = [
  "async-trait",
  "crossterm",
  "keyring",
+ "libc",
  "parking_lot",
  "ratatui",
  "reqwest",
