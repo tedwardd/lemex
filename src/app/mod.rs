@@ -481,18 +481,7 @@ impl App {
             AppAction::OpenSelected => self.open_selected().await,
             AppAction::OpenCommunity(id) => self.open_community(id).await,
             AppAction::LoadMore => self.next_page().await,
-            AppAction::Back => {
-                if self.state.view.downloads_active() {
-                    self.state.view.close_downloads_panel();
-                    return Ok(());
-                }
-                self.invalidate_content_requests();
-                self.state.view.detail = None;
-                self.state.view.help = None;
-                self.state.mode = Mode::Normal;
-                self.cancel_pending();
-                Ok(())
-            }
+            AppAction::Back => self.close_detail_pane().await,
             AppAction::DeletePost(id) => self.delete_post(id).await,
             AppAction::Mutate(mutation) => self.start_mutation(mutation, None).await,
             AppAction::Confirm => self.confirm_pending().await,
@@ -540,18 +529,8 @@ impl App {
                 }
                 self.open_selected().await
             }
-            Command::Back => {
-                if self.state.view.downloads_active() {
-                    self.state.view.close_downloads_panel();
-                    return Ok(());
-                }
-                self.invalidate_content_requests();
-                self.state.view.detail = None;
-                self.state.view.help = None;
-                self.state.mode = Mode::Normal;
-                self.cancel_pending();
-                Ok(())
-            }
+            Command::Back => self.close_detail_pane().await,
+            Command::ClosePane => self.close_detail_pane().await,
             Command::Quit => {
                 self.downloads.shutdown();
                 self.quit = true;
@@ -1073,6 +1052,7 @@ impl App {
                 });
                 Ok(())
             }
+            "close" => self.close_detail_pane().await,
             "set" => self.config_command(&args).await,
             "quit" => {
                 self.downloads.shutdown();
@@ -1501,10 +1481,32 @@ impl App {
             .or_else(|| (!self.state.view.posts.is_empty()).then_some(0));
     }
 
+    /// Collapse the detail/thread pane back to the content-only view, and
+    /// drop the loaded thread so no stale content can resurface. With the
+    /// downloads panel open this instead closes that panel (`Back` keeps
+    /// its existing meaning there).
+    async fn close_detail_pane(&mut self) -> Result<()> {
+        if self.state.view.downloads_active() {
+            self.state.view.close_downloads_panel();
+            return Ok(());
+        }
+        self.invalidate_content_requests();
+        self.state.view.detail = None;
+        self.state.view.detail_open = false;
+        self.state.view.detail_scroll = 0;
+        self.state.view.help = None;
+        self.state.mode = Mode::Normal;
+        self.cancel_pending();
+        Ok(())
+    }
+
     async fn open_selected(&mut self) -> Result<()> {
         let Some(id) = self.state.selected_post() else {
             return Ok(());
         };
+        // Split off the detail pane up front so the fetch is visible; the
+        // pane collapses again on `Back` or `:close`.
+        self.state.view.detail_open = true;
         let profile = self.state.active.profile.id.clone();
         let request = self.begin_request(RequestIdentity::Post(id));
         let result = self.repository.post(&self.state.active, id).await;
@@ -1541,6 +1543,9 @@ impl App {
             self.state.status.failure("selected post has no media URL");
             return Ok(());
         };
+        // Kit images render into the detail pane, so the split must exist
+        // before the escape sequence is emitted.
+        self.state.view.detail_open = true;
         self.open_media(media, None).await
     }
 

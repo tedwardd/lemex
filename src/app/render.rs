@@ -109,15 +109,31 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
 }
 
 fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &RenderModel) {
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(areas[1]);
-
+    // Help is its own overlay with a list plus a groups pane; it keeps the
+    // split regardless of the detail pane state.
     if let Some(query) = &model.help {
+        let body = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(areas[1]);
         render_help(frame, body.as_ref(), query);
         return;
     }
+
+    // Content-only default: the feed takes the whole body. Opening a thread
+    // or `:media` splits the window and the detail/thread pane appears.
+    let split = model.detail_open;
+    let body = if split {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+            .split(areas[1])
+    } else {
+        Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Percentage(100)])
+            .split(areas[1])
+    };
 
     let mut post_rows = model
         .posts
@@ -163,6 +179,10 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
     let mut table_state = TableState::default();
     table_state.select(selected_index(model));
     frame.render_stateful_widget(table, body[0], &mut table_state);
+
+    if !split {
+        return;
+    }
 
     let detail_text = match &model.detail {
         Some(detail) => {
@@ -392,6 +412,7 @@ mod tests {
             posts: Vec::new(),
             selected: None,
             detail: None,
+            detail_open: false,
             compose: String::new(),
             search: String::new(),
             has_more: false,
@@ -470,8 +491,45 @@ mod tests {
     }
 
     #[test]
+    fn content_only_view_renders_the_feed_full_width() {
+        let mut model = model(None, false);
+        model.posts = vec![crate::api::PostView {
+            id: crate::PostId(1),
+            title: "Sole post".into(),
+            body: None,
+            url: None,
+            community_id: crate::CommunityId(1),
+            creator_id: crate::UserId(1),
+            score: 12,
+            comments: 7,
+            published: None,
+        }];
+        model.detail = Some(crate::api::PostDetail {
+            post: model.posts[0].clone(),
+            comments: Vec::new(),
+        });
+        let text = rendered(&model);
+        assert!(
+            !text.contains("Detail / thread"),
+            "the detail pane must not render while it is closed; rendered: {text}"
+        );
+        assert!(
+            text.contains("Sole post"),
+            "the feed must still render its posts; rendered: {text}"
+        );
+
+        model.detail_open = true;
+        let text = rendered(&model);
+        assert!(
+            text.contains("Detail / thread"),
+            "opening the pane must split the window; rendered: {text}"
+        );
+    }
+
+    #[test]
     fn detail_shows_comment_scores_without_ids_and_with_spacing() {
         let mut model = model(None, false);
+        model.detail_open = true;
         model.detail = Some(crate::api::PostDetail {
             post: crate::api::PostView {
                 id: crate::PostId(1),
@@ -527,6 +585,7 @@ mod tests {
     #[test]
     fn detail_scroll_shifts_content_above_the_fold() {
         let mut model = model(None, false);
+        model.detail_open = true;
         let comments = (0..8)
             .map(|index| crate::api::CommentView {
                 id: crate::CommentId(index + 1),

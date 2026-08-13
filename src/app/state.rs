@@ -19,6 +19,10 @@ use crate::{
 pub struct View {
     pub posts: Vec<PostView>,
     pub detail: Option<PostDetail>,
+    /// Whether the detail/thread pane is split off from the primary content.
+    /// Closed by default so the feed gets the full width; opening a thread
+    /// or `:media` splits the window, `:close` collapses it again.
+    pub detail_open: bool,
     pub selected: Option<usize>,
     pub compose: String,
     pub stale: bool,
@@ -47,6 +51,7 @@ impl Default for View {
         Self {
             posts: Vec::new(),
             detail: None,
+            detail_open: false,
             selected: None,
             compose: String::new(),
             stale: false,
@@ -71,6 +76,7 @@ impl View {
     pub fn clear_profile_transient(&mut self) {
         self.posts.clear();
         self.detail = None;
+        self.detail_open = false;
         self.selected = None;
         self.compose.clear();
         self.stale = false;
@@ -427,6 +433,8 @@ pub struct RenderModel {
     pub posts: Vec<PostView>,
     pub selected: Option<usize>,
     pub detail: Option<PostDetail>,
+    /// Whether the detail/thread pane is split off from the primary content.
+    pub detail_open: bool,
     pub compose: String,
     pub search: String,
     pub has_more: bool,
@@ -453,6 +461,7 @@ impl AppState {
             posts: self.view.posts.clone(),
             selected: self.view.selected,
             detail: self.view.detail.clone(),
+            detail_open: self.view.detail_open,
             compose: self.view.compose.clone(),
             search: self.view.search.clone(),
             has_more: self.view.next_page.is_some(),

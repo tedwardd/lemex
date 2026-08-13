@@ -144,8 +144,13 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: ":close",
+        description: "close the detail/thread pane, returning to the content-only view",
+        group: "navigation",
+    },
+    HelpEntry {
         command: "Esc",
-        description: "back / cancel",
+        description: "back / cancel; also closes the detail/thread pane",
         group: "navigation",
     },
     // Media

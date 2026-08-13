@@ -42,6 +42,9 @@ pub enum Command {
     ScrollDetailUp {
         count: u32,
     },
+    /// Collapse the detail/thread pane, returning to the content-only view
+    /// (command: `:close`, rebindable as `close-pane`).
+    ClosePane,
     /// Confirm the pending destructive action (default key: `y`).
     Confirm,
     /// Cancel the pending destructive action (default key: `n`).
@@ -81,6 +84,7 @@ impl Command {
             "search" | "search-forward" => Some(Command::EnterSearch { backward: false }),
             "search-backward" => Some(Command::EnterSearch { backward: true }),
             "back" => Some(Command::Back),
+            "close-pane" | "close" => Some(Command::ClosePane),
             "quit" => Some(Command::Quit),
             "scroll-detail-down" => Some(Command::ScrollDetailDown { count: 1 }),
             "scroll-detail-up" => Some(Command::ScrollDetailUp { count: 1 }),

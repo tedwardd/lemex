@@ -22,9 +22,10 @@ use lemmy::{
         help::HelpIndex,
     },
     cache::{CacheStore, CachedFeed, FeedKey, MemoryCache},
+    config::MediaConfig,
     domain::{Mutation, PostId, Profile, ProfileContext, ProfileId},
     error::{AppError, Result},
-    input::{Command, InputEngine},
+    input::{Command, InputEngine, Mode},
     profiles::{CredentialStore, MemoryCredentialStore, ProfileStore},
 };
 use serde_json::json;
@@ -1459,6 +1460,83 @@ async fn detail_scroll_commands_move_and_clamp_the_offset() {
         .await
         .unwrap();
     assert_eq!(app.state.view.detail_scroll, 0);
+}
+
+#[tokio::test]
+async fn detail_pane_is_closed_by_default_and_opens_with_a_thread() {
+    let mut app = fixture_app();
+    assert!(
+        !app.state.view.detail_open,
+        "the detail pane must be collapsed by default"
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(
+        app.state.view.detail_open,
+        "opening a thread must split off the detail pane"
+    );
+}
+
+#[tokio::test]
+async fn close_restores_the_content_only_view() {
+    let mut app = fixture_app();
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(app.state.view.detail_open);
+
+    // `:close` collapses the pane and drops the loaded thread.
+    app.dispatch(AppAction::Input(Command::SubmitLine("close".into())))
+        .await
+        .unwrap();
+    assert!(!app.state.view.detail_open, ":close collapses the pane");
+    assert!(app.state.view.detail.is_none(), ":close drops the thread");
+
+    // Reopening splits again; Esc (`Back`) collapses it the same way.
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(app.state.view.detail_open);
+    app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
+    assert!(!app.state.view.detail_open, "Back collapses the pane");
+    assert_eq!(app.state.mode, Mode::Normal);
+}
+
+#[tokio::test]
+async fn media_command_opens_the_detail_pane() {
+    let mut app = App::with_media(
+        Arc::new(fixture_api("feed.json")),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+        MediaConfig {
+            kitty_enabled: false,
+            mailcap_enabled: false,
+            ..MediaConfig::default()
+        },
+    );
+    app.state.view.posts = vec![PostView {
+        id: PostId(1),
+        title: "With media".into(),
+        body: None,
+        url: Some(Url::parse("https://example.com/photo.png").unwrap()),
+        community_id: lemmy::CommunityId(1),
+        creator_id: lemmy::UserId(1),
+        score: 0,
+        comments: 0,
+        published: None,
+    }];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::Input(Command::SubmitLine("media".into())))
+        .await
+        .unwrap();
+    assert!(
+        app.state.view.detail_open,
+        ":media must split off the pane so kitty images have a pane to render into"
+    );
+    assert!(
+        app.state.status.message.contains("metadata only"),
+        "with no handler configured the media command falls back to metadata"
+    );
 }
 
 #[tokio::test]
