@@ -44,7 +44,10 @@ pub use actions::{
     RequestToken,
 };
 pub use repository::{CachedRead, Repository};
-pub use state::{AppState, DownloadsPanel, DownloadsRender, DraftStore, RenderModel, Status, View};
+pub use state::{
+    AppState, CommunitiesModal, DownloadsPanel, DownloadsRender, DraftStore, Modal, RenderModel,
+    Status, ThreadModal, View,
+};
 
 pub fn run_terminal(
     app: App,
@@ -441,7 +444,15 @@ impl App {
             AppAction::OpenSelected => self.open_selected().await,
             AppAction::OpenCommunity(id) => self.open_community(id).await,
             AppAction::LoadMore => self.next_page().await,
-            AppAction::Back => self.close_detail_pane().await,
+            AppAction::Back => {
+                // Same semantics as Esc: pop the focused modal, then fall
+                // back to closing the downloads panel.
+                if self.close_top_modal().is_some() {
+                    self.cancel_pending();
+                    return Ok(());
+                }
+                self.close_detail_pane().await
+            }
             AppAction::DeletePost(id) => self.delete_post(id).await,
             AppAction::Mutate(mutation) => self.start_mutation(mutation, None).await,
             AppAction::Confirm => self.confirm_pending().await,
@@ -474,23 +485,41 @@ impl App {
 
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
         match command {
-            Command::Open => {
-                if let Some(modal) = &mut self.state.view.communities {
-                    // Enter in the community modal opens the selected
-                    // community's feed and closes the modal.
-                    let Some(id) = modal.selected_community() else {
+            Command::Open => match self.state.view.top_modal() {
+                Some(Modal::Communities(_)) => {
+                    // Enter in the community picker opens the selected
+                    // community's feed: pop the picker, dismiss any thread
+                    // underneath (its post belongs to the old feed), and load
+                    // the community.
+                    let Some(id) = self
+                        .state
+                        .view
+                        .top_modal_mut()
+                        .and_then(|modal| match modal {
+                            Modal::Communities(communities) => communities.selected_community(),
+                            _ => None,
+                        })
+                    else {
                         self.state.status.failure("no community selected");
                         return Ok(());
                     };
-                    self.state.view.communities = None;
+                    self.state.view.pop_modal();
+                    self.state.view.dismiss_threads();
                     return self.open_community(id).await;
                 }
-                if self.state.view.downloads_active() {
-                    return self.downloads_action(DownloadsAction::Reopen).await;
+                Some(_) => Ok(()), // Enter on a thread/help modal: nothing to open
+                None => {
+                    if self.state.view.downloads_active() {
+                        return self.downloads_action(DownloadsAction::Reopen).await;
+                    }
+                    self.open_selected().await
                 }
-                self.open_selected().await
-            }
+            },
             Command::OpenMedia => {
+                if self.state.view.has_modals() {
+                    // Media acts on the feed selection, which a modal hides.
+                    return Ok(());
+                }
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Reopen).await;
                 }
@@ -504,15 +533,16 @@ impl App {
                 Ok(())
             }
             Command::Back => {
-                if self.state.view.communities.is_some() {
-                    self.state.view.communities = None;
+                // Esc pops the focused modal; it also cancels a staged
+                // confirmation, matching the historical meaning of Esc.
+                if self.close_top_modal().is_some() {
+                    self.cancel_pending();
                     return Ok(());
                 }
                 self.close_detail_pane().await
             }
             Command::ClosePane => {
-                if self.state.view.communities.is_some() {
-                    self.state.view.communities = None;
+                if self.close_top_modal().is_some() {
                     return Ok(());
                 }
                 self.close_detail_pane().await
@@ -540,8 +570,13 @@ impl App {
                 Ok(())
             }
             Command::Refresh => {
-                if self.state.view.communities.is_some() {
-                    return self.refresh_communities().await;
+                match self.state.view.top_modal() {
+                    Some(Modal::Communities(_)) => return self.refresh_communities().await,
+                    Some(Modal::Thread(thread)) => {
+                        return self.refresh_thread_comments(thread.post.post.id).await;
+                    }
+                    Some(Modal::Help(_)) => return Ok(()),
+                    None => {}
                 }
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Retry).await;
@@ -549,50 +584,54 @@ impl App {
                 self.refresh_feed().await
             }
             Command::NextPage => {
-                // Feed pagination belongs to the feed pane: inert while the
-                // downloads panel is open or the thread pane has focus.
-                if self.state.view.downloads_active() || self.state.view.detail_open {
+                // Feed pagination belongs to the feed: inert while any modal
+                // is open or the downloads panel replaces the content.
+                if self.state.view.has_modals() || self.state.view.downloads_active() {
                     return Ok(());
                 }
                 self.next_page().await
             }
             Command::PreviousPage => {
-                if self.state.view.downloads_active() || self.state.view.detail_open {
+                if self.state.view.has_modals() || self.state.view.downloads_active() {
                     return Ok(());
                 }
                 self.previous_page().await
             }
             Command::MoveDown { count } => {
-                if let Some(modal) = &mut self.state.view.communities {
-                    modal.move_selection(count as isize);
-                    return Ok(());
+                match self.state.view.top_modal_mut() {
+                    Some(Modal::Thread(thread)) => {
+                        thread.scroll = thread.scroll.saturating_add(count as usize);
+                        return Ok(());
+                    }
+                    Some(Modal::Communities(communities)) => {
+                        communities.move_selection(count as isize);
+                        return Ok(());
+                    }
+                    Some(Modal::Help(_)) => return Ok(()),
+                    None => {}
                 }
-                // Opening the detail/thread pane focuses it: j/k then scroll
-                // the thread instead of moving the feed selection.
-                if self.state.view.detail_open {
-                    self.state.view.detail_scroll =
-                        self.state.view.detail_scroll.saturating_add(count as usize);
-                } else {
-                    self.move_selection(count as isize);
-                }
+                self.move_selection(count as isize);
                 Ok(())
             }
             Command::MoveUp { count } => {
-                if let Some(modal) = &mut self.state.view.communities {
-                    modal.move_selection(-(count as isize));
-                    return Ok(());
+                match self.state.view.top_modal_mut() {
+                    Some(Modal::Thread(thread)) => {
+                        thread.scroll = thread.scroll.saturating_sub(count as usize);
+                        return Ok(());
+                    }
+                    Some(Modal::Communities(communities)) => {
+                        communities.move_selection(-(count as isize));
+                        return Ok(());
+                    }
+                    Some(Modal::Help(_)) => return Ok(()),
+                    None => {}
                 }
-                if self.state.view.detail_open {
-                    self.state.view.detail_scroll =
-                        self.state.view.detail_scroll.saturating_sub(count as usize);
-                } else {
-                    self.move_selection(-(count as isize));
-                }
+                self.move_selection(-(count as isize));
                 Ok(())
             }
             Command::GoToFirst { count } => {
-                if let Some(modal) = &mut self.state.view.communities {
-                    modal.goto_first(count as usize);
+                if let Some(Modal::Communities(communities)) = self.state.view.top_modal_mut() {
+                    communities.goto_first(count as usize);
                     return Ok(());
                 }
                 // `gg` (or `N gg`) jumps to the Nth row; the default count
@@ -604,8 +643,8 @@ impl App {
                 Ok(())
             }
             Command::GoToLast { count } => {
-                if let Some(modal) = &mut self.state.view.communities {
-                    modal.goto_last(count as usize);
+                if let Some(Modal::Communities(communities)) = self.state.view.top_modal_mut() {
+                    communities.goto_last(count as usize);
                     return Ok(());
                 }
                 // `G` jumps to the last row; `N G` to the Nth row (clamped).
@@ -620,21 +659,17 @@ impl App {
                 Ok(())
             }
             Command::ScrollDetailDown { count } => {
-                if self.state.view.detail.is_some() {
-                    self.state.view.detail_scroll = self
-                        .state
-                        .view
-                        .detail_scroll
+                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                    thread.scroll = thread
+                        .scroll
                         .saturating_add(DETAIL_SCROLL_STEP * count as usize);
                 }
                 Ok(())
             }
             Command::ScrollDetailUp { count } => {
-                if self.state.view.detail.is_some() {
-                    self.state.view.detail_scroll = self
-                        .state
-                        .view
-                        .detail_scroll
+                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                    thread.scroll = thread
+                        .scroll
                         .saturating_sub(DETAIL_SCROLL_STEP * count as usize);
                 }
                 Ok(())
@@ -833,12 +868,12 @@ impl App {
         Ok(())
     }
 
-    /// `:communities` — open the community-list modal (toggles closed when
-    /// already open). Defaults to the subscribed communities when logged in,
-    /// otherwise the local ones.
+    /// `:communities` (or `C`) — push the community-list modal (toggles
+    /// closed when it is already the focused modal). Defaults to the
+    /// subscribed communities when logged in, otherwise the local ones.
     async fn communities_command(&mut self) -> Result<()> {
-        if self.state.view.communities.is_some() {
-            self.state.view.communities = None;
+        if matches!(self.state.view.top_modal(), Some(Modal::Communities(_))) {
+            self.state.view.pop_modal();
             return Ok(());
         }
         let listing = if self.state.active.session.is_some() {
@@ -846,13 +881,15 @@ impl App {
         } else {
             crate::api::FeedListing::Local
         };
-        self.state.view.communities = Some(state::CommunitiesModal::new(listing));
+        self.state
+            .view
+            .push_modal(Modal::Communities(state::CommunitiesModal::new(listing)));
         self.refresh_communities().await
     }
 
-    /// Fetch the community list for the modal's current listing.
+    /// Fetch the community list for the picker's current listing.
     async fn refresh_communities(&mut self) -> Result<()> {
-        let Some(modal) = self.state.view.communities.as_ref() else {
+        let Some(Modal::Communities(modal)) = self.state.view.top_modal() else {
             return Ok(());
         };
         let context = self.state.active.clone();
@@ -870,8 +907,8 @@ impl App {
         Ok(())
     }
 
-    /// `:sort <subscribed|local|all>` — switch which community list the modal
-    /// shows (the feed sort doesn't apply inside the modal).
+    /// `:sort <subscribed|local|all>` — switch which community list the
+    /// picker shows (the feed sort doesn't apply inside the modal).
     async fn sort_communities_command(&mut self, args: &[&str]) -> Result<()> {
         let [name] = args else {
             self.state
@@ -890,7 +927,7 @@ impl App {
                 return Ok(());
             }
         };
-        if let Some(modal) = &mut self.state.view.communities {
+        if let Some(Modal::Communities(modal)) = self.state.view.top_modal_mut() {
             modal.listing = listing;
         }
         self.refresh_communities().await?;
@@ -903,6 +940,20 @@ impl App {
         Ok(())
     }
 
+    /// Re-fetch the comments of the focused thread modal.
+    async fn refresh_thread_comments(&mut self, id: crate::PostId) -> Result<()> {
+        let context = self.state.active.clone();
+        let request = self.begin_request(RequestIdentity::Comments(id));
+        let result = self.repository.comments(&context, id).await;
+        self.apply_api_result(ApiResult::Comments {
+            profile: context.profile.id,
+            request,
+            post: id,
+            result,
+        });
+        Ok(())
+    }
+
     /// Lowercase label for a community listing, for status messages.
     fn listing_label(listing: crate::api::FeedListing) -> &'static str {
         match listing {
@@ -910,6 +961,26 @@ impl App {
             crate::api::FeedListing::Local => "local",
             crate::api::FeedListing::Subscribed => "subscribed",
         }
+    }
+
+    /// Pop the focused modal. Closing a thread also drops its in-flight
+    /// post/comment requests, so a stale result can never land in a later
+    /// thread for the same post.
+    fn close_top_modal(&mut self) -> Option<Modal> {
+        let post = match self.state.view.top_modal() {
+            Some(Modal::Thread(thread)) => Some(thread.post.post.id),
+            _ => None,
+        };
+        let popped = self.state.view.pop_modal();
+        if let Some(post) = post {
+            self.requests.retain(|identity, _| {
+                !matches!(
+                    identity,
+                    RequestIdentity::Post(id) | RequestIdentity::Comments(id) if *id == post
+                )
+            });
+        }
+        popped
     }
 
     async fn login_from_compose(&mut self) -> Result<()> {
@@ -1135,15 +1206,36 @@ impl App {
         let mut parts = trimmed.split_whitespace();
         let command = parts.next().unwrap_or_default();
         let args: Vec<&str> = parts.collect();
-        // While the community modal is open, only commands that belong to it
-        // run; everything else would act on the hidden feed underneath.
-        if self.state.view.communities.is_some()
-            && !matches!(command, "sort" | "communities" | "close" | "help" | "quit")
-        {
-            self.state
-                .status
-                .failure("close the communities list before using content commands");
-            return Ok(());
+        // While a modal is open, only commands that belong to it (or that
+        // deliberately replace the feed context) run; everything else would
+        // act on the hidden feed underneath. Navigation dismisses the thread
+        // view — its post belongs to the old feed context — while overlay
+        // modals (help, communities) stay.
+        if self.state.view.has_modals() {
+            match command {
+                // Modal lifecycle: these always work.
+                "communities" | "help" | "close" | "quit" => {}
+                // Navigation replaces the feed contents; the thread view goes
+                // with the old context.
+                "feed" | "subscribed" | "community" | "search" | "sort" => {
+                    self.state.view.dismiss_threads();
+                }
+                // Feed-post actions only make sense while the thread modal is
+                // on screen (its post is what you are looking at).
+                "post" | "open" | "media" | "download-media" | "download_media" | "reply"
+                | "edit" | "vote" | "save" | "subscribe" | "delete"
+                    if matches!(self.state.view.top_modal(), Some(Modal::Thread(_))) => {}
+                // Confirmations and account/profile commands never touch the
+                // hidden feed.
+                "confirm" | "yes" | "cancel" | "profile" | "profile-new" | "profile-delete"
+                | "login" | "logout" | "whoami" => {}
+                _ => {
+                    self.state
+                        .status
+                        .failure("close the open view (Esc) before using content commands");
+                    return Ok(());
+                }
+            }
         }
         let result = match command {
             "profile" => match args.as_slice() {
@@ -1205,7 +1297,10 @@ impl App {
                 });
                 Ok(())
             }
-            "close" => self.close_detail_pane().await,
+            "close" => {
+                self.close_top_modal();
+                self.close_detail_pane().await
+            }
             "set" => self.config_command(&args).await,
             "quit" => {
                 self.quit();
@@ -1281,7 +1376,7 @@ impl App {
                 self.communities_command().await
             }
             "sort" => {
-                if self.state.view.communities.is_some() {
+                if matches!(self.state.view.top_modal(), Some(Modal::Communities(_))) {
                     self.sort_communities_command(&args).await
                 } else {
                     self.sort_command(&args).await
@@ -1418,7 +1513,13 @@ impl App {
     }
 
     fn show_help(&mut self, query: Option<String>) {
-        self.state.view.help = Some(query.unwrap_or_default());
+        // Re-help replaces the help modal instead of stacking help on help.
+        if matches!(self.state.view.top_modal(), Some(Modal::Help(_))) {
+            self.state.view.pop_modal();
+        }
+        self.state
+            .view
+            .push_modal(Modal::Help(query.unwrap_or_default()));
         self.state
             .status
             .success("help: type :help <topic> to filter; Esc closes");
@@ -1668,21 +1769,13 @@ impl App {
             .or_else(|| (!self.state.view.posts.is_empty()).then_some(0));
     }
 
-    /// Collapse the detail/thread pane back to the content-only view, and
-    /// drop the loaded thread so no stale content can resurface. With the
-    /// downloads panel open this instead closes that panel (`Back` keeps
-    /// its existing meaning there).
+    /// Collapse the downloads panel (`Back` with no modal open keeps its
+    /// meaning there). Modals are popped by `Back`/`:close` directly.
     async fn close_detail_pane(&mut self) -> Result<()> {
         if self.state.view.downloads_active() {
             self.state.view.close_downloads_panel();
             return Ok(());
         }
-        self.invalidate_content_requests();
-        self.state.view.detail = None;
-        self.state.view.detail_open = false;
-        self.state.view.detail_scroll = 0;
-        self.state.view.help = None;
-        self.state.mode = Mode::Normal;
         self.cancel_pending();
         Ok(())
     }
@@ -1691,9 +1784,12 @@ impl App {
         let Some(id) = self.state.selected_post() else {
             return Ok(());
         };
-        // Split off the detail pane up front so the fetch is visible; the
-        // pane collapses again on `Back` or `:close`.
-        self.state.view.detail_open = true;
+        // Push the thread modal up front so the fetch is visible; the post
+        // result replaces the placeholder, comments fill it in. Esc pops it
+        // at any point.
+        self.state
+            .view
+            .push_modal(Modal::Thread(state::ThreadModal::empty()));
         let profile = self.state.active.profile.id.clone();
         let request = self.begin_request(RequestIdentity::Post(id));
         let result = self.repository.post(&self.state.active, id).await;
@@ -1703,7 +1799,7 @@ impl App {
             result,
         });
         // The thread lives on `comment/list`, not the post detail response;
-        // fetch it so the detail pane can render the full thread.
+        // fetch it so the thread modal can render the full thread.
         if self.state.selected_post() == Some(id) {
             let request = self.begin_request(RequestIdentity::Comments(id));
             let result = self.repository.comments(&self.state.active, id).await;
@@ -2266,14 +2362,6 @@ impl App {
         Ok(())
     }
 
-    fn invalidate_content_requests(&mut self) {
-        self.requests.retain(|identity, _| {
-            !matches!(
-                identity,
-                RequestIdentity::Post(_) | RequestIdentity::Comments(_)
-            )
-        });
-    }
     fn cancel_pending(&mut self) {
         let had_confirmation =
             self.state.pending.is_some() || self.state.status.confirmation_pending;
@@ -2420,8 +2508,20 @@ impl App {
                     if matches!(request.identity, RequestIdentity::Post(id) if id == detail.post.id)
                         && self.state.selected_post() == Some(detail.post.id) =>
                 {
-                    self.state.view.detail = Some(detail);
-                    self.state.view.detail_scroll = 0;
+                    // The post result fills the thread modal: it replaces the
+                    // placeholder pushed by `open_selected` (or an older
+                    // thread when a new post was opened on top of it).
+                    match self.state.view.top_modal_mut() {
+                        Some(Modal::Thread(thread)) => {
+                            thread.post = detail;
+                            thread.scroll = 0;
+                        }
+                        _ => {
+                            self.state
+                                .view
+                                .push_modal(Modal::Thread(state::ThreadModal::new(detail)));
+                        }
+                    }
                     self.state.mode = Mode::Normal;
                     self.state.status.success("post loaded");
                 }
@@ -2449,16 +2549,19 @@ impl App {
                             match mutation {
                                 Mutation::DeletePost(id) => {
                                     self.state.view.posts.retain(|candidate| candidate.id != id);
-                                    if self
-                                        .state
-                                        .view
-                                        .detail
-                                        .as_ref()
-                                        .is_some_and(|detail| detail.post.id == id)
-                                    {
-                                        self.state.view.detail = None;
-                                        self.state.mode = Mode::Normal;
-                                    }
+                                    // Deleting the post dismisses its thread.
+                                    self.state.view.modals.retain(|modal| {
+                                        !matches!(modal, Modal::Thread(thread) if thread.post.post.id == id)
+                                    });
+                                    self.requests.retain(|identity, _| {
+                                        !matches!(
+                                            identity,
+                                            RequestIdentity::Post(dropped)
+                                                | RequestIdentity::Comments(dropped)
+                                                if *dropped == id
+                                        )
+                                    });
+                                    self.state.mode = Mode::Normal;
                                     self.state.view.selected =
                                         self.state.view.selected.and_then(|selected| {
                                             if self.state.view.posts.is_empty() {
@@ -2469,8 +2572,10 @@ impl App {
                                         });
                                 }
                                 Mutation::DeleteComment(id) => {
-                                    if let Some(detail) = &mut self.state.view.detail {
-                                        detail.comments.retain(|comment| comment.id != id);
+                                    if let Some(Modal::Thread(thread)) =
+                                        self.state.view.top_modal_mut()
+                                    {
+                                        thread.post.comments.retain(|comment| comment.id != id);
                                     }
                                 }
                                 _ => {
@@ -2486,21 +2591,26 @@ impl App {
                                         } else if matches!(mutation, Mutation::CreatePost(_)) {
                                             self.state.view.posts.push(post.clone());
                                         }
-                                        if let Some(detail) = &mut self.state.view.detail
-                                            && detail.post.id == post.id
+                                        if let Some(Modal::Thread(thread)) =
+                                            self.state.view.top_modal_mut()
+                                            && thread.post.post.id == post.id
                                         {
-                                            detail.post = post;
+                                            thread.post.post = post;
                                         }
                                     } else if let Some(comment) = comment {
-                                        if let Some(detail) = &mut self.state.view.detail
-                                            && let Some(existing) = detail
+                                        if let Some(Modal::Thread(thread)) =
+                                            self.state.view.top_modal_mut()
+                                            && let Some(existing) = thread
+                                                .post
                                                 .comments
                                                 .iter_mut()
                                                 .find(|item| item.id == comment.id)
                                         {
                                             *existing = comment.clone();
-                                        } else if let Some(detail) = &mut self.state.view.detail {
-                                            detail.comments.push(comment);
+                                        } else if let Some(Modal::Thread(thread)) =
+                                            self.state.view.top_modal_mut()
+                                        {
+                                            thread.post.comments.push(comment);
                                         }
                                     }
                                 }
@@ -2522,17 +2632,15 @@ impl App {
                 ..
             } => {
                 if request.identity == RequestIdentity::Comments(post)
-                    && self
-                        .state
-                        .view
-                        .detail
-                        .as_ref()
-                        .is_some_and(|detail| detail.post.id == post)
+                    && matches!(
+                        self.state.view.top_modal(),
+                        Some(Modal::Thread(thread)) if thread.post.post.id == post
+                    )
                 {
                     match result {
                         Ok(comments) => {
-                            if let Some(detail) = &mut self.state.view.detail {
-                                detail.comments = comments;
+                            if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                                thread.post.comments = comments;
                             }
                             self.state.status.success("comments loaded");
                         }
@@ -2541,8 +2649,8 @@ impl App {
                 }
             }
             ApiResult::Communities { result, .. } => {
-                if self.state.view.communities.is_none() {
-                    // The modal was closed while the fetch was in flight;
+                if !matches!(self.state.view.top_modal(), Some(Modal::Communities(_))) {
+                    // The picker was closed while the fetch was in flight;
                     // keep the status clean.
                     return;
                 }
@@ -2551,9 +2659,12 @@ impl App {
                         let modal = self
                             .state
                             .view
-                            .communities
-                            .as_mut()
-                            .expect("modal presence checked above");
+                            .top_modal_mut()
+                            .and_then(|modal| match modal {
+                                Modal::Communities(communities) => Some(communities),
+                                _ => None,
+                            })
+                            .expect("picker presence checked above");
                         modal.communities = page.items;
                         modal.selected = (!modal.communities.is_empty()).then_some(0);
                         let (count, listing) = (modal.communities.len(), modal.listing);

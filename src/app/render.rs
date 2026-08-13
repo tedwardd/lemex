@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::help::{HelpIndex, contextual_help, mode_label};
-use super::state::CommunitiesModal;
+use super::state::{CommunitiesModal, Modal, ThreadModal};
 use super::{DownloadsRender, RenderModel};
 
 /// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
@@ -52,20 +52,29 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     .block(Block::default().borders(Borders::ALL).title("Session"));
     frame.render_widget(header, areas[0]);
 
-    // Help wins over the downloads panel: `:help` while the panel is open
-    // must still be visible (`render_content` shows help when `model.help`
-    // is set); the panel reappears once help is closed with `Esc`.
+    // The downloads panel replaces the content; modals then float over it.
     match &model.downloads {
-        Some(downloads) if model.help.is_none() => {
-            render_downloads(frame, areas.as_ref(), downloads)
-        }
-        _ => render_content(frame, areas.as_ref(), model),
+        Some(downloads) => render_downloads(frame, areas.as_ref(), downloads),
+        None => render_content(frame, areas[1], model),
     }
 
-    // The community list is a centered modal drawn on top of the primary
-    // content pane (the feed stays visible around its edges).
-    if let Some(modal) = &model.communities {
-        render_communities(frame, areas[1], modal);
+    // Every modal is a centered overlay drawn on top of the content, bottom
+    // of the stack first so the focused (last) modal renders on top. The
+    // depth is shown in the title once there is more than one.
+    let depth = model.modals.len();
+    for (index, modal) in model.modals.iter().enumerate() {
+        let suffix = if depth > 1 {
+            format!(" ({}/{depth})", index + 1)
+        } else {
+            String::new()
+        };
+        match modal {
+            Modal::Thread(thread) => render_thread(frame, areas[1], thread, &suffix),
+            Modal::Communities(communities) => {
+                render_communities(frame, areas[1], communities, &suffix)
+            }
+            Modal::Help(query) => render_help(frame, areas[1], query, &suffix),
+        }
     }
 
     let compose = Paragraph::new(if model.compose.is_empty() {
@@ -125,32 +134,9 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     frame.render_widget(status, areas[3]);
 }
 
-fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &RenderModel) {
-    // Help is its own overlay with a list plus a groups pane; it keeps the
-    // split regardless of the detail pane state.
-    if let Some(query) = &model.help {
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-            .split(areas[1]);
-        render_help(frame, body.as_ref(), query);
-        return;
-    }
-
-    // Content-only default: the feed takes the whole body. Opening a thread
-    // or `:media` splits the window and the detail/thread pane appears.
-    let split = model.detail_open;
-    let body = if split {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-            .split(areas[1])
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(100)])
-            .split(areas[1])
-    };
+fn render_content(frame: &mut Frame, content: ratatui::layout::Rect, model: &RenderModel) {
+    // The feed always takes the full content width; threads, the community
+    // picker, and help are centered modals drawn over it afterwards.
 
     let mut post_rows = model
         .posts
@@ -195,63 +181,80 @@ fn render_content(frame: &mut Frame, areas: &[ratatui::layout::Rect], model: &Re
     .highlight_symbol("▶ ");
     let mut table_state = TableState::default();
     table_state.select(selected_index(model));
-    frame.render_stateful_widget(table, body[0], &mut table_state);
-
-    if !split {
-        return;
-    }
-
-    let detail_text = match &model.detail {
-        Some(detail) => {
-            let mut lines = vec![Line::from(Span::styled(
-                detail.post.title.as_str(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ))];
-            if let Some(body) = &detail.post.body
-                && !body.is_empty()
-            {
-                lines.push(Line::from(""));
-                lines.push(Line::from(body.as_str()));
-            }
-            lines.push(Line::from(format!(
-                "Thread comments: {}",
-                detail.comments.len()
-            )));
-            // Blank lines separate comments; the score and author lead each
-            // comment so long content can never push them off the pane, and
-            // server-side ids stay out of the UI.
-            for comment in &detail.comments {
-                lines.push(Line::from(""));
-                lines.push(Line::from(format!(
-                    "[{}] {}:",
-                    comment.score, comment.creator_name
-                )));
-                lines.push(Line::from(comment.content.as_str()));
-            }
-            lines
-        }
-        None => vec![Line::from("No detail or thread selected")],
-    };
-    // Clamp the scroll offset so a short thread (or a very long scroll) can
-    // never leave blank space under the pane; wrapped lines are longer than
-    // the line count, so reaching the absolute bottom of a deeply wrapped
-    // comment may need one more Ctrl-d.
-    let pane_lines = body[1].height.saturating_sub(2) as usize;
-    let scroll = model
-        .detail_scroll
-        .min(detail_text.len().saturating_sub(pane_lines)) as u16;
-    let detail = Paragraph::new(detail_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Detail / thread"),
-        )
-        .wrap(Wrap { trim: false })
-        .scroll((scroll, 0));
-    frame.render_widget(detail, body[1]);
+    frame.render_stateful_widget(table, content, &mut table_state);
 }
 
-fn render_help(frame: &mut Frame, body: &[ratatui::layout::Rect], query: &str) {
+/// Center a modal box of `fraction` of the content pane's size, and blank
+/// its rect so the content underneath never shows through.
+fn modal_area(content: ratatui::layout::Rect, fraction: u16) -> ratatui::layout::Rect {
+    let width = (content.width * fraction / 10).clamp(40, 72);
+    let height = (content.height * fraction / 10).clamp(10, content.height);
+    let x = content.x + content.width.saturating_sub(width) / 2;
+    let y = content.y + content.height.saturating_sub(height) / 2;
+    ratatui::layout::Rect::new(x, y, width, height)
+}
+
+/// The thread view: the full post and its comments in a large centered box.
+fn render_thread(
+    frame: &mut Frame,
+    content: ratatui::layout::Rect,
+    thread: &ThreadModal,
+    depth: &str,
+) {
+    let area = modal_area(content, 9);
+    frame.render_widget(Clear, area);
+
+    let detail = &thread.post;
+    let mut lines = vec![Line::from(Span::styled(
+        detail.post.title.as_str(),
+        Style::default().add_modifier(Modifier::BOLD),
+    ))];
+    if let Some(body) = &detail.post.body
+        && !body.is_empty()
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::from(body.as_str()));
+    }
+    lines.push(Line::from(format!(
+        "Thread comments: {}",
+        detail.comments.len()
+    )));
+    // Blank lines separate comments; the score and author lead each comment
+    // so long content can never push them off the box, and server-side ids
+    // stay out of the UI.
+    for comment in &detail.comments {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "[{}] {}:",
+            comment.score, comment.creator_name
+        )));
+        lines.push(Line::from(comment.content.as_str()));
+    }
+    // Clamp the scroll offset so a short thread (or a very long scroll) can
+    // never leave blank space under the box; wrapped lines are longer than
+    // the line count, so reaching the absolute bottom of a deeply wrapped
+    // comment may need one more Ctrl-d.
+    let pane_lines = area.height.saturating_sub(2) as usize;
+    let scroll = thread.scroll.min(lines.len().saturating_sub(pane_lines)) as u16;
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(format!(
+            "Thread{depth} — j/k or Ctrl-d/u to scroll, Esc to close"
+        )))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, area);
+}
+
+fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, query: &str, depth: &str) {
+    // Help keeps its two-pane layout (index list + groups) inside one
+    // centered modal box.
+    let area = modal_area(content, 9);
+    frame.render_widget(Clear, area);
+    let body = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(area);
+
     let entries = HelpIndex::default().search(query);
     let items = entries
         .iter()
@@ -264,9 +267,9 @@ fn render_help(frame: &mut Frame, body: &[ratatui::layout::Rect], query: &str) {
         })
         .collect::<Vec<_>>();
     let title = if query.is_empty() {
-        "Help — all commands".to_owned()
+        format!("Help — all commands{depth}")
     } else {
-        format!("Help — \"{query}\"")
+        format!("Help — \"{query}\"{depth}")
     };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -381,12 +384,13 @@ fn render_downloads(
 /// Draw the community-list modal centered over the primary content pane.
 /// The box is 3/4 of the pane's width and height, so the feed stays visible
 /// around the edges while the list has room for its rows.
-fn render_communities(frame: &mut Frame, content: ratatui::layout::Rect, modal: &CommunitiesModal) {
-    let width = (content.width * 3 / 4).clamp(40, 64);
-    let height = (content.height * 3 / 4).clamp(10, content.height);
-    let x = content.x + content.width.saturating_sub(width) / 2;
-    let y = content.y + content.height.saturating_sub(height) / 2;
-    let area = ratatui::layout::Rect::new(x, y, width, height);
+fn render_communities(
+    frame: &mut Frame,
+    content: ratatui::layout::Rect,
+    modal: &CommunitiesModal,
+    depth: &str,
+) {
+    let area = modal_area(content, 7);
     // The modal floats over the feed: wipe its rect first so cells the
     // community list does not paint (empty space under the last row) are
     // blank instead of showing the primary content through.
@@ -427,9 +431,9 @@ fn render_communities(frame: &mut Frame, content: ratatui::layout::Rect, modal: 
             "(no communities yet — j/k to move, Enter to open, Esc to close)",
         ));
     }
-    let title = format!("Communities — {listing} (j/k: move, Enter: open, Esc: close)");
+    let title = format!("Communities — {listing}{depth} (j/k: move, Enter: open, Esc: close)");
     // Keep the selection visible, but never scroll content that already fits.
-    let visible_rows = height.saturating_sub(2) as usize;
+    let visible_rows = area.height.saturating_sub(2) as usize;
     let scroll = modal
         .selected
         .map(|selected| selected.saturating_sub(visible_rows.saturating_sub(1)))
@@ -532,12 +536,10 @@ mod tests {
             },
             session: None,
         };
-        RenderModel {
+        let mut model = RenderModel {
             mode: Mode::Normal,
             posts: Vec::new(),
             selected: None,
-            detail: None,
-            detail_open: false,
             compose: String::new(),
             search: String::new(),
             has_more: false,
@@ -547,10 +549,12 @@ mod tests {
                 selected: None,
                 records: Vec::new(),
             }),
-            communities: None,
-            help,
-            detail_scroll: 0,
+            modals: Vec::new(),
+        };
+        if let Some(query) = help {
+            model.modals.push(Modal::Help(query));
         }
+        model
     }
 
     fn rendered(model: &RenderModel) -> String {
@@ -585,17 +589,19 @@ mod tests {
             .draw(|frame| render(frame, &feed_model))
             .expect("render feed");
         let mut modal_model = feed_model.clone();
-        modal_model.communities = Some(CommunitiesModal {
-            communities: vec![crate::api::CommunityView {
-                id: crate::CommunityId(1),
-                name: "main".into(),
-                title: None,
-                subscribers: 1,
-                subscribed: false,
-            }],
-            listing: crate::api::FeedListing::Local,
-            selected: Some(0),
-        });
+        modal_model
+            .modals
+            .push(Modal::Communities(CommunitiesModal {
+                communities: vec![crate::api::CommunityView {
+                    id: crate::CommunityId(1),
+                    name: "main".into(),
+                    title: None,
+                    subscribers: 1,
+                    subscribed: false,
+                }],
+                listing: crate::api::FeedListing::Local,
+                selected: Some(0),
+            }));
         terminal
             .draw(|frame| render(frame, &modal_model))
             .expect("render modal");
@@ -614,7 +620,7 @@ mod tests {
     #[test]
     fn communities_modal_renders_centered_with_selection() {
         let mut model = model(None, false);
-        model.communities = Some(CommunitiesModal {
+        model.modals.push(Modal::Communities(CommunitiesModal {
             communities: vec![
                 crate::api::CommunityView {
                     id: crate::CommunityId(1),
@@ -633,7 +639,7 @@ mod tests {
             ],
             listing: crate::api::FeedListing::Local,
             selected: Some(1),
-        });
+        }));
         let text = rendered(&model);
         assert!(
             text.contains("Communities — Local"),
@@ -666,7 +672,7 @@ mod tests {
     #[test]
     fn subscribed_list_rows_carry_no_glyph() {
         let mut model = model(None, false);
-        model.communities = Some(CommunitiesModal {
+        model.modals.push(Modal::Communities(CommunitiesModal {
             communities: vec![crate::api::CommunityView {
                 id: crate::CommunityId(1),
                 name: "main".into(),
@@ -676,7 +682,7 @@ mod tests {
             }],
             listing: crate::api::FeedListing::Subscribed,
             selected: Some(0),
-        });
+        }));
         let text = rendered(&model);
         assert!(
             text.contains("main  (1200 subs)"),
@@ -790,7 +796,7 @@ mod tests {
     }
 
     #[test]
-    fn content_only_view_renders_the_feed_full_width() {
+    fn thread_renders_only_as_a_modal() {
         let mut model = model(None, false);
         model.posts = vec![crate::api::PostView {
             id: crate::PostId(1),
@@ -803,63 +809,65 @@ mod tests {
             comments: 7,
             published: None,
         }];
-        model.detail = Some(crate::api::PostDetail {
-            post: model.posts[0].clone(),
-            comments: Vec::new(),
-        });
         let text = rendered(&model);
         assert!(
-            !text.contains("Detail / thread"),
-            "the detail pane must not render while it is closed; rendered: {text}"
+            !text.contains("Thread"),
+            "no thread box without an open modal; rendered: {text}"
         );
         assert!(
             text.contains("Sole post"),
             "the feed must still render its posts; rendered: {text}"
         );
 
-        model.detail_open = true;
+        model
+            .modals
+            .push(Modal::Thread(ThreadModal::new(crate::api::PostDetail {
+                post: model.posts[0].clone(),
+                comments: Vec::new(),
+            })));
         let text = rendered(&model);
         assert!(
-            text.contains("Detail / thread"),
-            "opening the pane must split the window; rendered: {text}"
+            text.contains("Thread"),
+            "opening the thread must render the modal; rendered: {text}"
         );
     }
 
     #[test]
-    fn detail_shows_comment_scores_without_ids_and_with_spacing() {
+    fn thread_shows_comment_scores_without_ids_and_with_spacing() {
         let mut model = model(None, false);
-        model.detail_open = true;
-        model.detail = Some(crate::api::PostDetail {
-            post: crate::api::PostView {
-                id: crate::PostId(1),
-                title: "Threaded post".into(),
-                body: Some("The body".into()),
-                url: None,
-                community_id: crate::CommunityId(1),
-                creator_id: crate::UserId(1),
-                score: 12,
-                comments: 2,
-                published: None,
-            },
-            comments: vec![
-                crate::api::CommentView {
-                    id: crate::CommentId(10),
-                    post_id: crate::PostId(1),
-                    content: "A comment".into(),
-                    creator_id: crate::UserId(2),
-                    creator_name: "alice".into(),
-                    score: 3,
+        model
+            .modals
+            .push(Modal::Thread(ThreadModal::new(crate::api::PostDetail {
+                post: crate::api::PostView {
+                    id: crate::PostId(1),
+                    title: "Threaded post".into(),
+                    body: Some("The body".into()),
+                    url: None,
+                    community_id: crate::CommunityId(1),
+                    creator_id: crate::UserId(1),
+                    score: 12,
+                    comments: 2,
+                    published: None,
                 },
-                crate::api::CommentView {
-                    id: crate::CommentId(11),
-                    post_id: crate::PostId(1),
-                    content: "Another comment".into(),
-                    creator_id: crate::UserId(2),
-                    creator_name: "bob".into(),
-                    score: -1,
-                },
-            ],
-        });
+                comments: vec![
+                    crate::api::CommentView {
+                        id: crate::CommentId(10),
+                        post_id: crate::PostId(1),
+                        content: "A comment".into(),
+                        creator_id: crate::UserId(2),
+                        creator_name: "alice".into(),
+                        score: 3,
+                    },
+                    crate::api::CommentView {
+                        id: crate::CommentId(11),
+                        post_id: crate::PostId(1),
+                        content: "Another comment".into(),
+                        creator_id: crate::UserId(2),
+                        creator_name: "bob".into(),
+                        score: -1,
+                    },
+                ],
+            })));
         let text = rendered_at(&model, 140, 48);
         assert!(
             text.contains("[3] alice:") && text.contains("[-1] bob:"),
@@ -875,16 +883,15 @@ mod tests {
         );
         assert!(
             !text.contains("Post 1:"),
-            "the detail header must not expose the post id; rendered: {text}"
+            "the thread header must not expose the post id; rendered: {text}"
         );
         let count = text.matches("Thread comments: 2").count();
-        assert!(count >= 1, "detail must still report the thread size");
+        assert!(count >= 1, "the thread must still report its size");
     }
 
     #[test]
-    fn detail_scroll_shifts_content_above_the_fold() {
+    fn thread_scroll_shifts_content_above_the_fold() {
         let mut model = model(None, false);
-        model.detail_open = true;
         let comments = (0..8)
             .map(|index| crate::api::CommentView {
                 id: crate::CommentId(index + 1),
@@ -895,7 +902,7 @@ mod tests {
                 score: index,
             })
             .collect();
-        model.detail = Some(crate::api::PostDetail {
+        let mut thread = ThreadModal::new(crate::api::PostDetail {
             post: crate::api::PostView {
                 id: crate::PostId(1),
                 title: "Threaded post".into(),
@@ -909,12 +916,14 @@ mod tests {
             },
             comments,
         });
+        model.modals.push(Modal::Thread(thread.clone()));
         let at_top = rendered_at(&model, 140, 24);
         assert!(
             at_top.contains("Threaded post"),
             "the thread title is visible at the top"
         );
-        model.detail_scroll = 40;
+        thread.scroll = 40;
+        model.modals.push(Modal::Thread(thread));
         let scrolled = rendered_at(&model, 140, 24);
         assert!(
             !scrolled.contains("Threaded post"),

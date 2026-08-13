@@ -22,13 +22,13 @@ command/search line.
 | Key | Command | Purpose |
 | --- | --- | --- |
 | `h` / `l` | (bound, inert) | bound to `left`/`right`; no horizontal panes use them today, so they are no-ops |
-| `j` / `k` | move / scroll | move the selection; with the detail/thread pane open, scroll the thread instead (the pane takes focus) |
+| `j` / `k` | move / scroll | move the feed selection; with a thread modal open, scroll the thread instead (the focused modal takes the keys) |
 | `gg` / `G` | jump | jump to the top / bottom of the feed (`N gg` / `N G` jump to row N) |
 | `Enter` | open | open the selected post (or download) |
 | `o` | open media | open the selected post's media through the configured handler |
 | `C` | communities | open the community list (shortcut for `:communities`) |
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
-| `n` | next page | flip to the next feed page (replaces the list; feed pane focused) |
+| `n` | next page | flip to the next feed page (inert while a modal is open) |
 | `p` | previous page | flip back to the previous feed page |
 
 Feed pages are sized to the primary content pane: each fetch (first page,
@@ -39,7 +39,7 @@ fixed 20-post default is used.
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |
-| `Esc` | back / cancel | close the thread/pane, cancel the pending action, or back out |
+| `Esc` | back / cancel | pop the focused modal, cancel the pending action, or back out |
 | `i` | insert | enter Insert mode |
 | `v` | visual | enter Visual mode |
 | `:` | command | enter Command mode |
@@ -81,7 +81,7 @@ is being typed the password (the third token) is echoed as asterisks.
 | `:post` | open the selected post |
 | `:search <query>` | search posts (filters download history with the panel open) |
 | `:open` | open the selected post |
-| `:close` | close the detail/thread pane, returning to the content-only view |
+| `:close` | pop the focused modal (thread, communities, or help) |
 | `:refresh` | refresh the current view |
 | `:reply <text>` | reply to the selected post |
 | `:edit <title>` | retitle the selected post |
@@ -111,6 +111,31 @@ require an explicit confirmation before any network or filesystem activity.
 When a confirmation is pending, the status line shows
 `[PENDING] Confirmation required before network activity.`; confirm with
 `y` (or `:confirm`/`:yes`) and cancel with `Esc` (or `:cancel`).
+
+## Modals
+
+Threads, the community list, and help are **centered modals** drawn over the
+primary content (the feed stays visible around their edges). They stack
+bottom-to-top (at most three deep; the depth shows in the title as
+`(N/3)` when stacked), and the focused modal — the top of the stack — takes
+`j`/`k`, `gg`/`G`, `Enter`, and `Esc`:
+
+- `Enter` on a post opens the **thread modal** (the post and its comments;
+  `j`/`k` or `Ctrl-d`/`Ctrl-u` scroll it).
+- `C` / `:communities` opens the **community picker**; `Enter` opens the
+  selected community's feed and pops the picker.
+- `:help [topic]` opens **help** (re-help replaces the help modal instead of
+  stacking a second one).
+- `Esc` (`:close`) pops one level. `:help` above `C` above a thread is fine:
+  each `Esc` unwinds one of them.
+- **Navigation replaces the feed and dismisses the thread modal** — its post
+  belongs to the old feed context, so `:feed`, `:subscribed`, `:community`,
+  `:search`, `:sort`, and page flips never leave a stale thread on screen.
+  Overlay modals (help, the community picker) survive navigation.
+- While a modal is open, commands that would act on the hidden feed are
+  refused with `close the open view (Esc) before using content commands`;
+  actions on the post visible inside a thread modal (`:vote`, `:reply`,
+  `:save`, ...) keep working.
 
 ## Remapping
 

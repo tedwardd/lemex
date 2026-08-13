@@ -698,26 +698,35 @@ async fn stale_same_profile_post_result_is_rejected_by_request_token() {
     })))
     .await
     .unwrap();
-    assert_eq!(app.state.view.detail.clone().unwrap().post.title, "current");
+    let levim::app::Modal::Thread(thread) = app.state.view.top_modal().expect("thread modal opens")
+    else {
+        panic!("the post result must open a thread modal");
+    };
+    assert_eq!(thread.post.post.title, "current");
 }
 
 #[tokio::test]
-async fn stale_comments_for_old_post_do_not_overwrite_active_detail() {
+async fn stale_comments_for_old_post_do_not_overwrite_active_thread() {
     let mut app = fixture_app();
-    app.state.view.detail = Some(PostDetail {
-        post: PostView {
-            id: PostId(2),
-            title: "active".into(),
-            body: None,
-            url: None,
-            community_id: levim::CommunityId(1),
-            creator_id: levim::UserId(1),
-            score: 0,
-            comments: 0,
-            published: None,
-        },
-        comments: Vec::new(),
-    });
+    app.state
+        .view
+        .modals
+        .push(levim::app::Modal::Thread(levim::app::ThreadModal::new(
+            PostDetail {
+                post: PostView {
+                    id: PostId(2),
+                    title: "active".into(),
+                    body: None,
+                    url: None,
+                    community_id: levim::CommunityId(1),
+                    creator_id: levim::UserId(1),
+                    score: 0,
+                    comments: 0,
+                    published: None,
+                },
+                comments: Vec::new(),
+            },
+        )));
     let old = app.begin_request(RequestIdentity::Comments(PostId(1)));
     let comment = CommentView {
         id: levim::CommentId(1),
@@ -754,7 +763,10 @@ async fn back_invalidates_inflight_post_result() {
     })))
     .await
     .unwrap();
-    assert!(app.state.view.detail.is_none());
+    assert!(
+        !app.state.view.has_modals(),
+        "a post result arriving after Back must not open a thread"
+    );
 }
 
 #[tokio::test]
@@ -774,7 +786,10 @@ async fn post_result_requires_current_selected_post_context() {
     })))
     .await
     .unwrap();
-    assert!(app.state.view.detail.is_none());
+    assert!(
+        !app.state.view.has_modals(),
+        "a post result for a deselected post must not open a thread"
+    );
 }
 
 #[tokio::test]
@@ -782,16 +797,30 @@ async fn back_invalidates_inflight_comments_result() {
     let mut app = fixture_app();
     app.state.view.posts = vec![post_view(1, "one")];
     app.state.select(PostId(1));
-    app.state.view.detail = Some(PostDetail {
-        post: post_view(1, "one"),
-        comments: Vec::new(),
-    });
+    app.state
+        .view
+        .modals
+        .push(levim::app::Modal::Thread(levim::app::ThreadModal::new(
+            PostDetail {
+                post: post_view(1, "one"),
+                comments: Vec::new(),
+            },
+        )));
     let request = app.begin_request(RequestIdentity::Comments(PostId(1)));
     app.dispatch(AppAction::Back).await.unwrap();
-    app.state.view.detail = Some(PostDetail {
-        post: post_view(1, "reopened"),
-        comments: Vec::new(),
-    });
+    assert!(
+        !app.state.view.has_modals(),
+        "Back must close the thread modal"
+    );
+    app.state
+        .view
+        .modals
+        .push(levim::app::Modal::Thread(levim::app::ThreadModal::new(
+            PostDetail {
+                post: post_view(1, "reopened"),
+                comments: Vec::new(),
+            },
+        )));
     let comment = CommentView {
         id: levim::CommentId(1),
         post_id: PostId(1),
@@ -1198,18 +1227,25 @@ async fn opening_post_fetches_detail_and_thread_comments() {
     app.state.view.posts = vec![post_view(1, "Threaded post")];
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    let detail = app.state.view.detail.clone().expect("detail loads");
+    let levim::app::Modal::Thread(thread) = app
+        .state
+        .view
+        .top_modal()
+        .expect("opening a post pushes a thread modal")
+    else {
+        panic!("expected a thread modal");
+    };
     assert_eq!(
-        detail.post.body.as_deref(),
+        thread.post.post.body.as_deref(),
         Some("The full post body"),
-        "the post body must be part of the opened detail"
+        "the post body must be part of the opened thread"
     );
     assert_eq!(
-        detail.comments.len(),
+        thread.post.comments.len(),
         1,
         "opening a post must fetch the thread comments"
     );
-    assert_eq!(detail.comments[0].content, "A real comment");
+    assert_eq!(thread.post.comments[0].content, "A real comment");
     assert!(app.state.status.message.contains("comments loaded"));
     assert_eq!(api.post_calls.load(Ordering::SeqCst), 1);
     assert_eq!(api.comments_calls.load(Ordering::SeqCst), 1);
@@ -1443,7 +1479,10 @@ async fn page_flips_are_inert_while_the_thread_pane_is_focused() {
     app.state.view.next_page = Some("2".to_owned());
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    assert!(app.state.view.detail_open);
+    assert!(
+        app.state.view.has_modals(),
+        "opening a post focuses the thread modal"
+    );
 
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
@@ -1458,10 +1497,11 @@ async fn page_flips_are_inert_while_the_thread_pane_is_focused() {
         .unwrap();
     assert_eq!(api.first_page_calls.load(Ordering::SeqCst), 0);
 
-    // Closing the pane returns n/p to feed pagination.
+    // Closing the modal returns n/p to feed pagination.
     app.dispatch(AppAction::Input(Command::ClosePane))
         .await
         .unwrap();
+    assert!(!app.state.view.has_modals());
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
         .unwrap();
@@ -1502,30 +1542,33 @@ async fn detail_scroll_commands_move_and_clamp_the_offset() {
     app.state.view.posts = vec![post_view(1, "Threaded post")];
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    assert_eq!(app.state.view.detail_scroll, 0, "opening resets the scroll");
+    fn thread_scroll(app: &App) -> usize {
+        let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+            panic!("expected a thread modal");
+        };
+        thread.scroll
+    }
+    assert_eq!(thread_scroll(&app), 0, "opening resets the scroll");
 
     app.dispatch(AppAction::Input(Command::ScrollDetailDown { count: 2 }))
         .await
         .unwrap();
-    assert_eq!(app.state.view.detail_scroll, 20);
+    assert_eq!(thread_scroll(&app), 20);
     app.dispatch(AppAction::Input(Command::ScrollDetailUp { count: 1 }))
         .await
         .unwrap();
-    assert_eq!(app.state.view.detail_scroll, 10);
+    assert_eq!(thread_scroll(&app), 10);
     app.dispatch(AppAction::Input(Command::ScrollDetailUp { count: 9 }))
         .await
         .unwrap();
-    assert_eq!(
-        app.state.view.detail_scroll, 0,
-        "scrolling up clamps at zero"
-    );
+    assert_eq!(thread_scroll(&app), 0, "scrolling up clamps at zero");
 
-    // Without an open detail the scroll commands are inert.
+    // Without an open thread modal the scroll commands are inert.
     app.dispatch(AppAction::Back).await.unwrap();
     app.dispatch(AppAction::Input(Command::ScrollDetailDown { count: 1 }))
         .await
         .unwrap();
-    assert_eq!(app.state.view.detail_scroll, 0);
+    assert!(!app.state.view.has_modals());
 }
 
 #[tokio::test]
@@ -1553,25 +1596,36 @@ async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_clos
     // Opening the thread focuses the pane: j/k scroll it and leave the
     // feed selection untouched.
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    assert!(app.state.view.detail_open);
+    assert!(
+        app.state.view.has_modals(),
+        "opening a post focuses the thread modal"
+    );
     let selection_before = app.state.selected_index();
+    fn thread_scroll(app: &App) -> usize {
+        let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+            panic!("expected a thread modal");
+        };
+        thread.scroll
+    }
     app.dispatch(AppAction::Input(Command::MoveDown { count: 2 }))
         .await
         .unwrap();
     assert_eq!(
-        app.state.view.detail_scroll, 2,
+        thread_scroll(&app),
+        2,
         "j scrolls the thread down one line per count"
     );
     assert_eq!(
         app.state.selected_index(),
         selection_before,
-        "the feed selection is untouched while the pane is focused"
+        "the feed selection is untouched while the thread modal is focused"
     );
     app.dispatch(AppAction::Input(Command::MoveUp { count: 3 }))
         .await
         .unwrap();
     assert_eq!(
-        app.state.view.detail_scroll, 0,
+        thread_scroll(&app),
+        0,
         "k scrolls back up and clamps at zero"
     );
     assert_eq!(app.state.selected_index(), selection_before);
@@ -1587,18 +1641,21 @@ async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_clos
 }
 
 #[tokio::test]
-async fn detail_pane_is_closed_by_default_and_opens_with_a_thread() {
+async fn no_modals_by_default_and_a_thread_opens_one() {
     let mut app = fixture_app();
     assert!(
-        !app.state.view.detail_open,
-        "the detail pane must be collapsed by default"
+        !app.state.view.has_modals(),
+        "the content-only view must start without modals"
     );
     app.state.view.posts = vec![post_view(1, "Threaded post")];
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
     assert!(
-        app.state.view.detail_open,
-        "opening a thread must split off the detail pane"
+        matches!(
+            app.state.view.top_modal(),
+            Some(levim::app::Modal::Thread(_))
+        ),
+        "opening a thread must push a thread modal"
     );
 }
 
@@ -1608,20 +1665,25 @@ async fn close_restores_the_content_only_view() {
     app.state.view.posts = vec![post_view(1, "Threaded post")];
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    assert!(app.state.view.detail_open);
+    assert!(
+        app.state.view.has_modals(),
+        "opening a post focuses the thread modal"
+    );
 
-    // `:close` collapses the pane and drops the loaded thread.
+    // `:close` pops the thread modal and drops the loaded thread.
     app.dispatch(AppAction::Input(Command::SubmitLine("close".into())))
         .await
         .unwrap();
-    assert!(!app.state.view.detail_open, ":close collapses the pane");
-    assert!(app.state.view.detail.is_none(), ":close drops the thread");
+    assert!(!app.state.view.has_modals(), ":close pops the thread modal");
 
-    // Reopening splits again; Esc (`Back`) collapses it the same way.
+    // Reopening pushes again; Esc (`Back`) pops it the same way.
     app.dispatch(AppAction::OpenSelected).await.unwrap();
-    assert!(app.state.view.detail_open);
+    assert!(
+        app.state.view.has_modals(),
+        "opening a post focuses the thread modal"
+    );
     app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
-    assert!(!app.state.view.detail_open, "Back collapses the pane");
+    assert!(!app.state.view.has_modals(), "Back pops the thread modal");
     assert_eq!(app.state.mode, Mode::Normal);
 }
 
@@ -1653,8 +1715,8 @@ async fn media_command_keeps_the_content_only_view() {
         .await
         .unwrap();
     assert!(
-        !app.state.view.detail_open,
-        ":media spawns an external handler, so the detail pane must not appear"
+        !app.state.view.has_modals(),
+        ":media spawns an external handler, so no modal must appear"
     );
     assert!(
         app.state.status.message.contains("metadata only"),
@@ -1690,8 +1752,8 @@ async fn open_media_key_dispatches_the_media_command() {
         .await
         .unwrap();
     assert!(
-        !app.state.view.detail_open,
-        "the o key must not open the detail pane either"
+        !app.state.view.has_modals(),
+        "the o key must not open a modal either"
     );
     assert!(
         app.state.status.message.contains("metadata only"),
@@ -1753,10 +1815,15 @@ async fn confirmed_delete_removes_target_from_feed_and_cache() {
 #[tokio::test]
 async fn stale_comments_error_for_inactive_post_does_not_change_status() {
     let mut app = fixture_app();
-    app.state.view.detail = Some(PostDetail {
-        post: post_view(2, "active"),
-        comments: Vec::new(),
-    });
+    app.state
+        .view
+        .modals
+        .push(levim::app::Modal::Thread(levim::app::ThreadModal::new(
+            PostDetail {
+                post: post_view(2, "active"),
+                comments: Vec::new(),
+            },
+        )));
     app.state.status.success("active detail");
     let old = app.begin_request(RequestIdentity::Comments(PostId(1)));
     let _current = app.begin_request(RequestIdentity::Comments(PostId(2)));
@@ -2226,7 +2293,13 @@ async fn communities_modal_defaults_to_local_when_anonymous() {
         .await
         .unwrap();
 
-    assert!(app.state.view.communities.is_some(), "the modal must open");
+    assert!(
+        matches!(
+            app.state.view.top_modal(),
+            Some(levim::app::Modal::Communities(_))
+        ),
+        "the picker must open"
+    );
     {
         let queries = api.community_queries.lock();
         assert_eq!(queries.len(), 1, "the community list must be fetched");
@@ -2236,7 +2309,9 @@ async fn communities_modal_defaults_to_local_when_anonymous() {
             "anonymous opens the local list"
         );
     }
-    let modal = app.state.view.communities.as_ref().unwrap();
+    let levim::app::Modal::Communities(modal) = app.state.view.top_modal().unwrap() else {
+        panic!("expected the communities picker");
+    };
     assert_eq!(modal.communities.len(), 2);
     assert_eq!(modal.selected, Some(0), "the first row is selected");
     assert_eq!(
@@ -2297,7 +2372,10 @@ async fn sort_switches_the_communities_listing() {
         assert_eq!(queries[1].listing, levim::api::FeedListing::All);
     }
     assert_eq!(
-        app.state.view.communities.as_ref().unwrap().listing,
+        match app.state.view.top_modal().unwrap() {
+            levim::app::Modal::Communities(modal) => modal.listing,
+            _ => panic!("expected the communities picker"),
+        },
         levim::api::FeedListing::All
     );
 
@@ -2332,8 +2410,11 @@ async fn enter_in_communities_modal_opens_the_community_feed() {
     app.dispatch(AppAction::Input(Command::Open)).await.unwrap();
 
     assert!(
-        app.state.view.communities.is_none(),
-        "Enter must close the modal"
+        !matches!(
+            app.state.view.top_modal(),
+            Some(levim::app::Modal::Communities(_))
+        ),
+        "Enter must close the picker"
     );
     assert_eq!(
         app.state.view.feed_query.community,
@@ -2357,12 +2438,130 @@ async fn escape_closes_the_communities_modal() {
     app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
         .await
         .unwrap();
-    assert!(app.state.view.communities.is_some());
+    assert!(matches!(
+        app.state.view.top_modal(),
+        Some(levim::app::Modal::Communities(_))
+    ));
 
     app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
     assert!(
-        app.state.view.communities.is_none(),
-        "Esc must close the modal"
+        !matches!(
+            app.state.view.top_modal(),
+            Some(levim::app::Modal::Communities(_))
+        ),
+        "Esc must close the picker"
+    );
+}
+
+#[tokio::test]
+async fn switching_community_dismisses_the_open_thread() {
+    // The reported quirk: a thread from community A was left open when a new
+    // community's feed replaced the old one. Navigation must dismiss the
+    // thread modal so no stale comments survive the switch.
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(
+        matches!(
+            app.state.view.top_modal(),
+            Some(levim::app::Modal::Thread(_))
+        ),
+        "the thread modal opens"
+    );
+
+    // Pull up the communities picker (stacked above the thread), then open
+    // a new community.
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+    assert!(matches!(
+        app.state.view.top_modal(),
+        Some(levim::app::Modal::Communities(_))
+    ));
+    app.dispatch(AppAction::Input(Command::Open)).await.unwrap();
+
+    assert_eq!(
+        app.state.view.feed_query.community,
+        Some(levim::CommunityId(1)),
+        "the selected community loads"
+    );
+    assert!(
+        !app.state.view.has_modals(),
+        "the thread (and the picker) must be gone: no stale comments pane"
+    );
+}
+
+#[tokio::test]
+async fn navigation_dismisses_the_thread_but_keeps_overlay_modals() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+
+    // Help stacks above the thread.
+    app.dispatch(AppAction::Input(Command::SubmitLine("help".into())))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.modals.len(), 2, "help stacks on the thread");
+    assert!(matches!(
+        app.state.view.top_modal(),
+        Some(levim::app::Modal::Help(_))
+    ));
+
+    // Navigation dismisses the thread but leaves help (an overlay) open.
+    app.dispatch(AppAction::Input(Command::SubmitLine("feed".into())))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.modals.len(), 1, "only help survives");
+    assert!(matches!(
+        app.state.view.top_modal(),
+        Some(levim::app::Modal::Help(_))
+    ));
+
+    // Esc pops help; the feed is back to full content.
+    app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
+    assert!(!app.state.view.has_modals());
+    assert!(!app.state.view.posts.is_empty(), "the feed was refreshed");
+}
+
+#[tokio::test]
+async fn modal_stack_is_depth_capped() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    // `:help` replaces an existing help modal, so alternate modal kinds to
+    // force real stacking.
+    for index in 0..8 {
+        let command = if index % 2 == 0 {
+            "help"
+        } else {
+            "communities"
+        };
+        app.dispatch(AppAction::Input(Command::SubmitLine(command.into())))
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        app.state.view.modals.len(),
+        levim::app::state::MAX_MODALS,
+        "the stack never grows past the depth cap"
     );
 }
 
@@ -2822,9 +3021,18 @@ async fn help_command_opens_searchable_help_and_back_closes_it() {
     )))
     .await
     .unwrap();
-    assert_eq!(app.state.view.help.as_deref(), Some("downloads"));
+    assert_eq!(
+        match app.state.view.top_modal() {
+            Some(levim::app::Modal::Help(query)) => Some(query.as_str()),
+            _ => None,
+        },
+        Some("downloads")
+    );
     app.dispatch(AppAction::Back).await.unwrap();
-    assert!(app.state.view.help.is_none());
+    assert!(!matches!(
+        app.state.view.top_modal(),
+        Some(levim::app::Modal::Help(_))
+    ));
 }
 
 #[tokio::test]

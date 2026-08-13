@@ -265,26 +265,24 @@ fn opening_post_shows_thread_and_back_preserves_feed_position() {
 
     app.dispatch(AppAction::OpenSelected)
         .expect("open selected post");
-    let detail = app
-        .app
-        .state
-        .view
-        .detail
-        .clone()
-        .expect("post detail loads");
-    assert_eq!(detail.post.id, PostId(1));
+    let levim::app::Modal::Thread(thread) =
+        app.app.state.view.top_modal().expect("thread modal opens")
+    else {
+        panic!("opening a post must push a thread modal");
+    };
+    assert_eq!(thread.post.post.id, PostId(1));
     assert_eq!(
-        detail.comments.len(),
+        thread.post.comments.len(),
         1,
         "thread comment arrives via the comments fetch"
     );
-    assert_eq!(detail.comments[0].content, "Fixture comment");
+    assert_eq!(thread.post.comments[0].content, "Fixture comment");
     assert!(app.app.state.status.message.contains("comments loaded"));
 
     app.dispatch(AppAction::Back).expect("back to the feed");
     assert!(
-        app.app.state.view.detail.is_none(),
-        "back closes the thread"
+        !app.app.state.view.has_modals(),
+        "back closes the thread modal"
     );
     assert_eq!(
         app.app.state.view.posts.len(),

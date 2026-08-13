@@ -8,7 +8,7 @@ use std::{
 
 use super::actions::PendingAction;
 use crate::{
-    api::{CommentView, PostDetail, PostView},
+    api::{CommentView, PostView},
     cache::{CacheStore, Draft, DraftId},
     domain::{DownloadId, DownloadRecord, PostId, ProfileContext, ProfileId},
     error::Result,
@@ -18,11 +18,6 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct View {
     pub posts: Vec<PostView>,
-    pub detail: Option<PostDetail>,
-    /// Whether the detail/thread pane is split off from the primary content.
-    /// Closed by default so the feed gets the full width; opening a thread
-    /// or `:media` splits the window, `:close` collapses it again.
-    pub detail_open: bool,
     pub selected: Option<usize>,
     pub compose: String,
     pub stale: bool,
@@ -36,13 +31,11 @@ pub struct View {
     /// default); `:sort <name>` changes it and it sticks until the next
     /// `:sort`.
     pub feed_sort: String,
-    /// Open community-list modal, centered over the primary content.
-    pub communities: Option<CommunitiesModal>,
+    /// Open modals, bottom (index 0) to top (last). The last one has focus;
+    /// `Esc` pops one level. Threads, the community picker, and help all
+    /// live here instead of competing for a split pane.
+    pub modals: Vec<Modal>,
     pub downloads: Option<DownloadsPanel>,
-    /// Active help filter; `Some` shows the help index instead of content.
-    pub help: Option<String>,
-    /// Scroll offset (in lines) of the open detail/thread pane.
-    pub detail_scroll: usize,
 }
 
 /// Selection and search state for the session downloads panel.
@@ -52,15 +45,65 @@ pub struct DownloadsPanel {
     pub selected: Option<DownloadId>,
 }
 
-/// Open community-list modal (centered over the primary content). `None` in
-/// the view means closed. The modal fetches `community/list` for its listing
-/// on open and whenever `:sort` switches the listing.
+/// Open community-list modal (centered over the primary content). The modal
+/// fetches `community/list` for its listing on open and whenever `:sort`
+/// switches the listing.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CommunitiesModal {
     pub communities: Vec<crate::api::CommunityView>,
     pub listing: crate::api::FeedListing,
     pub selected: Option<usize>,
 }
+
+/// The thread view: a post and its comments, opened from the feed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ThreadModal {
+    pub post: crate::api::PostDetail,
+    /// Scroll offset (in lines) of the thread's content.
+    pub scroll: usize,
+}
+
+impl ThreadModal {
+    pub fn new(post: crate::api::PostDetail) -> Self {
+        Self { post, scroll: 0 }
+    }
+
+    /// Placeholder shown while the post fetch is in flight; the result
+    /// replaces it.
+    pub fn empty() -> Self {
+        Self::new(crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(0),
+                title: String::new(),
+                body: None,
+                url: None,
+                community_id: crate::CommunityId(0),
+                creator_id: crate::UserId(0),
+                score: 0,
+                comments: 0,
+                published: None,
+            },
+            comments: Vec::new(),
+        })
+    }
+}
+
+/// A transient overlay drawn over the primary content. Modals are stacked
+/// bottom (index 0) to top (last); the last one has focus and `Esc` pops one
+/// level. Opening beyond [`MAX_MODALS`] evicts the oldest.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Modal {
+    /// The thread view, opened from the feed. Contextual: any command that
+    /// replaces the feed contents dismisses it.
+    Thread(ThreadModal),
+    /// The community-list picker.
+    Communities(CommunitiesModal),
+    /// Searchable command help (the query filters the index).
+    Help(String),
+}
+
+/// Depth cap for the modal stack; deeper nesting is evicted oldest-first.
+pub const MAX_MODALS: usize = 3;
 
 impl CommunitiesModal {
     pub fn new(listing: crate::api::FeedListing) -> Self {
@@ -111,8 +154,6 @@ impl Default for View {
     fn default() -> Self {
         Self {
             posts: Vec::new(),
-            detail: None,
-            detail_open: false,
             selected: None,
             compose: String::new(),
             stale: false,
@@ -121,10 +162,8 @@ impl Default for View {
             feed_query: crate::api::FeedQuery::home(),
             search: String::new(),
             feed_sort: "Active".into(),
-            communities: None,
+            modals: Vec::new(),
             downloads: None,
-            help: None,
-            detail_scroll: 0,
         }
     }
 }
@@ -138,8 +177,6 @@ impl View {
 
     pub fn clear_profile_transient(&mut self) {
         self.posts.clear();
-        self.detail = None;
-        self.detail_open = false;
         self.selected = None;
         self.compose.clear();
         self.stale = false;
@@ -151,15 +188,49 @@ impl View {
         // still loads the new instance's feed sorted by New.
         self.feed_query.sort = self.feed_sort.clone();
         self.search.clear();
-        self.communities = None;
-        self.help = None;
+        self.modals.clear();
     }
 
+    pub fn has_modals(&self) -> bool {
+        !self.modals.is_empty()
+    }
+
+    /// The focused modal: the last entry in the stack.
+    pub fn top_modal(&self) -> Option<&Modal> {
+        self.modals.last()
+    }
+
+    pub fn top_modal_mut(&mut self) -> Option<&mut Modal> {
+        self.modals.last_mut()
+    }
+
+    /// Pop the focused modal, returning it.
+    pub fn pop_modal(&mut self) -> Option<Modal> {
+        self.modals.pop()
+    }
+
+    /// Push a modal on top, evicting the oldest when the stack is full.
+    pub fn push_modal(&mut self, modal: Modal) {
+        if self.modals.len() >= MAX_MODALS {
+            self.modals.remove(0);
+        }
+        self.modals.push(modal);
+    }
+
+    /// Dismiss every thread modal. Feed-navigation commands call this: a
+    /// thread belongs to the post that was selected in the feed, so changing
+    /// the feed must never leave the old thread visible.
+    pub fn dismiss_threads(&mut self) {
+        self.modals
+            .retain(|modal| !matches!(modal, Modal::Thread(_)));
+    }
+
+    /// The focused thread's comments, when a thread modal is on top.
     pub fn selected_comments(&self) -> &[CommentView] {
-        self.detail
-            .as_ref()
-            .map(|detail| detail.comments.as_slice())
-            .unwrap_or_default()
+        match self.top_modal() {
+            Some(Modal::Thread(thread)) => thread.post.comments.as_slice(),
+            _ => &[],
+        }
     }
 
     pub fn downloads_active(&self) -> bool {
@@ -500,20 +571,13 @@ pub struct RenderModel {
     pub mode: Mode,
     pub posts: Vec<PostView>,
     pub selected: Option<usize>,
-    pub detail: Option<PostDetail>,
-    /// Whether the detail/thread pane is split off from the primary content.
-    pub detail_open: bool,
     pub compose: String,
     pub search: String,
     pub has_more: bool,
     pub status: Status,
     pub downloads: Option<DownloadsRender>,
-    /// Open community-list modal, centered over the primary content.
-    pub communities: Option<CommunitiesModal>,
-    /// Active help filter shown in place of content.
-    pub help: Option<String>,
-    /// Scroll offset (in lines) of the open detail/thread pane.
-    pub detail_scroll: usize,
+    /// Open modals, bottom to top; the last is focused.
+    pub modals: Vec<Modal>,
 }
 
 /// Render snapshot of the downloads panel, populated by the application layer.
@@ -530,16 +594,12 @@ impl AppState {
             mode: self.mode,
             posts: self.view.posts.clone(),
             selected: self.view.selected,
-            detail: self.view.detail.clone(),
-            detail_open: self.view.detail_open,
             compose: self.view.compose.clone(),
             search: self.view.search.clone(),
             has_more: self.view.next_page.is_some(),
             status: self.status.clone(),
             downloads: None,
-            communities: self.view.communities.clone(),
-            help: self.view.help.clone(),
-            detail_scroll: self.view.detail_scroll,
+            modals: self.view.modals.clone(),
         }
     }
 }
