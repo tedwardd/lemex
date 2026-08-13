@@ -37,10 +37,11 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 
 ## Quick start
 
-1. Configure at least one profile in your config file
-   (see [Configuration](docs/configuration.md)) — the client refuses to
-   start with zero profiles. Once running, `:profile-new <id> <instance-url>`
-   adds further profiles.
+1. On the first run the client creates a starter config at
+   `~/.config/levim/config.toml` with one profile (a general instance);
+   edit it to point at your instance, or add profiles once running with
+   `:profile-new <id> <instance-url>`. See
+   [Configuration](docs/configuration.md) for details.
 2. Launch `levim`.
 3. `:feed` loads the home feed; `j`/`k` move, `n`/`p` flip pages, `Enter`
    opens a post (j/k then scroll the thread), `Esc` closes it.

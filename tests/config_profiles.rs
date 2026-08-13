@@ -93,6 +93,25 @@ fn temporary_directory() -> PathBuf {
 }
 
 #[test]
+fn starter_config_has_one_valid_profile_and_round_trips() {
+    let starter = AppConfig::starter();
+    assert_eq!(starter.profiles.len(), 1);
+    let profile = &starter.profiles[0];
+    assert_eq!(profile.id, ProfileId::from("main"));
+    assert!(matches!(profile.instance_url.scheme(), "https"));
+    assert!(profile.instance_url.host_str().is_some());
+    assert!(profile.account_label.is_none());
+
+    // The starter must serialize to a file the loader accepts unchanged, so
+    // the first-run write can never produce a config the client rejects.
+    let directory = temporary_directory();
+    let path = directory.join("config.toml");
+    starter.write_atomic(&path).unwrap();
+    assert_eq!(AppConfig::load(&path).unwrap(), starter);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn startup_action_round_trips_and_normalizes_colon() {
     let source =
         "startup = ':feed'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";

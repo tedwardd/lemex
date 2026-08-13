@@ -1,10 +1,12 @@
 # Configuration
 
 The client reads a TOML configuration file and keeps its runtime data in
-XDG-standard locations. At least one profile must exist in the config file
-before launch: the client refuses to start with zero profiles. Further
-profiles can be added from inside the TUI with
-`:profile-new <id> <instance-url>`.
+XDG-standard locations. On the first run (no config file yet) the client
+creates a starter config with one profile so it launches immediately; the
+status bar reports the created path. Edit that file to point at your
+instance, and add further profiles from inside the TUI with
+`:profile-new <id> <instance-url>`. A config file that exists but contains
+no profiles is still rejected at launch.
 
 ## Locations
 
@@ -144,10 +146,10 @@ persisted atomically before being applied.
 
 ## Troubleshooting
 
-- **No profiles configured** — the client refuses to start without at least
-  one profile. Add a `[[profiles]]` entry to the config file above and launch
-  again; once running, `:profile-new <id> <instance-url>` adds further
-  profiles.
+- **No profiles configured** — the config file exists but has no
+  `[[profiles]]` entry (first runs get a starter profile automatically).
+  Add one to the config file and launch again; once running,
+  `:profile-new <id> <instance-url>` adds further profiles.
 - **Login fails with a credential-store error** — the OS credential store is
   unavailable or locked. On Linux, start a Secret Service provider (for
   example `gnome-keyring` or `keepassxc` with Secret Service integration)

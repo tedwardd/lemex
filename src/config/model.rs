@@ -57,6 +57,22 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    /// Starter configuration for a first run: one profile on a general
+    /// instance, everything else at defaults. Written to the config path
+    /// when no config file exists, so a fresh install launches instead of
+    /// failing with a bare "no profiles" error. The user edits the instance
+    /// or adds profiles with `:profile-new`.
+    pub fn starter() -> Self {
+        Self {
+            profiles: vec![Profile {
+                id: ProfileId::from("main"),
+                instance_url: Url::parse("https://lemmy.world").expect("static instance URL"),
+                account_label: None,
+            }],
+            ..Default::default()
+        }
+    }
+
     pub fn from_toml(source: &str) -> Result<Self> {
         let raw: RawConfig = toml::from_str(source)
             .map_err(|error| AppError::Configuration(format!("invalid TOML: {error}")))?;

@@ -30,33 +30,37 @@ fn init_logging(config: &AppConfig) {
 
 async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     let path = config_path();
-    let first_run = !path.exists();
+    // First run (no config file yet): drop in a starter config with one
+    // profile so the client launches instead of failing; the user edits the
+    // instance or adds profiles with `:profile-new`.
+    let mut first_run_note = None;
     let config = if path.exists() {
         AppConfig::load(&path)?
     } else {
-        AppConfig::default()
+        let starter = AppConfig::starter();
+        match starter.write_atomic(&path) {
+            Ok(()) => {
+                first_run_note = Some(format!(
+                    "first run: created starter config at {} — edit it or use :profile-new to set your instance",
+                    path.display()
+                ));
+            }
+            Err(error) => {
+                first_run_note = Some(format!(
+                    "could not persist starter config ({error}); running with an in-memory starter profile"
+                ));
+            }
+        }
+        starter
     };
     init_logging(&config);
     let media = config.media.clone();
     let keymaps = config.keymaps.clone();
     let profile = config.profiles.into_iter().next().ok_or_else(|| {
-        // A fresh install has no config file at all; point at the exact path
-        // and give a copy-pasteable profile so the first launch succeeds
-        // instead of failing with a bare configuration error.
-        let first_run_hint = if first_run {
-            format!("no config file found at {} — first run? ", path.display())
-        } else {
-            format!("no profiles configured in {}", path.display())
-        };
         AppError::Configuration(format!(
-            "{first_run_hint}\n\
-             create a config file with at least one [[profiles]] entry, for example:\n\
-             \n\
-             [[profiles]]\n\
-             id = \"main\"\n\
-             instance_url = \"https://lemmy.example.com\"\n\
-             \n\
-             See the README (Configuration) for details."
+            "no profiles configured in {}\n\
+             add at least one [[profiles]] entry (id and instance_url); see the README (Configuration) for details.",
+            path.display()
         ))
     })?;
     let cache_root = config.cache.directory.unwrap_or_else(cache_dir);
@@ -84,17 +88,17 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
             None
         }
     };
-    Ok((
-        App::with_media(
-            Arc::new(api),
-            Arc::new(cache),
-            ProfileContext { profile, session },
-            credentials,
-            media,
-        ),
-        keymaps,
-        config.startup,
-    ))
+    let mut app = App::with_media(
+        Arc::new(api),
+        Arc::new(cache),
+        ProfileContext { profile, session },
+        credentials,
+        media,
+    );
+    if let Some(note) = first_run_note {
+        app.state.status.message = note;
+    }
+    Ok((app, keymaps, config.startup))
 }
 
 /// Non-interactive usage text printed for `levim --help`. The interactive
