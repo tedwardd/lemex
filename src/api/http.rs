@@ -304,9 +304,17 @@ impl LemmyApi for HttpLemmyApi {
             .get("name")
             .and_then(Value::as_str)
             .ok_or_else(|| AppError::Network("site: response did not contain site name".into()))?;
-        let version = site.get("version").and_then(Value::as_str).ok_or_else(|| {
-            AppError::Network("site: response did not contain site version".into())
-        })?;
+        // The Lemmy version is a top-level field of `GetSiteResponse`
+        // (`version`); some older shapes nested it inside `site_view.site`,
+        // so accept both. Reading the wrong location made the whole call
+        // error, which silently skipped the login user-id enrichment.
+        let version = response
+            .get("version")
+            .and_then(Value::as_str)
+            .or_else(|| site.get("version").and_then(Value::as_str))
+            .ok_or_else(|| {
+                AppError::Network("site: response did not contain site version".into())
+            })?;
         // The authenticated user's id lives in the `my_user` block, which the
         // server includes only when the request carries a session.
         let user_id = response
