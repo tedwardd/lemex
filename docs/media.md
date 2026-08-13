@@ -45,10 +45,17 @@ terminal capability check also passes, images are transmitted through the
 Kitty graphics protocol and rendered inline. This is strictly opt-in: the
 default configuration uses mailcap even when Kitty support is available.
 
-The capability check never passes inside tmux: tmux does not forward the
-graphics protocol, so even a tmux configured with `default-terminal
-xterm-kitty` falls back to mailcap instead of emitting escape sequences the
-pane would swallow.
+The capability check recognizes terminals that implement the protocol —
+Kitty (`TERM` containing `kitty` or `KITTY_WINDOW_ID` set) and Ghostty
+(`TERM` containing `ghostty` or `TERM_PROGRAM=Ghostty`) — and never passes
+inside tmux: tmux does not forward the graphics protocol, so even a tmux
+configured with `default-terminal xterm-kitty` falls back to mailcap instead
+of emitting escape sequences the pane would swallow.
+
+If `kitty_enabled` is on but the terminal is not recognized as
+graphics-capable, the fallback is not silent: the status line appends
+`(kitty requested but not available in this terminal)` to the mailcap or
+metadata-only result.
 
 ## tmux and SSH
 

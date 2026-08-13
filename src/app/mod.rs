@@ -1518,6 +1518,14 @@ impl App {
         let handler = self
             .media_policy
             .select(&media, &self.terminal_capabilities);
+        // When the user opted into kitty rendering but the terminal does not
+        // advertise the protocol (tmux, or a terminal without graphics
+        // support), say so instead of silently falling back.
+        let kitty_note = if self.media_policy.kitty_enabled && !self.terminal_capabilities.kitty {
+            " (kitty requested but not available in this terminal)"
+        } else {
+            ""
+        };
         match handler {
             MediaHandler::KittyInline => self.render_kitty(media, local).await,
             MediaHandler::Mailcap { command } | MediaHandler::External { command } => {
@@ -1556,13 +1564,13 @@ impl App {
                     None => OsStr::new(media.url.as_str()).to_os_string(),
                 };
                 match spawn_detached(&command, &source, &mime) {
-                    Ok(()) if is_ssh => self.state.status.success(
-                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal)",
-                    ),
+                    Ok(()) if is_ssh => self.state.status.success(format!(
+                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal){kitty_note}"
+                    )),
                     Ok(()) => self
                         .state
                         .status
-                        .success("opened media with external handler"),
+                        .success(format!("opened media with external handler{kitty_note}")),
                     Err(error) => self.state.status.failure(error.to_string()),
                 }
                 Ok(())
@@ -1570,9 +1578,9 @@ impl App {
             MediaHandler::MetadataOnly => {
                 let mime =
                     crate::media::resolve_mime(&media, None).unwrap_or_else(|| "unknown".into());
-                self.state
-                    .status
-                    .success(format!("no media handler for {mime}; metadata only"));
+                self.state.status.success(format!(
+                    "no media handler for {mime}; metadata only{kitty_note}"
+                ));
                 Ok(())
             }
         }

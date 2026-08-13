@@ -3,25 +3,40 @@ use std::{fs, path::Path};
 use crate::error::{AppError, Result};
 
 /// Detect whether the running terminal advertises Kitty graphics protocol
-/// support. This is a conservative environment check (the `TERM` value or the
-/// presence of `KITTY_WINDOW_ID`); it never writes to the terminal.
+/// support. This is a conservative environment check (the `TERM` value,
+/// `TERM_PROGRAM`, or the presence of `KITTY_WINDOW_ID`); it never writes to
+/// the terminal. Both Kitty and Ghostty advertise the graphics protocol;
+/// Ghostty neither names itself "kitty" in `TERM` nor sets
+/// `KITTY_WINDOW_ID`, so `TERM_PROGRAM` is checked too.
 pub fn detect_support() -> bool {
     detect_support_in(
         std::env::var("TERM").ok().as_deref(),
+        std::env::var("TERM_PROGRAM").ok().as_deref(),
         std::env::var_os("KITTY_WINDOW_ID").is_some(),
         std::env::var_os("TMUX").is_some(),
     )
 }
 
-/// Pure capability decision: Kitty graphics require a Kitty terminal, and
-/// tmux never forwards the graphics protocol — even a `TERM` that claims
-/// kitty (for example a `default-terminal xterm-kitty` tmux configuration)
-/// cannot render inline through a tmux pane.
-pub fn detect_support_in(term: Option<&str>, kitty_window_id: bool, tmux: bool) -> bool {
+/// Pure capability decision: Kitty graphics require a terminal that
+/// implements the protocol (Kitty or Ghostty), and tmux never forwards the
+/// graphics protocol — even a `TERM` that claims kitty (for example a
+/// `default-terminal xterm-kitty` tmux configuration) cannot render inline
+/// through a tmux pane.
+pub fn detect_support_in(
+    term: Option<&str>,
+    term_program: Option<&str>,
+    kitty_window_id: bool,
+    tmux: bool,
+) -> bool {
     if tmux {
         return false;
     }
-    term.is_some_and(|term| term.contains("kitty")) || kitty_window_id
+    let graphics_capable = term
+        .is_some_and(|term| term.contains("kitty") || term.contains("ghostty"))
+        || term_program.is_some_and(|program| {
+            program.eq_ignore_ascii_case("kitty") || program.eq_ignore_ascii_case("ghostty")
+        });
+    graphics_capable || kitty_window_id
 }
 
 /// Whether the host the client runs on has a display for external GUI
@@ -136,13 +151,36 @@ mod tests {
     #[test]
     fn kitty_is_unsupported_inside_tmux_even_with_a_kitty_term() {
         assert!(
-            !detect_support_in(Some("xterm-kitty"), true, true),
+            !detect_support_in(Some("xterm-kitty"), None, true, true),
             "tmux never forwards the graphics protocol"
         );
-        assert!(detect_support_in(Some("xterm-kitty"), false, false));
-        assert!(detect_support_in(None, true, false));
-        assert!(!detect_support_in(Some("screen-256color"), false, false));
-        assert!(!detect_support_in(None, false, false));
+        assert!(detect_support_in(Some("xterm-kitty"), None, false, false));
+        assert!(detect_support_in(None, None, true, false));
+        assert!(!detect_support_in(
+            Some("screen-256color"),
+            None,
+            false,
+            false
+        ));
+        assert!(!detect_support_in(None, None, false, false));
+    }
+
+    #[test]
+    fn ghostty_is_detected_as_graphics_capable() {
+        // Ghostty neither says "kitty" in TERM nor sets KITTY_WINDOW_ID, but
+        // it implements the kitty graphics protocol and advertises itself
+        // through TERM and TERM_PROGRAM.
+        assert!(detect_support_in(Some("xterm-ghostty"), None, false, false));
+        assert!(detect_support_in(
+            Some("xterm-256color"),
+            Some("Ghostty"),
+            false,
+            false
+        ));
+        assert!(
+            !detect_support_in(Some("xterm-256color"), Some("Ghostty"), false, true,),
+            "tmux still blocks Ghostty graphics"
+        );
     }
 
     #[test]
