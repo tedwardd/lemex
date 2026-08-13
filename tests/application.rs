@@ -1227,6 +1227,51 @@ impl LemmyApi for PagedFeedApi {
 }
 
 #[tokio::test]
+async fn gg_and_g_jump_to_the_top_and_bottom_of_the_feed() {
+    let api = Arc::new(PagedFeedApi::default());
+    let mut app = App::new(
+        api,
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = (1..=6).map(|id| post_view(id, "post")).collect();
+    app.state.view.selected = Some(2);
+
+    app.dispatch(AppAction::Input(Command::GoToFirst { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.selected, Some(0), "gg jumps to the top");
+    app.dispatch(AppAction::Input(Command::GoToLast { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.selected, Some(5), "G jumps to the bottom");
+    app.dispatch(AppAction::Input(Command::GoToLast { count: 3 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.selected, Some(2), "3G jumps to row 3");
+    app.dispatch(AppAction::Input(Command::GoToFirst { count: 9 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.selected,
+        Some(5),
+        "counts clamp to the last row"
+    );
+
+    // Empty feed: the jumps clear the selection instead of pointing nowhere.
+    app.state.view.posts.clear();
+    app.dispatch(AppAction::Input(Command::GoToLast { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.selected, None);
+    app.dispatch(AppAction::Input(Command::GoToFirst { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.selected, None);
+}
+
+#[tokio::test]
 async fn next_and_previous_page_flip_the_feed() {
     let api = Arc::new(PagedFeedApi::default());
     let mut app = App::new(

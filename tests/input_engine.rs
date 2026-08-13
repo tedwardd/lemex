@@ -63,6 +63,27 @@ fn ctrl_scroll_commands_apply_counts() {
 }
 
 #[test]
+fn gg_and_g_jump_to_the_top_and_bottom() {
+    let mut engine = InputEngine::default();
+    assert_eq!(engine.handle(key('g')), Command::Noop, "g waits for gg");
+    assert_eq!(engine.handle(key('g')), Command::GoToFirst { count: 1 });
+    assert_eq!(
+        InputEngine::default().handle(key('G')),
+        Command::GoToLast { count: 1 }
+    );
+}
+
+#[test]
+fn jump_commands_apply_counts() {
+    let mut engine = InputEngine::default();
+    engine.handle(key('5'));
+    engine.handle(key('g'));
+    assert_eq!(engine.handle(key('g')), Command::GoToFirst { count: 5 });
+    engine.handle(key('5'));
+    assert_eq!(engine.handle(key('G')), Command::GoToLast { count: 5 });
+}
+
+#[test]
 fn normal_j_moves_down_once() {
     let mut engine = InputEngine::default();
 

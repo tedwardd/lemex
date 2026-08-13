@@ -129,6 +129,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: "gg / G",
+        description: "jump to the top / bottom of the feed",
+        group: "navigation",
+    },
+    HelpEntry {
         command: "Ctrl-d / Ctrl-u",
         description: "scroll the open thread down/up",
         group: "navigation",

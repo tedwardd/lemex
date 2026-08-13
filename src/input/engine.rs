@@ -24,6 +24,8 @@ impl InputEngine {
         mappings.insert('j', Command::MoveDown { count: 1 });
         mappings.insert('k', Command::MoveUp { count: 1 });
         mappings.insert('l', Command::MoveRight { count: 1 });
+        mappings.insert("gg", Command::GoToFirst { count: 1 });
+        mappings.insert('G', Command::GoToLast { count: 1 });
         mappings.insert('r', Command::Refresh);
         mappings.insert('>', Command::NextPage);
         mappings.insert('<', Command::PreviousPage);
@@ -173,6 +175,8 @@ impl InputEngine {
             Command::MoveUp { .. } => Command::MoveUp { count },
             Command::MoveLeft { .. } => Command::MoveLeft { count },
             Command::MoveRight { .. } => Command::MoveRight { count },
+            Command::GoToFirst { .. } => Command::GoToFirst { count },
+            Command::GoToLast { .. } => Command::GoToLast { count },
             Command::EnterInsert => {
                 self.mode = Mode::Insert;
                 Command::EnterInsert

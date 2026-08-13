@@ -6,6 +6,14 @@ pub enum Command {
     MoveUp {
         count: u32,
     },
+    /// Jump to the top of the primary content (default key: `gg`).
+    GoToFirst {
+        count: u32,
+    },
+    /// Jump to the bottom of the primary content (default key: `G`).
+    GoToLast {
+        count: u32,
+    },
     MoveLeft {
         count: u32,
     },
@@ -52,6 +60,8 @@ impl Command {
         match name {
             "down" => Some(Command::MoveDown { count: 1 }),
             "up" => Some(Command::MoveUp { count: 1 }),
+            "go-to-first" | "top" => Some(Command::GoToFirst { count: 1 }),
+            "go-to-last" | "bottom" => Some(Command::GoToLast { count: 1 }),
             "left" => Some(Command::MoveLeft { count: 1 }),
             "right" => Some(Command::MoveRight { count: 1 }),
             "open" => Some(Command::Open),

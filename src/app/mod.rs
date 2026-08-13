@@ -479,6 +479,27 @@ impl App {
                 self.move_selection(-(count as isize));
                 Ok(())
             }
+            Command::GoToFirst { count } => {
+                // `gg` (or `N gg`) jumps to the Nth row; the default count
+                // of one lands on the first row. An empty feed clears the
+                // selection instead of pointing nowhere.
+                let last = self.state.view.posts.len().checked_sub(1);
+                self.state.view.selected =
+                    last.map(|last| (count.saturating_sub(1) as usize).min(last));
+                Ok(())
+            }
+            Command::GoToLast { count } => {
+                // `G` jumps to the last row; `N G` to the Nth row (clamped).
+                let last = self.state.view.posts.len().checked_sub(1);
+                self.state.view.selected = last.map(|last| {
+                    if count <= 1 {
+                        last
+                    } else {
+                        (count as usize).saturating_sub(1).min(last)
+                    }
+                });
+                Ok(())
+            }
             Command::ScrollDetailDown { count } => {
                 if self.state.view.detail.is_some() {
                     self.state.view.detail_scroll = self
