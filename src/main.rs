@@ -30,6 +30,7 @@ fn init_logging(config: &AppConfig) {
 
 async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     let path = config_path();
+    let first_run = !path.exists();
     let config = if path.exists() {
         AppConfig::load(&path)?
     } else {
@@ -39,7 +40,24 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     let media = config.media.clone();
     let keymaps = config.keymaps.clone();
     let profile = config.profiles.into_iter().next().ok_or_else(|| {
-        AppError::Configuration(format!("no profiles configured in {}", path.display()))
+        // A fresh install has no config file at all; point at the exact path
+        // and give a copy-pasteable profile so the first launch succeeds
+        // instead of failing with a bare configuration error.
+        let first_run_hint = if first_run {
+            format!("no config file found at {} — first run? ", path.display())
+        } else {
+            format!("no profiles configured in {}", path.display())
+        };
+        AppError::Configuration(format!(
+            "{first_run_hint}\n\
+             create a config file with at least one [[profiles]] entry, for example:\n\
+             \n\
+             [[profiles]]\n\
+             id = \"main\"\n\
+             instance_url = \"https://lemmy.example.com\"\n\
+             \n\
+             See the README (Configuration) for details."
+        ))
     })?;
     let cache_root = config.cache.directory.unwrap_or_else(cache_dir);
     fs::create_dir_all(&cache_root).map_err(|error| {

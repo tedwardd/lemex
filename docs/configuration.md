@@ -22,9 +22,10 @@ entries are evicted first); drafts are never evicted.
 ## Profiles — never store secrets here
 
 A profile is one instance/account pairing. Secrets — passwords and session
-tokens — are never written to the config file. Sessions are stored in the OS
-credential store (Linux Secret Service via `keyring`) and only after a
-successful `:login`; `:logout` deletes the stored session.
+tokens — are never written to the config file. Sessions are stored in the
+platform's native OS credential store (Linux Secret Service, macOS Keychain,
+or Windows Credential Manager via `keyring`) and only after a successful
+`:login`; `:logout` deletes the stored session.
 
 ```toml
 [[profiles]]
@@ -147,9 +148,10 @@ persisted atomically before being applied.
   one profile. Add a `[[profiles]]` entry to the config file above and launch
   again; once running, `:profile-new <id> <instance-url>` adds further
   profiles.
-- **Login fails with a credential-store error** — the OS secret service is
-  unavailable. Start a secret service (for example `gnome-keyring` or
-  `keepassxc` with Secret Service integration) and try again.
+- **Login fails with a credential-store error** — the OS credential store is
+  unavailable or locked. On Linux, start a Secret Service provider (for
+  example `gnome-keyring` or `keepassxc` with Secret Service integration)
+  and unlock it; on macOS, unlock the Keychain — then try again.
 - **Media does not open** — confirm the MIME type resolves (see
   [Media](media.md)); with mailcap disabled and no explicit handler, media is
   reported as metadata-only by design.
