@@ -1463,6 +1463,47 @@ impl App {
         self.open_media(media, None).await
     }
 
+    /// Fetch the media to a scratch file for an external handler, which
+    /// cannot open remote URLs. Reuses the session download manager, so the
+    /// transfer is cancellable and shows up in the downloads panel; on
+    /// failure a status message is set and `None` is returned.
+    async fn download_for_handler(&mut self, media: &MediaRef) -> Option<PathBuf> {
+        let scratch = std::env::temp_dir().join(filename_for(media));
+        let request = DownloadRequest {
+            media: media.clone(),
+            profile: self.state.active.profile.id.clone(),
+            instance_url: self.state.active.profile.instance_url.clone(),
+            destination: scratch,
+            collision: CollisionPolicy::UniqueName,
+        };
+        let id = match self.downloads.start(request).await {
+            Ok(id) => id,
+            Err(error) => {
+                self.state.status.failure(error.to_string());
+                return None;
+            }
+        };
+        match tokio::time::timeout(Duration::from_secs(30), self.downloads.wait_for(id)).await {
+            Ok(DownloadStatus::Completed) => match self.downloads.history().get(id) {
+                Some(record) => Some(record.local_path),
+                None => {
+                    self.state.status.failure("media download vanished");
+                    None
+                }
+            },
+            Ok(status) => {
+                self.state
+                    .status
+                    .failure(format!("media download did not complete ({status})"));
+                None
+            }
+            Err(_) => {
+                self.state.status.failure("media download timed out");
+                None
+            }
+        }
+    }
+
     async fn download_media_selected(&mut self) -> Result<()> {
         let Some(media) = self.selected_media() else {
             self.state.status.failure("selected post has no media URL");
@@ -1508,8 +1549,9 @@ impl App {
         }
     }
 
-    /// Open media through the selected handler. `local` is the downloaded file
-    /// when reopening a record; otherwise the source URL is passed.
+    /// Open media through the selected handler. `local` is the downloaded
+    /// file when reopening a record; otherwise the media is downloaded to a
+    /// scratch file so the handler always receives a local path.
     async fn open_media(&mut self, media: MediaRef, local: Option<PathBuf>) -> Result<()> {
         // Lemmy media URLs often carry no file extension (`image_proxy`
         // rewrites), so the MIME type must come from the resource itself.
@@ -1558,11 +1600,17 @@ impl App {
                     return Ok(());
                 }
                 let mime = crate::media::resolve_mime(&media, None).unwrap_or_default();
+                // Handlers open local files, not URLs (imv/feh/zathura
+                // cannot fetch); download the media to a scratch file first
+                // unless a local path was already supplied.
                 let source = match local {
-                    Some(path) => path.into_os_string(),
-                    None => OsStr::new(media.url.as_str()).to_os_string(),
+                    Some(path) => path,
+                    None => match self.download_for_handler(&media).await {
+                        Some(path) => path,
+                        None => return Ok(()),
+                    },
                 };
-                match spawn_detached(&command, &source, &mime) {
+                match spawn_detached(&command, source.as_os_str(), &mime) {
                     Ok(()) if is_ssh => self.state.status.success(
                         "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal)",
                     ),

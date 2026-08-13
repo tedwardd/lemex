@@ -658,6 +658,55 @@ fn extensionless_media_url_is_probed_for_its_mime_type() {
     );
 }
 
+/// Media handlers receive a local file, never the remote URL: `:media` on a
+/// loopback-served image must download it to a scratch file first, then
+/// spawn the handler with that path (imv/feh/zathura cannot fetch URLs, and
+/// a URL argument leaves imv with a blank window).
+#[test]
+fn media_handlers_receive_a_local_file() {
+    let port = spawn_http_server(b"fixture media bytes".to_vec(), "image/png");
+    let media_url = Url::parse(&format!("http://127.0.0.1:{port}/pic.png")).unwrap();
+    let destination =
+        std::env::temp_dir().join(format!("lemmy-handler-copy-{}.png", std::process::id()));
+    let _ = std::fs::remove_file(&destination);
+    let media = MediaConfig {
+        handlers: HashMap::from([(
+            "image/png".to_owned(),
+            format!("cp %s {}", destination.display()),
+        )]),
+        ..Default::default()
+    };
+    let runtime = support::runtime();
+    let api = support::api(&runtime, || fixture_api_with_body("{}"));
+    let mut app =
+        FixtureApp::with_runtime(runtime, "media-local", api, anonymous_context(), media, &[]);
+    let mut engine = InputEngine::new();
+    app.app.state.view.posts = vec![post_view(1, "Media post", Some(media_url))];
+    app.app.state.view.selected = Some(0);
+
+    app.command(&mut engine, "media").expect("open media");
+    assert!(
+        app.app.state.status.message.contains("external handler"),
+        "the handler runs after the download, got {:?}",
+        app.app.state.status.message
+    );
+    // The handler is spawned detached, so poll for the copy.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        match std::fs::read(&destination) {
+            Ok(bytes) if bytes == b"fixture media bytes" => break,
+            _ if std::time::Instant::now() >= deadline => {
+                panic!(
+                    "the handler never copied the downloaded file to {}",
+                    destination.display()
+                );
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let _ = std::fs::remove_file(&destination);
+}
+
 /// Media download and history inspection: `:download-media` fetches through a
 /// loopback server, the session downloads panel shows the completed record
 /// and filters it, a confirmed delete removes the local file, and quitting
