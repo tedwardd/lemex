@@ -8,7 +8,7 @@ pub mod state;
 const DETAIL_SCROLL_STEP: usize = 10;
 
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     ffi::OsStr,
     io::Write,
     path::{Path, PathBuf},
@@ -241,6 +241,9 @@ pub struct App {
     requests: HashMap<RequestIdentity, RequestToken>,
     next_generation: u64,
     downloads: DownloadManager,
+    /// Download ids created to serve external media handlers; their files
+    /// live in the temp directory and are removed when the client exits.
+    scratch_downloads: HashSet<crate::domain::DownloadId>,
     media_policy: MediaPolicyConfig,
     collision_policy: CollisionPolicy,
     /// Latest terminal size: height sizes feed pages to the primary pane.
@@ -310,12 +313,40 @@ impl App {
             requests: HashMap::new(),
             next_generation: 0,
             downloads: DownloadManager::new(downloads_directory),
+            scratch_downloads: HashSet::new(),
             media_policy,
             collision_policy,
             terminal_width: 0,
             terminal_height: 0,
             quit: false,
         }
+    }
+
+    /// Best-effort removal of completed scratch files created for external
+    /// media handlers. In-flight downloads keep their `.part` handling in
+    /// `DownloadManager::shutdown`. The handler may still be showing the
+    /// file, but the session is ending, so the temp file's purpose is over.
+    fn remove_scratch_files(&mut self) {
+        let paths = self
+            .scratch_downloads
+            .iter()
+            .filter_map(|id| self.downloads.history().get(*id))
+            .filter(|record| {
+                record.status == DownloadStatus::Completed && !record.local_file_deleted
+            })
+            .map(|record| record.local_path.clone())
+            .collect::<Vec<_>>();
+        for path in paths {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    /// Quit the client: remove scratch media files, shut down the download
+    /// manager, and set the quit flag. Every quit path funnels through here.
+    fn quit(&mut self) {
+        self.remove_scratch_files();
+        self.downloads.shutdown();
+        self.quit = true;
     }
 
     /// Page size for the current terminal: exactly what fits the primary
@@ -425,8 +456,7 @@ impl App {
                 Ok(())
             }
             AppAction::Quit => {
-                self.downloads.shutdown();
-                self.quit = true;
+                self.quit();
                 Ok(())
             }
         }
@@ -449,8 +479,7 @@ impl App {
             Command::Back => self.close_detail_pane().await,
             Command::ClosePane => self.close_detail_pane().await,
             Command::Quit => {
-                self.downloads.shutdown();
-                self.quit = true;
+                self.quit();
                 Ok(())
             }
             Command::Confirm => {
@@ -972,8 +1001,7 @@ impl App {
             "close" => self.close_detail_pane().await,
             "set" => self.config_command(&args).await,
             "quit" => {
-                self.downloads.shutdown();
-                self.quit = true;
+                self.quit();
                 Ok(())
             }
             "feed" if !self.state.view.downloads_active() => {
@@ -1483,6 +1511,9 @@ impl App {
                 return None;
             }
         };
+        // The file is session-scratch: it is removed when the client exits
+        // (and on failure paths via `Drop`), not left in the temp directory.
+        self.scratch_downloads.insert(id);
         match tokio::time::timeout(Duration::from_secs(30), self.downloads.wait_for(id)).await {
             Ok(DownloadStatus::Completed) => match self.downloads.history().get(id) {
                 Some(record) => Some(record.local_path),
@@ -2244,7 +2275,10 @@ impl Drop for App {
         // Guarantee in-flight downloads are aborted and their temp files
         // removed on every exit path (quit action, error return, or an
         // action task aborted mid-dispatch), not only on the explicit
-        // `AppAction::Quit` path.
+        // `AppAction::Quit` path. Scratch media files are removed too; a
+        // second removal after `quit()` is a harmless no-op (files are
+        // already gone and the history was cleared).
+        self.remove_scratch_files();
         self.downloads.shutdown();
     }
 }

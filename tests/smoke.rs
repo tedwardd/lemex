@@ -704,6 +704,33 @@ fn media_handlers_receive_a_local_file() {
             _ => std::thread::sleep(std::time::Duration::from_millis(20)),
         }
     }
+
+    // The scratch download (in the temp directory) survives while the
+    // session is live, then is removed when the client quits.
+    app.dispatch(AppAction::ShowDownloads)
+        .expect("open the downloads panel");
+    let scratch = app
+        .model()
+        .downloads
+        .expect("the downloads panel renders")
+        .records
+        .iter()
+        .find(|record| record.local_path.starts_with(std::env::temp_dir()))
+        .expect("the handler download is recorded")
+        .local_path
+        .clone();
+    assert!(
+        scratch.exists(),
+        "the scratch file exists while the session is live: {}",
+        scratch.display()
+    );
+    app.dispatch(AppAction::Quit).expect("quit");
+    assert!(
+        !scratch.exists(),
+        "quit must remove scratch media files: {}",
+        scratch.display()
+    );
+
     let _ = std::fs::remove_file(&destination);
 }
 
