@@ -202,6 +202,42 @@ fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatu
     ratatui::layout::Rect::new(x, y, width, height)
 }
 
+/// Modal accent: borders and titles. A distinct accent makes an open modal
+/// read as an overlay instead of blending into the content behind it.
+const MODAL_ACCENT: Color = Color::Cyan;
+/// Modal surface: the box interior's background. A solid mid-tone keeps the
+/// modal readable and separates it from the feed on any terminal theme —
+/// without a surface, an overlay is indistinguishable from the content.
+const MODAL_SURFACE: Color = Color::Gray;
+
+/// Paint a modal's surface and chrome (Clear, then a background-filled block
+/// with accent borders and title) and return the interior rect plus the
+/// surface style the content widget must carry so no holes show through.
+fn modal_chrome(
+    frame: &mut Frame,
+    area: ratatui::layout::Rect,
+    title: String,
+) -> (ratatui::layout::Rect, Style) {
+    frame.render_widget(Clear, area);
+    let surface = Style::default().bg(MODAL_SURFACE);
+    let accent = Style::default().fg(MODAL_ACCENT);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(accent)
+            .title(Span::styled(title, accent.add_modifier(Modifier::BOLD)))
+            .style(surface),
+        area,
+    );
+    (
+        area.inner(ratatui::layout::Margin {
+            horizontal: 1,
+            vertical: 1,
+        }),
+        surface,
+    )
+}
+
 /// The thread view: the full post and its comments in a large centered box.
 fn render_thread(
     frame: &mut Frame,
@@ -210,7 +246,11 @@ fn render_thread(
     depth: &str,
 ) {
     let area = modal_area(content, 9, 9);
-    frame.render_widget(Clear, area);
+    let (inner, surface) = modal_chrome(
+        frame,
+        area,
+        format!("Thread{depth} — j/k or Ctrl-d/u to scroll, Esc to close"),
+    );
 
     let detail = &thread.post;
     let mut lines = vec![Line::from(Span::styled(
@@ -242,15 +282,14 @@ fn render_thread(
     // never leave blank space under the box; wrapped lines are longer than
     // the line count, so reaching the absolute bottom of a deeply wrapped
     // comment may need one more Ctrl-d.
-    let pane_lines = area.height.saturating_sub(2) as usize;
-    let scroll = thread.scroll.min(lines.len().saturating_sub(pane_lines)) as u16;
+    let scroll = thread
+        .scroll
+        .min(lines.len().saturating_sub(inner.height as usize)) as u16;
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(format!(
-            "Thread{depth} — j/k or Ctrl-d/u to scroll, Esc to close"
-        )))
+        .style(surface)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpModal, depth: &str) {
@@ -259,7 +298,12 @@ fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpMod
     // pane. The group list is folded into the footer; `:help <group>`
     // still filters by it. The box floats at 90% — never full size.
     let area = modal_area(content, 9, 9);
-    frame.render_widget(Clear, area);
+    let title = if help.query.is_empty() {
+        format!("Help — all commands{depth} (j/k: scroll, Esc: close)")
+    } else {
+        format!("Help — \"{}\"{depth} (j/k: scroll, Esc: close)", help.query)
+    };
+    let (inner, surface) = modal_chrome(frame, area, title);
 
     let entries = HelpIndex::default().search(&help.query);
     let mut lines: Vec<Line> = Vec::with_capacity(entries.len() + 3);
@@ -289,18 +333,14 @@ fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpMod
     // Clamp the scroll so a short index (or a long scroll) never leaves
     // blank space under the box; wrapped lines are taller than the line
     // count, so reaching the bottom may need one more j.
-    let pane_lines = area.height.saturating_sub(2) as usize;
-    let scroll = help.scroll.min(lines.len().saturating_sub(pane_lines)) as u16;
-    let title = if help.query.is_empty() {
-        format!("Help — all commands{depth} (j/k: scroll, Esc: close)")
-    } else {
-        format!("Help — \"{}\"{depth} (j/k: scroll, Esc: close)", help.query)
-    };
+    let scroll = help
+        .scroll
+        .min(lines.len().saturating_sub(inner.height as usize)) as u16;
     let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
+        .style(surface)
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, inner);
 }
 
 fn render_downloads(
@@ -393,16 +433,14 @@ fn render_communities(
     depth: &str,
 ) {
     let area = modal_area(content, 7, 7);
-    // The modal floats over the feed: wipe its rect first so cells the
-    // community list does not paint (empty space under the last row) are
-    // blank instead of showing the primary content through.
-    frame.render_widget(Clear, area);
-
     let listing = match modal.listing {
         crate::api::FeedListing::All => "All",
         crate::api::FeedListing::Local => "Local",
         crate::api::FeedListing::Subscribed => "Subscribed",
     };
+    let title = format!("Communities — {listing}{depth} (j/k: move, Enter: open, Esc: close)");
+    let (inner, surface) = modal_chrome(frame, area, title);
+
     let mut lines: Vec<Line> = Vec::with_capacity(modal.communities.len());
     for (index, community) in modal.communities.iter().enumerate() {
         // Just the name and the subscriber count. A subscribed community gets
@@ -421,7 +459,10 @@ fn render_communities(
         let line = if Some(index) == modal.selected {
             Line::from(Span::styled(
                 row,
-                Style::default().add_modifier(Modifier::REVERSED),
+                Style::default()
+                    .fg(MODAL_SURFACE)
+                    .bg(MODAL_ACCENT)
+                    .add_modifier(Modifier::BOLD),
             ))
         } else {
             Line::from(row)
@@ -433,17 +474,13 @@ fn render_communities(
             "(no communities yet — j/k to move, Enter to open, Esc to close)",
         ));
     }
-    let title = format!("Communities — {listing}{depth} (j/k: move, Enter: open, Esc: close)");
     // Keep the selection visible, but never scroll content that already fits.
-    let visible_rows = area.height.saturating_sub(2) as usize;
     let scroll = modal
         .selected
-        .map(|selected| selected.saturating_sub(visible_rows.saturating_sub(1)))
+        .map(|selected| selected.saturating_sub(inner.height.saturating_sub(1) as usize))
         .unwrap_or_default() as u16;
-    let paragraph = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .scroll((scroll, 0));
-    frame.render_widget(paragraph, area);
+    let paragraph = Paragraph::new(lines).style(surface).scroll((scroll, 0));
+    frame.render_widget(paragraph, inner);
 }
 
 fn selected_index(model: &RenderModel) -> Option<usize> {
@@ -611,6 +648,19 @@ mod tests {
             buffer[(70, 27)].symbol(),
             " ",
             "content shows below the box"
+        );
+        // The modal carries its own colors: accent borders/title and a solid
+        // surface, so the overlay is distinguishable from the content behind
+        // it even on a theme where default text is dark.
+        assert_eq!(
+            buffer[(7, 5)].style().fg,
+            Some(Color::Cyan),
+            "borders use the modal accent"
+        );
+        assert_eq!(
+            buffer[(70, 7)].style().bg,
+            Some(Color::Gray),
+            "the interior sits on the modal surface"
         );
     }
 
