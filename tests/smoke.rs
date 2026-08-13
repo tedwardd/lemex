@@ -678,6 +678,58 @@ fn extensionless_media_url_is_probed_for_its_mime_type() {
     );
 }
 
+/// Kitty rendering: with the terminal capability present and kitty enabled,
+/// `:media` stages the image for the event loop and the next key dismisses
+/// it without acting on that key, so the user always has a way out of the
+/// overlay.
+#[test]
+fn kitty_image_renders_and_dismisses_on_any_key() {
+    let port = spawn_http_server(b"fake png bytes".to_vec(), "image/png");
+    let media_url = Url::parse(&format!("http://127.0.0.1:{port}/pic.png")).unwrap();
+    let media = MediaConfig {
+        kitty_enabled: true,
+        ..Default::default()
+    };
+    let runtime = support::runtime();
+    let api = support::api(&runtime, || fixture_api_with_body("{}"));
+    let mut app = FixtureApp::with_runtime(runtime, "kitty", api, anonymous_context(), media, &[]);
+    app.app
+        .set_terminal_capabilities(TerminalCapabilities { kitty: true });
+    let mut engine = InputEngine::new();
+    app.app.state.view.posts = vec![
+        post_view(1, "Image post", Some(media_url)),
+        post_view(2, "Plain post", None),
+    ];
+    app.app.state.view.selected = Some(0);
+
+    app.command(&mut engine, "media").expect("render via kitty");
+    assert!(
+        app.app
+            .state
+            .status
+            .message
+            .contains("press any key to close"),
+        "rendering must advertise the dismiss hint, got {:?}",
+        app.app.state.status.message
+    );
+
+    // The next key closes the image and does nothing else.
+    app.press(&mut engine, key('j')).expect("dismiss key");
+    assert_eq!(
+        app.app.state.selected_index(),
+        0,
+        "the dismiss key must not move the selection"
+    );
+
+    // Keys work normally afterwards.
+    app.press(&mut engine, key('j')).expect("move down");
+    assert_eq!(
+        app.app.state.selected_index(),
+        1,
+        "keys work normally after the image is dismissed"
+    );
+}
+
 /// Media download and history inspection: `:download-media` fetches through a
 /// loopback server, the session downloads panel shows the completed record
 /// and filters it, a confirmed delete removes the local file, and quitting

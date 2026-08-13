@@ -91,6 +91,12 @@ pub fn render_file(path: &Path) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Escape sequence that deletes every kitty graphics placement/image,
+/// returning the terminal to its plain text state.
+pub fn clear_images() -> &'static [u8] {
+    b"\x1b_Ga=d,d=a\x1b\\"
+}
+
 /// Kitty format code for common raster types; PNG is the safe default.
 fn format_code(path: &Path) -> u32 {
     let extension = path
@@ -133,7 +139,12 @@ fn base64_encode(bytes: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_support_in, environment_has_display, environment_is_ssh};
+    use super::{clear_images, detect_support_in, environment_has_display, environment_is_ssh};
+
+    #[test]
+    fn clear_images_deletes_all_placements() {
+        assert_eq!(clear_images(), b"\x1b_Ga=d,d=a\x1b\\");
+    }
 
     #[test]
     fn ssh_session_is_detected_from_sshd_environment() {

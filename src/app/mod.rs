@@ -121,9 +121,30 @@ async fn run_terminal_async(
 
         while !quit {
             if redraw {
+                // The event loop is the only writer to the terminal, so the
+                // kitty escapes are emitted here, adjacent to the ratatui
+                // frame, instead of from the async action task.
+                let kitty_pending = app.as_mut().and_then(App::take_kitty_pending);
+                let kitty_clear = app.as_mut().is_some_and(App::take_kitty_clear);
                 terminal
                     .draw(|frame| render::render(frame, &model))
                     .map_err(|error| crate::error::AppError::Terminal(error.to_string()))?;
+                if kitty_pending.is_some() || kitty_clear {
+                    let mut stdout = std::io::stdout();
+                    // Place the image just below the 3-row session header.
+                    if kitty_pending.is_some() {
+                        let _ = stdout.write_all(b"\x1b[3;1H");
+                    }
+                    if let Some(path) = kitty_pending
+                        && let Ok(bytes) = kitty::render_file(&path)
+                    {
+                        let _ = stdout.write_all(&bytes);
+                    }
+                    if kitty_clear {
+                        let _ = stdout.write_all(kitty::clear_images());
+                    }
+                    let _ = stdout.flush();
+                }
                 redraw = false;
             }
 
@@ -244,6 +265,14 @@ pub struct App {
     /// Zero means unknown (no Resize seen yet); feeds then fall back to the
     /// fixed default limit.
     terminal_height: u16,
+    /// Kitty graphics image waiting to be emitted by the event loop, which
+    /// owns all terminal writes; raw escapes from the async action task
+    /// interleave with redraws and corrupt the screen.
+    kitty_render_pending: Option<PathBuf>,
+    /// Delete-all kitty placements on the next redraw.
+    kitty_clear_pending: bool,
+    /// A kitty image is currently shown; the next input key dismisses it.
+    kitty_image_active: bool,
     quit: bool,
 }
 
@@ -313,8 +342,25 @@ impl App {
             terminal_capabilities,
             collision_policy,
             terminal_height: 0,
+            kitty_render_pending: None,
+            kitty_clear_pending: false,
+            kitty_image_active: false,
             quit: false,
         }
+    }
+
+    /// Terminal capabilities override for tests and environments that probe
+    /// the protocol out-of-band.
+    pub fn set_terminal_capabilities(&mut self, capabilities: TerminalCapabilities) {
+        self.terminal_capabilities = capabilities;
+    }
+
+    fn take_kitty_pending(&mut self) -> Option<PathBuf> {
+        self.kitty_render_pending.take()
+    }
+
+    fn take_kitty_clear(&mut self) -> bool {
+        std::mem::take(&mut self.kitty_clear_pending)
     }
 
     /// Page size for the current terminal: exactly what fits the primary
@@ -442,6 +488,14 @@ impl App {
     }
 
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
+        // A kitty image overlays the interface; the first key after it
+        // simply dismisses it (the loop clears the placement on the next
+        // redraw) so the user always has a way out.
+        if self.kitty_image_active {
+            self.kitty_image_active = false;
+            self.kitty_clear_pending = true;
+            return Ok(());
+        }
         match command {
             Command::Open => {
                 if self.state.view.downloads_active() {
@@ -1633,19 +1687,17 @@ impl App {
                 }
             }
         };
+        // Validate the file now, but do not write anything: the event loop
+        // owns the terminal and emits the escape sequence during its next
+        // redraw, serialized with the ratatui frame so raw bytes cannot
+        // corrupt the screen.
         match kitty::render_file(&path) {
-            Ok(bytes) => {
-                let mut stdout = std::io::stdout();
-                if stdout.write_all(&bytes).is_ok() {
-                    let _ = stdout.flush();
-                    self.state
-                        .status
-                        .success("rendered media via kitty graphics protocol");
-                } else {
-                    self.state
-                        .status
-                        .failure("could not write kitty escape sequence to terminal");
-                }
+            Ok(_) => {
+                self.kitty_render_pending = Some(path);
+                self.kitty_image_active = true;
+                self.state
+                    .status
+                    .success("rendered media via kitty graphics protocol (press any key to close)");
             }
             Err(error) => self.state.status.failure(error.to_string()),
         }
