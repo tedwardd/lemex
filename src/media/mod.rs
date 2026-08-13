@@ -63,11 +63,24 @@ pub fn clean_scratch_dir() -> Result<()> {
 }
 
 /// Whether the host the client runs on has a display for external GUI
-/// handlers. Over plain SSH without X11 forwarding both are unset, and a
-/// spawned `xdg-open` would fail invisibly.
+/// handlers.
+///
+/// On Linux, a spawned `xdg-open` fails invisibly when there is no display:
+/// over plain SSH without X11 forwarding both `$DISPLAY` and
+/// `$WAYLAND_DISPLAY` are unset. macOS never sets those variables — the
+/// `open` command talks to LaunchServices directly and does not need a
+/// display variable — so the guard always passes there.
 pub fn environment_has_display(display: Option<&str>, wayland_display: Option<&str>) -> bool {
-    display.is_some_and(|value| !value.is_empty())
-        || wayland_display.is_some_and(|value| !value.is_empty())
+    #[cfg(target_os = "macos")]
+    {
+        let _ = (display, wayland_display);
+        true
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        display.is_some_and(|value| !value.is_empty())
+            || wayland_display.is_some_and(|value| !value.is_empty())
+    }
 }
 
 /// Whether the client runs inside an SSH login session. `sshd` sets these

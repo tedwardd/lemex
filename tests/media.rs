@@ -92,6 +92,26 @@ fn spawn_http_server(body: &'static [u8], content_type: &'static str) -> u16 {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
+fn macos_has_a_display_even_without_display_variables() {
+    // macOS never sets DISPLAY/WAYLAND_DISPLAY; `open` needs no display
+    // variable, so the guard must pass or media handlers are refused.
+    assert!(lemmy::media::environment_has_display(None, None));
+}
+
+#[test]
+#[cfg(not(target_os = "macos"))]
+fn headless_hosts_without_a_display_variable_are_detected() {
+    assert!(!lemmy::media::environment_has_display(None, None));
+    assert!(lemmy::media::environment_has_display(Some(":0"), None));
+    assert!(lemmy::media::environment_has_display(
+        None,
+        Some("wayland-1")
+    ));
+    assert!(!lemmy::media::environment_has_display(Some(""), Some("")));
+}
+
+#[test]
 fn mailcap_is_the_default_handler() {
     let policy = MediaPolicyConfig::default();
     let handler = policy.select(&image_media());

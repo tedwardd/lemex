@@ -119,7 +119,8 @@ never own their local path and are refused.
   source is reachable; the failure reason is shown in the panel and the
   record can be retried. Collision prompts require an explicit
   `overwrite`/`keep` decision.
-- **"no display on this host; …"** — the client is running on a machine
-  without `$DISPLAY`/`$WAYLAND_DISPLAY` (headless SSH, no X11 forwarding).
-  Use `:download-media` and view the file locally, or forward X11 so
-  `xdg-open` can reach your display.
+- **"no display on this host; …"** — the client is running on a Linux
+  machine without `$DISPLAY`/`$WAYLAND_DISPLAY` (headless SSH, no X11
+  forwarding). Use `:download-media` and view the file locally, or forward
+  X11 so `xdg-open` can reach your display. On macOS the guard always
+  passes: `open` needs no display variable.
