@@ -11,13 +11,21 @@ use ratatui::{
 use super::help::{HelpIndex, contextual_help, mode_label};
 use super::{DownloadsRender, RenderModel};
 
+/// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
+/// above 50 with a confusing `couldnt_get_posts` error instead of clamping,
+/// so the adaptive size must never exceed it.
+pub const MAX_FEED_LIMIT: u16 = 50;
+
 /// Number of feed rows that fit the primary content pane for a given
 /// terminal height: the vertical layout reserves 3 rows for the session
 /// header, 5 for the compose buffer, and 6 for the command/status area, and
 /// the primary table loses 2 rows to its border plus 1 to its column header.
-/// Never fewer than one post so a fetch is never empty.
+/// Never fewer than one post so a fetch is never empty, and never more than
+/// the server's maximum so a tall terminal cannot trigger a 400.
 pub fn feed_limit_for_height(height: u16) -> u16 {
-    height.saturating_sub(3 + 5 + 6 + 2 + 1).max(1)
+    height
+        .saturating_sub(3 + 5 + 6 + 2 + 1)
+        .clamp(1, MAX_FEED_LIMIT)
 }
 
 pub fn render(frame: &mut Frame, model: &RenderModel) {
@@ -459,6 +467,16 @@ mod tests {
             1,
             "tiny terminals still fetch one"
         );
+    }
+
+    #[test]
+    fn feed_limit_caps_at_the_server_maximum() {
+        // Lemmy rejects `limit` above 50 with `couldnt_get_posts` instead of
+        // clamping; a tall terminal must never send an over-limit request.
+        assert_eq!(feed_limit_for_height(67), 50);
+        assert_eq!(feed_limit_for_height(200), 50);
+        assert_eq!(feed_limit_for_height(u16::MAX), 50);
+        assert!(feed_limit_for_height(u16::MAX) <= MAX_FEED_LIMIT);
     }
 
     #[test]
