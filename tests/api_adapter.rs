@@ -1,10 +1,10 @@
-use lemmy::api::fixtures::{
+use levim::api::fixtures::{
     anonymous_context, authenticated_context, fixture_api, fixture_api_recording_user_agent,
     fixture_api_with_body, fixture_api_with_status, fixture_api_with_status_count,
     login_fixture_api, timeout_fixture_api, truncated_body_fixture_api,
 };
-use lemmy::api::{FeedQuery, LemmyApi, LoginRequest};
-use lemmy::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
+use levim::api::{FeedQuery, LemmyApi, LoginRequest};
+use levim::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
 
 #[tokio::test]
 async fn feed_response_carries_the_opaque_next_page_cursor() {
@@ -43,7 +43,7 @@ async fn client_sends_descriptive_user_agent() {
         .clone()
         .expect("fixture must have recorded a User-Agent header");
     assert!(
-        captured.starts_with("lemmy-client/"),
+        captured.starts_with("levim-client/"),
         "client must send a descriptive User-Agent identifying the app, got {captured:?}"
     );
 }
@@ -150,7 +150,7 @@ async fn mutation_comment_uses_response_post_id_and_negative_score() {
         .mutate(
             &authenticated_context(),
             Mutation::VoteComment {
-                id: lemmy::CommentId(2),
+                id: levim::CommentId(2),
                 score: -1,
             },
         )
@@ -163,10 +163,10 @@ async fn mutation_comment_uses_response_post_id_and_negative_score() {
 
 #[tokio::test]
 async fn login_preserves_instance_base_path() {
-    let (api, instance_url) = login_fixture_api("/lemmy/");
+    let (api, instance_url) = login_fixture_api("/levim/");
     let session = api
         .login(LoginRequest {
-            profile: lemmy::ProfileId::from("fixture"),
+            profile: levim::ProfileId::from("fixture"),
             instance_url,
             username: "fixture-user".into(),
             password: SecretString::from("fixture-password"),

@@ -1,8 +1,8 @@
-mod lemmy;
+mod levim;
 mod media;
 mod profile;
 
-pub use lemmy::{
+pub use levim::{
     CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, EditCommentRequest,
     EditPostRequest, Mutation, PostId, UserId,
 };

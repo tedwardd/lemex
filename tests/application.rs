@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 
 use async_trait::async_trait;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use lemmy::{
+use levim::{
     api::{
         CommentView, FeedQuery, LemmyApi, MutationResult, Page, PostDetail, PostView, SiteInfo,
         fixtures::{fixture_api, fixture_api_with_status_count, timeout_fixture_api},
@@ -49,7 +49,7 @@ fn fixture_app() -> App {
 }
 fn configured_fixture_app() -> App {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-switch-{}.toml",
+        "levim-application-switch-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -99,12 +99,12 @@ impl XdgScratch {
             .unwrap()
             .as_nanos();
         let root = std::env::temp_dir().join(format!(
-            "lemmy-application-{label}-{}-{unique}",
+            "levim-application-{label}-{}-{unique}",
             std::process::id()
         ));
-        std::fs::create_dir_all(root.join("config").join("lemmy"))
+        std::fs::create_dir_all(root.join("config").join("levim"))
             .expect("create scratch config directory");
-        std::fs::create_dir_all(root.join("cache").join("lemmy"))
+        std::fs::create_dir_all(root.join("cache").join("levim"))
             .expect("create scratch cache directory");
         Self { root }
     }
@@ -128,9 +128,9 @@ static XDG_ENV_LOCK: Mutex<()> = Mutex::new(());
 ///
 /// Mirrors the redirect window in `tests/support::FixtureApp::build`, but
 /// spans the entire body: tests that resolve the default profile store
-/// (`lemmy::profiles::default_store()`, `App::new`) or the default cache
+/// (`levim::profiles::default_store()`, `App::new`) or the default cache
 /// location after construction never read or materialize the real
-/// `~/.config/lemmy/config.toml`. The window is serialized process-wide by
+/// `~/.config/levim/config.toml`. The window is serialized process-wide by
 /// `XDG_ENV_LOCK` and the environment is restored before the scratch
 /// directory is removed.
 struct XdgRedirect {
@@ -245,7 +245,7 @@ async fn untouched_edit_drafts_fail_local_validation() {
         Some("invalid command: post title is required")
     );
     assert!(app.state.draft(post_draft.id).is_some());
-    let comment_draft = app.state.begin_edit_comment_draft(lemmy::CommentId(6));
+    let comment_draft = app.state.begin_edit_comment_draft(levim::CommentId(6));
     app.dispatch(AppAction::SubmitDraft(comment_draft.id.clone()))
         .await
         .unwrap();
@@ -278,9 +278,9 @@ async fn valid_edit_post_draft_strips_id_line_and_submits() {
 #[tokio::test]
 async fn search_submission_uses_engine_line_not_stale_compose() {
     let mut app = fixture_app();
-    app.state.mode = lemmy::input::Mode::SearchForward;
+    app.state.mode = levim::input::Mode::SearchForward;
     app.state.view.compose = "stale buffer".into();
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         String::new(),
     )))
     .await
@@ -288,9 +288,9 @@ async fn search_submission_uses_engine_line_not_stale_compose() {
     assert_eq!(app.state.view.search, "");
     assert!(app.state.view.feed_query.search.is_none());
 
-    app.state.mode = lemmy::input::Mode::SearchForward;
+    app.state.mode = levim::input::Mode::SearchForward;
     app.state.view.compose = "stale buffer".into();
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "fresh query".into(),
     )))
     .await
@@ -316,13 +316,13 @@ async fn load_more_without_next_page_clears_pending_status() {
 async fn open_community_clears_search_label_state() {
     let mut app = fixture_app();
     app.state.view.search = "rust".into();
-    app.dispatch(AppAction::OpenCommunity(lemmy::CommunityId(3)))
+    app.dispatch(AppAction::OpenCommunity(levim::CommunityId(3)))
         .await
         .unwrap();
     assert!(app.state.view.search.is_empty());
     assert_eq!(
         app.state.view.feed_query.community,
-        Some(lemmy::CommunityId(3))
+        Some(levim::CommunityId(3))
     );
 }
 
@@ -336,7 +336,7 @@ async fn create_post_draft_wires_title_link_and_body() {
         Arc::new(MemoryCredentialStore::default()),
     );
     let mut post = post_view(7, "target");
-    post.community_id = lemmy::CommunityId(3);
+    post.community_id = levim::CommunityId(3);
     app.state.view.posts = vec![post];
     app.state.select(PostId(7));
     let draft = app.state.begin_post_draft();
@@ -364,7 +364,7 @@ async fn create_post_draft_wires_title_link_and_body() {
                 Some(Url::parse("https://example.com/article").unwrap())
             );
             assert_eq!(request.body.as_deref(), Some("Some body"));
-            assert_eq!(request.community, lemmy::CommunityId(3));
+            assert_eq!(request.community, levim::CommunityId(3));
         }
         other => panic!("expected CreatePost, got {other:?}"),
     }
@@ -393,7 +393,7 @@ async fn create_post_without_community_target_fails_before_request() {
 #[tokio::test]
 async fn profile_switch_changes_request_context_and_clears_selection() {
     let mut app = configured_fixture_app();
-    app.state.select(lemmy::PostId(1));
+    app.state.select(levim::PostId(1));
     app.dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from(
         "other",
     ))))
@@ -629,7 +629,7 @@ async fn failed_search_resets_stale_cursor_so_load_more_is_refused() {
 #[tokio::test]
 async fn switch_profile_surfaces_store_read_failure_in_status() {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-broken-switch-{}.toml",
+        "levim-application-broken-switch-{}.toml",
         std::process::id()
     ));
     std::fs::write(&path, "this is not [valid toml").unwrap();
@@ -676,8 +676,8 @@ async fn stale_same_profile_post_result_is_rejected_by_request_token() {
             title,
             body: None,
             url: None,
-            community_id: lemmy::CommunityId(1),
-            creator_id: lemmy::UserId(1),
+            community_id: levim::CommunityId(1),
+            creator_id: levim::UserId(1),
             score: 0,
             comments: 0,
             published: None,
@@ -710,8 +710,8 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_detail() {
             title: "active".into(),
             body: None,
             url: None,
-            community_id: lemmy::CommunityId(1),
-            creator_id: lemmy::UserId(1),
+            community_id: levim::CommunityId(1),
+            creator_id: levim::UserId(1),
             score: 0,
             comments: 0,
             published: None,
@@ -720,11 +720,11 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_detail() {
     });
     let old = app.begin_request(RequestIdentity::Comments(PostId(1)));
     let comment = CommentView {
-        id: lemmy::CommentId(1),
+        id: levim::CommentId(1),
         post_id: PostId(1),
         content: "stale".into(),
         creator_name: "alice".into(),
-        creator_id: lemmy::UserId(1),
+        creator_id: levim::UserId(1),
         score: 0,
     };
     app.dispatch(AppAction::ApiResult(Box::new(ApiResult::Comments {
@@ -793,11 +793,11 @@ async fn back_invalidates_inflight_comments_result() {
         comments: Vec::new(),
     });
     let comment = CommentView {
-        id: lemmy::CommentId(1),
+        id: levim::CommentId(1),
         post_id: PostId(1),
         content: "stale".into(),
         creator_name: "alice".into(),
-        creator_id: lemmy::UserId(1),
+        creator_id: levim::UserId(1),
         score: 0,
     };
     app.dispatch(AppAction::ApiResult(Box::new(ApiResult::Comments {
@@ -831,7 +831,7 @@ async fn async_feed_refresh_updates_state_without_reinserting_confirmed_delete()
         Arc::new(MemoryCredentialStore::default()),
     );
     app.state.view.posts = vec![post_view(1, "target")];
-    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh))
+    app.dispatch(AppAction::Input(levim::input::Command::Refresh))
         .await
         .unwrap();
     api.started.notified().await;
@@ -879,9 +879,9 @@ async fn logout_invalidates_inflight_authenticated_refresh_before_cache_write() 
     let cache = Arc::new(MemoryCache::default());
     let context = ProfileContext {
         profile: fixture_context().profile,
-        session: Some(lemmy::Session {
-            token: lemmy::SecretString::from("authenticated"),
-            user_id: lemmy::UserId(7),
+        session: Some(levim::Session {
+            token: levim::SecretString::from("authenticated"),
+            user_id: levim::UserId(7),
         }),
     };
     let id = context.profile.id.clone();
@@ -904,7 +904,7 @@ async fn logout_invalidates_inflight_authenticated_refresh_before_cache_write() 
         .unwrap();
     let mut app = App::new(api.clone(), cache.clone(), context, credentials);
 
-    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh))
+    app.dispatch(AppAction::Input(levim::input::Command::Refresh))
         .await
         .unwrap();
     api.started.notified().await;
@@ -926,7 +926,7 @@ async fn logout_invalidates_inflight_authenticated_refresh_before_cache_write() 
 #[tokio::test]
 async fn new_profile_invalidates_pending_results_and_persists_metadata() {
     let path =
-        std::env::temp_dir().join(format!("lemmy-application-new-{}.toml", std::process::id()));
+        std::env::temp_dir().join(format!("levim-application-new-{}.toml", std::process::id()));
     let store = ProfileStore::new(&path);
     let mut app = App::with_profile_store(
         Arc::new(fixture_api("feed.json")),
@@ -1016,7 +1016,7 @@ impl LemmyApi for RefreshRaceApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
@@ -1066,7 +1066,7 @@ impl LemmyApi for GenerationRaceApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -1090,7 +1090,7 @@ impl LemmyApi for SuccessfulCommentApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -1122,7 +1122,7 @@ impl LemmyApi for CapturingPostApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
@@ -1158,8 +1158,8 @@ impl LemmyApi for ThreadApi {
                 title: "Threaded post".into(),
                 body: Some("The full post body".into()),
                 url: None,
-                community_id: lemmy::CommunityId(1),
-                creator_id: lemmy::UserId(1),
+                community_id: levim::CommunityId(1),
+                creator_id: levim::UserId(1),
                 score: 5,
                 comments: 2,
                 published: None,
@@ -1170,15 +1170,15 @@ impl LemmyApi for ThreadApi {
     async fn comments(&self, _: &ProfileContext, id: PostId) -> Result<Vec<CommentView>> {
         self.comments_calls.fetch_add(1, Ordering::SeqCst);
         Ok(vec![CommentView {
-            id: lemmy::CommentId(10),
+            id: levim::CommentId(10),
             post_id: id,
             content: "A real comment".into(),
             creator_name: "alice".into(),
-            creator_id: lemmy::UserId(2),
+            creator_id: levim::UserId(2),
             score: 3,
         }])
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -1249,7 +1249,7 @@ impl LemmyApi for PagedFeedApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -1317,11 +1317,11 @@ async fn feed_page_size_scales_with_the_terminal_height() {
         .unwrap();
     assert_eq!(
         app.state.view.feed_query.limit,
-        Some(lemmy::api::FeedQuery::DEFAULT_LIMIT)
+        Some(levim::api::FeedQuery::DEFAULT_LIMIT)
     );
 
     // A 40-row terminal fits 23 rows in the primary pane.
-    let expected = lemmy::app::render::feed_limit_for_height(40) as u32;
+    let expected = levim::app::render::feed_limit_for_height(40) as u32;
     assert_eq!(expected, 23);
     app.dispatch(AppAction::Resize {
         width: 120,
@@ -1375,7 +1375,7 @@ async fn backspace_edits_the_compose_line_and_cancel_clears_it() {
         app.state.view.compose, "",
         "cancelling a command line clears its visible text"
     );
-    assert_eq!(app.state.mode, lemmy::input::Mode::Normal);
+    assert_eq!(app.state.mode, levim::input::Mode::Normal);
 }
 
 #[tokio::test]
@@ -1470,7 +1470,7 @@ async fn page_flips_are_inert_while_the_thread_pane_is_focused() {
 
 #[tokio::test]
 async fn startup_feed_command_loads_the_home_feed() {
-    let api = Arc::new(lemmy::api::fixtures::fixture_api("feed.json"));
+    let api = Arc::new(levim::api::fixtures::fixture_api("feed.json"));
     let mut app = App::new(
         api,
         Arc::new(MemoryCache::default()),
@@ -1642,8 +1642,8 @@ async fn media_command_keeps_the_content_only_view() {
         title: "With media".into(),
         body: None,
         url: Some(Url::parse("https://example.com/photo.png").unwrap()),
-        community_id: lemmy::CommunityId(1),
-        creator_id: lemmy::UserId(1),
+        community_id: levim::CommunityId(1),
+        creator_id: levim::UserId(1),
         score: 0,
         comments: 0,
         published: None,
@@ -1679,8 +1679,8 @@ async fn open_media_key_dispatches_the_media_command() {
         title: "With media".into(),
         body: None,
         url: Some(Url::parse("https://example.com/photo.png").unwrap()),
-        community_id: lemmy::CommunityId(1),
-        creator_id: lemmy::UserId(1),
+        community_id: levim::CommunityId(1),
+        creator_id: levim::UserId(1),
         score: 0,
         comments: 0,
         published: None,
@@ -1774,7 +1774,7 @@ async fn stale_comments_error_for_inactive_post_does_not_change_status() {
 
 #[tokio::test]
 async fn switch_profile_uses_destination_store_metadata() {
-    let path = std::env::temp_dir().join(format!("lemmy-application-{}.toml", std::process::id()));
+    let path = std::env::temp_dir().join(format!("levim-application-{}.toml", std::process::id()));
     let store = ProfileStore::new(&path);
     store
         .save(&[Profile {
@@ -1919,7 +1919,7 @@ async fn background_refresh_preserves_confirmed_post_update() {
 #[tokio::test]
 async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-tombstone-switch-{}.toml",
+        "levim-application-tombstone-switch-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -1970,7 +1970,7 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
     // `XDG_CACHE_HOME`, so keep the whole body redirected to scratch.
     let _xdg = XdgRedirect::new("profile-refresh-replace");
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-profile-refresh-replace-{}.toml",
+        "levim-application-profile-refresh-replace-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -2004,7 +2004,7 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
         Arc::new(MemoryCredentialStore::default()),
         store.clone(),
     );
-    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh))
+    app.dispatch(AppAction::Input(levim::input::Command::Refresh))
         .await
         .unwrap();
     api.started.notified().await;
@@ -2029,7 +2029,7 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
 async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
     // `App::new` resolves the default profile store and downloads directory
     // from the XDG env; keep the whole body redirected to scratch so the
-    // real `~/.config/lemmy/config.toml` is never read or materialized.
+    // real `~/.config/levim/config.toml` is never read or materialized.
     let _xdg = XdgRedirect::new("active-unpersisted");
     let id = ProfileId::from(format!(
         "active-unpersisted-{}",
@@ -2065,7 +2065,7 @@ async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
         },
         Arc::new(MemoryCredentialStore::default()),
     );
-    app.dispatch(AppAction::Input(lemmy::input::Command::Refresh))
+    app.dispatch(AppAction::Input(levim::input::Command::Refresh))
         .await
         .unwrap();
     api.started.notified().await;
@@ -2135,7 +2135,7 @@ async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
 #[tokio::test]
 async fn successful_draft_stays_completed_after_switching_profiles() {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-draft-switch-{}.toml",
+        "levim-application-draft-switch-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -2266,7 +2266,7 @@ async fn documented_content_commands_are_dispatchable() {
         "save",
         "subscribe",
     ] {
-        app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+        app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
             line.into(),
         )))
         .await
@@ -2286,7 +2286,7 @@ async fn documented_content_commands_are_dispatchable() {
 
     // Navigation commands dispatch too: `:post` opens the selection and
     // `:community` defaults to the selected post's community.
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "post".into(),
     )))
     .await
@@ -2295,7 +2295,7 @@ async fn documented_content_commands_are_dispatchable() {
         app.state.status.error.as_deref(),
         Some("unknown command: post")
     );
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "community".into(),
     )))
     .await
@@ -2306,7 +2306,7 @@ async fn documented_content_commands_are_dispatchable() {
     );
     assert_eq!(
         app.state.view.feed_query.community,
-        Some(lemmy::CommunityId(1)),
+        Some(levim::CommunityId(1)),
         ":community defaults to the selected post's community"
     );
 }
@@ -2314,7 +2314,7 @@ async fn documented_content_commands_are_dispatchable() {
 #[tokio::test]
 async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-delete-{}.toml",
+        "levim-application-delete-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -2333,9 +2333,9 @@ async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
     credentials
         .put_session(
             &other.id,
-            &lemmy::Session {
-                token: lemmy::SecretString::from("other-token"),
-                user_id: lemmy::UserId(7),
+            &levim::Session {
+                token: levim::SecretString::from("other-token"),
+                user_id: levim::UserId(7),
             },
         )
         .await
@@ -2367,7 +2367,7 @@ async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
 #[tokio::test]
 async fn help_command_opens_searchable_help_and_back_closes_it() {
     let mut app = fixture_app();
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "help downloads".into(),
     )))
     .await
@@ -2380,7 +2380,7 @@ async fn help_command_opens_searchable_help_and_back_closes_it() {
 #[tokio::test]
 async fn set_command_validates_writes_atomically_and_rejects_bad_values() {
     let path =
-        std::env::temp_dir().join(format!("lemmy-application-set-{}.toml", std::process::id()));
+        std::env::temp_dir().join(format!("levim-application-set-{}.toml", std::process::id()));
     let store = ProfileStore::new(&path);
     let mut app = App::with_profile_store(
         Arc::new(fixture_api("feed.json")),
@@ -2389,7 +2389,7 @@ async fn set_command_validates_writes_atomically_and_rejects_bad_values() {
         Arc::new(MemoryCredentialStore::default()),
         store.clone(),
     );
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "set collision-policy overwrite".into(),
     )))
     .await
@@ -2400,7 +2400,7 @@ async fn set_command_validates_writes_atomically_and_rejects_bad_values() {
     );
     assert_eq!(app.state.status.message, "configuration updated");
 
-    app.dispatch(AppAction::Input(lemmy::input::Command::SubmitLine(
+    app.dispatch(AppAction::Input(levim::input::Command::SubmitLine(
         "set collision-policy bogus".into(),
     )))
     .await
@@ -2430,10 +2430,10 @@ impl LemmyApi for LoginApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, request: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
-        Ok(lemmy::Session {
-            token: lemmy::SecretString::from(format!("token-{}", request.username)),
-            user_id: lemmy::UserId(7),
+    async fn login(&self, request: levim::api::LoginRequest) -> Result<levim::Session> {
+        Ok(levim::Session {
+            token: levim::SecretString::from(format!("token-{}", request.username)),
+            user_id: levim::UserId(7),
         })
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -2457,7 +2457,7 @@ impl LemmyApi for FailingLoginApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Authentication("invalid credentials".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -2468,7 +2468,7 @@ impl LemmyApi for FailingLoginApi {
 #[tokio::test]
 async fn replacing_profile_invalidates_old_credentials_before_activation() {
     let path = std::env::temp_dir().join(format!(
-        "lemmy-application-profile-replace-{}.toml",
+        "levim-application-profile-replace-{}.toml",
         std::process::id()
     ));
     let store = ProfileStore::new(&path);
@@ -2483,9 +2483,9 @@ async fn replacing_profile_invalidates_old_credentials_before_activation() {
     credentials
         .put_session(
             &id,
-            &lemmy::Session {
-                token: lemmy::SecretString::from("old-token"),
-                user_id: lemmy::UserId(7),
+            &levim::Session {
+                token: levim::SecretString::from("old-token"),
+                user_id: levim::UserId(7),
             },
         )
         .await
@@ -2534,8 +2534,8 @@ fn post_view(id: i64, title: &str) -> PostView {
         title: title.into(),
         body: None,
         url: None,
-        community_id: lemmy::CommunityId(1),
-        creator_id: lemmy::UserId(1),
+        community_id: levim::CommunityId(1),
+        creator_id: levim::UserId(1),
         score: 0,
         comments: 0,
         published: None,
@@ -2570,7 +2570,7 @@ impl LemmyApi for RefreshMutationRaceApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
@@ -2613,7 +2613,7 @@ impl LemmyApi for ProfileReplacementRaceApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -2637,7 +2637,7 @@ impl LemmyApi for ConfirmedDeleteApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
@@ -2669,7 +2669,7 @@ impl LemmyApi for UnconfirmedApi {
     async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: lemmy::api::LoginRequest) -> Result<lemmy::Session> {
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
         Err(AppError::Network("unused".into()))
     }
     async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
@@ -2680,8 +2680,8 @@ impl LemmyApi for UnconfirmedApi {
                 title: "unconfirmed".into(),
                 body: None,
                 url: None,
-                community_id: lemmy::CommunityId(1),
-                creator_id: lemmy::UserId(1),
+                community_id: levim::CommunityId(1),
+                creator_id: levim::UserId(1),
                 score: 99,
                 comments: 0,
                 published: None,

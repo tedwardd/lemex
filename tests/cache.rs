@@ -1,5 +1,5 @@
-use lemmy::ProfileId;
-use lemmy::cache::{
+use levim::ProfileId;
+use levim::cache::{
     CacheStore, CachedFeed, Draft, DraftId, FeedKey, MemoryCache, MemoryDraftStore,
     SqliteCacheStore,
 };
@@ -137,7 +137,7 @@ fn cached_feed_exposes_stale_metadata() {
 #[test]
 fn sqlite_cache_size_limit_evicts_oldest_entries() {
     let cache = SqliteCacheStore::open_with_size_limit(
-        std::env::temp_dir().join(format!("lemmy-cache-size-{}.sqlite3", std::process::id())),
+        std::env::temp_dir().join(format!("levim-cache-size-{}.sqlite3", std::process::id())),
         Some(120),
     )
     .unwrap();
@@ -219,6 +219,6 @@ fn sqlite_cache_size_limit_evicts_oldest_entries() {
     cache.save_draft(draft.clone()).unwrap();
     assert_eq!(cache.load_drafts(&profile).unwrap(), vec![draft]);
     let _ = std::fs::remove_file(
-        std::env::temp_dir().join(format!("lemmy-cache-size-{}.sqlite3", std::process::id())),
+        std::env::temp_dir().join(format!("levim-cache-size-{}.sqlite3", std::process::id())),
     );
 }

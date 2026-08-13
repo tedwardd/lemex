@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use lemmy::input::{Command, InputEngine, MappingMatch, MappingTable, Mode};
+use levim::input::{Command, InputEngine, MappingMatch, MappingTable, Mode};
 
 fn key(character: char) -> KeyEvent {
     KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE)

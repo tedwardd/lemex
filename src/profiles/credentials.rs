@@ -85,7 +85,7 @@ impl KeyringCredentialStore {
 
 impl Default for KeyringCredentialStore {
     fn default() -> Self {
-        Self::new("lemmy-client")
+        Self::new("levim-client")
     }
 }
 

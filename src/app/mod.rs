@@ -1678,7 +1678,7 @@ impl App {
                 let cached_note = if reused { " (reused cached file)" } else { "" };
                 match spawn_detached(&command, source.as_os_str(), &mime) {
                     Ok(()) if is_ssh => self.state.status.success(format!(
-                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal){cached_note}"
+                        "opened media with external handler on this host (SSH session — the handler runs where levim is, not on your local terminal){cached_note}"
                     )),
                     Ok(()) => self
                         .state
@@ -2709,7 +2709,7 @@ mod tests {
                 ProfileId::from("fixture"),
                 Url::parse("http://127.0.0.1/").unwrap(),
                 1,
-                PathBuf::from("/tmp/lemmy-quit-test-photo.png"),
+                PathBuf::from("/tmp/levim-quit-test-photo.png"),
             ));
         assert!(!app.downloads.history().is_empty());
 
@@ -2755,7 +2755,7 @@ mod tests {
             Arc::new(crate::profiles::MemoryCredentialStore::default()),
         );
         let directory = std::env::temp_dir().join(format!(
-            "lemmy-delete-test-{}-{:?}",
+            "levim-delete-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -2848,7 +2848,7 @@ mod tests {
             Arc::new(crate::profiles::MemoryCredentialStore::default()),
         );
         let directory = std::env::temp_dir().join(format!(
-            "lemmy-delete-keep-test-{}-{:?}",
+            "levim-delete-keep-test-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));
@@ -2952,7 +2952,7 @@ mod tests {
                 ProfileId::from("fixture"),
                 Url::parse("http://127.0.0.1/").unwrap(),
                 1,
-                PathBuf::from("/tmp/lemmy-routing-notes.txt"),
+                PathBuf::from("/tmp/levim-routing-notes.txt"),
             ));
         app.downloads
             .history()
@@ -3028,7 +3028,7 @@ mod tests {
                 ProfileId::from("fixture"),
                 Url::parse("http://127.0.0.1/").unwrap(),
                 1,
-                PathBuf::from("/tmp/lemmy-subcommand-notes.txt"),
+                PathBuf::from("/tmp/levim-subcommand-notes.txt"),
             ));
         app.downloads
             .history()

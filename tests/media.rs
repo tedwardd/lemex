@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use lemmy::{
+use levim::{
     domain::{DownloadStatus, MediaRef, ProfileId},
     media::{
         CollisionPolicy, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig,
@@ -22,7 +22,7 @@ fn image_media() -> MediaRef {
 
 fn test_dir() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "lemmy-media-test-{}-{:?}",
+        "levim-media-test-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ))
@@ -100,7 +100,7 @@ fn mailcap_is_the_default_handler() {
 
 #[test]
 fn scratch_dir_is_nested_under_the_system_temp_dir() {
-    let directory = lemmy::media::scratch_dir();
+    let directory = levim::media::scratch_dir();
     assert!(
         directory.starts_with(std::env::temp_dir()),
         "the scratch dir must live under the system temp dir, got {}",
@@ -108,24 +108,24 @@ fn scratch_dir_is_nested_under_the_system_temp_dir() {
     );
     assert_eq!(
         directory.file_name().and_then(|name| name.to_str()),
-        Some("lemmy-client"),
+        Some("levim-client"),
         "the scratch dir is an exclusively-owned subdirectory"
     );
 }
 
 #[test]
 fn clean_scratch_dir_removes_the_whole_subtree() {
-    let directory = lemmy::media::scratch_dir();
+    let directory = levim::media::scratch_dir();
     std::fs::create_dir_all(directory.join("nested")).unwrap();
     std::fs::write(directory.join("stale.bin"), b"stale").unwrap();
     std::fs::write(directory.join("nested/other.bin"), b"stale").unwrap();
-    lemmy::media::clean_scratch_dir().unwrap();
+    levim::media::clean_scratch_dir().unwrap();
     assert!(
         !directory.exists(),
         "the whole scratch subtree must be removed"
     );
     // A missing directory is not an error (idempotent sweep).
-    lemmy::media::clean_scratch_dir().unwrap();
+    levim::media::clean_scratch_dir().unwrap();
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
 
-use lemmy::{
+use levim::{
     api::HttpLemmyApi,
     app::{App, run_terminal},
     cache::SqliteCacheStore,
@@ -79,15 +79,15 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     ))
 }
 
-/// Non-interactive usage text printed for `lemmy --help`. The interactive
+/// Non-interactive usage text printed for `levim --help`. The interactive
 /// default (no arguments) starts the terminal client unchanged.
 const USAGE: &str = "\
-lemmy — a terminal client for Lemmy
+levim — a Vim-like terminal client for Lemmy
 
 Usage:
-  lemmy            start the interactive terminal client
-  lemmy --help     show this help and exit
-  lemmy --clean-temp   remove downloaded temp media files and exit
+  levim            start the interactive terminal client
+  levim --help     show this help and exit
+  levim --clean-temp   remove downloaded temp media files and exit
 
 The interactive client is a Vim-like modal TUI. Run :help inside the client
 for the full command index; a summary follows.";
@@ -96,7 +96,7 @@ fn print_help() {
     println!("{USAGE}");
     println!();
     println!("Commands:");
-    for entry in lemmy::app::help::HelpIndex::default().search("") {
+    for entry in levim::app::help::HelpIndex::default().search("") {
         println!("  {:<30} {}", entry.command, entry.description);
     }
 }
@@ -116,8 +116,8 @@ fn main() -> Result<()> {
     // stale handler files, anything under our exclusively-owned directory.
     // Honors $TMPDIR via std::env::temp_dir.
     if arguments.iter().any(|argument| argument == "--clean-temp") {
-        let directory = lemmy::media::scratch_dir();
-        match lemmy::media::clean_scratch_dir() {
+        let directory = levim::media::scratch_dir();
+        match levim::media::clean_scratch_dir() {
             Ok(()) => println!("removed temp media files under {}", directory.display()),
             Err(error) => {
                 eprintln!("{error}");

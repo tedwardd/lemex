@@ -22,8 +22,8 @@ impl XdgPaths {
     pub fn from_env() -> Self {
         let config_home = xdg_home("XDG_CONFIG_HOME", ".config");
         let cache_home = xdg_home("XDG_CACHE_HOME", ".cache");
-        let config_dir = config_home.join("lemmy");
-        let cache_dir = cache_home.join("lemmy");
+        let config_dir = config_home.join("levim");
+        let cache_dir = cache_home.join("levim");
         let config_file = config_dir.join("config.toml");
         Self {
             config_dir,

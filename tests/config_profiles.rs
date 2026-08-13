@@ -7,8 +7,8 @@ use std::{
 
 use async_trait::async_trait;
 #[cfg(not(target_os = "linux"))]
-use lemmy::profiles::KeyringCredentialStore;
-use lemmy::{
+use levim::profiles::KeyringCredentialStore;
+use levim::{
     AppConfig, AppError, ProfileId, SecretString, Session, UserId,
     api::{
         CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
@@ -112,7 +112,7 @@ fn temporary_directory() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("lemmy-config-profiles-{unique}"));
+    let path = std::env::temp_dir().join(format!("levim-config-profiles-{unique}"));
     fs::create_dir(&path).unwrap();
     path
 }
@@ -247,26 +247,26 @@ impl FailOnceLoginApi {
 
 #[async_trait]
 impl LemmyApi for FailOnceLoginApi {
-    async fn site(&self, _: &ProfileContext) -> lemmy::Result<SiteInfo> {
+    async fn site(&self, _: &ProfileContext) -> levim::Result<SiteInfo> {
         Err(AppError::Network("unused".into()))
     }
-    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> lemmy::Result<Page<PostView>> {
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> levim::Result<Page<PostView>> {
         Err(AppError::Network("unused".into()))
     }
-    async fn post(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<PostDetail> {
+    async fn post(&self, _: &ProfileContext, _: PostId) -> levim::Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
-    async fn comments(&self, _: &ProfileContext, _: PostId) -> lemmy::Result<Vec<CommentView>> {
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> levim::Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: LoginRequest) -> lemmy::Result<Session> {
+    async fn login(&self, _: LoginRequest) -> levim::Result<Session> {
         if self.failed.swap(false, Ordering::SeqCst) {
             Err(AppError::Authentication("invalid credentials".into()))
         } else {
             Ok(session("ok"))
         }
     }
-    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> lemmy::Result<MutationResult> {
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> levim::Result<MutationResult> {
         Err(AppError::Network("unused".into()))
     }
 }
@@ -288,7 +288,7 @@ async fn login_stores_session_only_after_api_success() {
 }
 
 fn profile_test_dependencies() -> (ProfileStore, MemoryCredentialStore) {
-    let path = std::env::temp_dir().join(format!("lemmy-logout-{}.toml", std::process::id()));
+    let path = std::env::temp_dir().join(format!("levim-logout-{}.toml", std::process::id()));
     let _ = std::fs::remove_file(&path);
     (ProfileStore::new(path), MemoryCredentialStore::default())
 }
