@@ -65,13 +65,16 @@ until you act. A leading `:` is optional.
 
 ```toml
 startup = "feed"            # show the home feed on launch
+# startup = "subscribed"    # show your subscribed communities' feed (needs login)
 # startup = "search rust"   # run a search on launch
 # startup = "community 123" # open a community on launch
 ```
 
-Accepted values are `feed`, `search <query>`, and `community <id>`. Anything
-else is rejected at load time so a typo never launches into an unexpected
-view.
+Every content view the client opens interactively is a valid start page:
+`feed`, `subscribed`, `search <query>`, and `community <id>`. Anything else
+is rejected at load time so a typo never launches into an unexpected view.
+`subscribed` needs a session (like `:subscribed`); without one it refuses
+with the same "login first" message.
 
 Because TOML assigns every bare `key = value` to the most recent `[section]`
 header, `startup` must appear **before the first `[` header** in the file

@@ -158,6 +158,13 @@ fn startup_action_round_trips_and_normalizes_colon() {
     assert_eq!(AppConfig::from_toml(&encoded).unwrap().startup, "feed");
     let search = "startup = 'search rust'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
     assert_eq!(AppConfig::from_toml(search).unwrap().startup, "search rust");
+    // Every content view the client opens interactively is a valid start
+    // page, `:subscribed` included.
+    let subscribed = "startup = 'subscribed'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    assert_eq!(
+        AppConfig::from_toml(subscribed).unwrap().startup,
+        "subscribed"
+    );
 }
 
 #[test]

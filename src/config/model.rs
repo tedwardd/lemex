@@ -244,9 +244,10 @@ struct RawConfig {
 /// Startup actions the client will run once at launch. Empty means the
 /// client starts with the default (cache-hydrated, empty) view.
 ///
-/// Accepted forms (a leading `:` is optional): `feed`, `search <query>`,
-/// `community <id>`. Anything else is a configuration error so a typo never
-/// silently launches with the wrong view.
+/// Accepted forms (a leading `:` is optional): `feed`, `subscribed`,
+/// `search <query>`, `community <id>` — the same content views the client
+/// opens interactively. Anything else is a configuration error so a typo
+/// never silently launches with the wrong view.
 fn validate_startup(value: &str) -> Result<String> {
     let trimmed = value.trim().strip_prefix(':').unwrap_or(value.trim());
     if trimmed.is_empty() {
@@ -257,13 +258,16 @@ fn validate_startup(value: &str) -> Result<String> {
     let has_arg = parts.next().is_some();
     let valid = matches!(
         (command, has_arg),
-        (Some("feed"), false) | (Some("search"), true) | (Some("community"), true)
+        (Some("feed"), false)
+            | (Some("subscribed"), false)
+            | (Some("search"), true)
+            | (Some("community"), true)
     );
     if valid {
         Ok(trimmed.to_owned())
     } else {
         Err(AppError::Configuration(format!(
-            "invalid startup action {value:?}: expected \"feed\", \"search <query>\", or \"community <id>\""
+            "invalid startup action {value:?}: expected \"feed\", \"subscribed\", \"search <query>\", or \"community <id>\""
         )))
     }
 }
