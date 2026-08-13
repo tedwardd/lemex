@@ -30,6 +30,11 @@ command/search line.
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
 | `>` | next page | flip to the next feed page (replaces the list) |
 | `<` | previous page | flip back to the previous feed page |
+
+Feed pages are sized to the primary content pane: each fetch (first page,
+`>`, `<`, refresh, search) requests exactly as many posts as fit your
+current terminal height, and a resize re-sizes subsequent pages. With no
+terminal size known yet, the fixed 20-post default is used.
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |

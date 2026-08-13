@@ -11,6 +11,15 @@ use ratatui::{
 use super::help::{HelpIndex, contextual_help, mode_label};
 use super::{DownloadsRender, RenderModel};
 
+/// Number of feed rows that fit the primary content pane for a given
+/// terminal height: the vertical layout reserves 3 rows for the session
+/// header, 5 for the compose buffer, and 6 for the command/status area, and
+/// the primary table loses 2 rows to its border plus 1 to its column header.
+/// Never fewer than one post so a fetch is never empty.
+pub fn feed_limit_for_height(height: u16) -> u16 {
+    height.saturating_sub(3 + 5 + 6 + 2 + 1).max(1)
+}
+
 pub fn render(frame: &mut Frame, model: &RenderModel) {
     let areas = Layout::default()
         .direction(Direction::Vertical)
@@ -417,6 +426,18 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn feed_limit_scales_with_terminal_height() {
+        assert_eq!(feed_limit_for_height(24), 7);
+        assert_eq!(feed_limit_for_height(40), 23);
+        assert_eq!(feed_limit_for_height(20), 3);
+        assert_eq!(
+            feed_limit_for_height(10),
+            1,
+            "tiny terminals still fetch one"
+        );
     }
 
     #[test]

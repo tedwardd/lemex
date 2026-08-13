@@ -100,6 +100,10 @@ pub enum DownloadsAction {
 #[derive(Debug)]
 pub enum AppAction {
     Input(Command),
+    /// Terminal height changed; the feed page size adapts to it.
+    Resize {
+        height: u16,
+    },
     Profile(ProfileCommand),
     SubmitDraft(DraftId),
     DiscardDraft(DraftId),

@@ -1190,6 +1190,7 @@ async fn opening_post_fetches_detail_and_thread_comments() {
 struct PagedFeedApi {
     first_page_calls: Arc<AtomicUsize>,
     second_page_calls: Arc<AtomicUsize>,
+    limits: Arc<std::sync::Mutex<Vec<Option<u32>>>>,
 }
 
 #[async_trait]
@@ -1198,6 +1199,7 @@ impl LemmyApi for PagedFeedApi {
         Err(AppError::Network("unused".into()))
     }
     async fn feed(&self, _: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>> {
+        self.limits.lock().unwrap().push(query.limit);
         if query.page.as_deref() == Some("2") {
             self.second_page_calls.fetch_add(1, Ordering::SeqCst);
             Ok(Page {
@@ -1269,6 +1271,53 @@ async fn gg_and_g_jump_to_the_top_and_bottom_of_the_feed() {
         .await
         .unwrap();
     assert_eq!(app.state.view.selected, None);
+}
+
+#[tokio::test]
+async fn feed_page_size_scales_with_the_terminal_height() {
+    let api = Arc::new(PagedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    // Unknown height (no Resize yet) falls back to the fixed default.
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.feed_query.limit,
+        Some(lemmy::api::FeedQuery::DEFAULT_LIMIT)
+    );
+
+    // A 40-row terminal fits 23 rows in the primary pane.
+    let expected = lemmy::app::render::feed_limit_for_height(40) as u32;
+    assert_eq!(expected, 23);
+    app.dispatch(AppAction::Resize { height: 40 })
+        .await
+        .unwrap();
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.feed_query.limit,
+        Some(expected),
+        "refresh sizes the page to the pane"
+    );
+
+    // Every page turn re-evaluates the same way.
+    app.state.view.posts = vec![post_view(1, "first page post")];
+    app.state.view.next_page = Some("2".to_owned());
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    let limits = api.limits.lock().unwrap();
+    assert_eq!(
+        limits.last().copied().flatten(),
+        Some(expected),
+        "the next-page request carries the adaptive limit"
+    );
 }
 
 #[tokio::test]

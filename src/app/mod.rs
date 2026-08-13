@@ -95,6 +95,15 @@ async fn run_terminal_async(
         let mut input = crate::input::InputEngine::new().with_keymaps(keymaps);
         let mut ticks = tokio::time::interval(Duration::from_millis(100));
         let mut app = Some(app);
+        // Feed pages are sized to the primary pane, so the app must know the
+        // terminal height before any launch fetch runs.
+        let initial_height = terminal.size().map(|size| size.height).unwrap_or(24);
+        app.as_mut()
+            .expect("application is present")
+            .dispatch(AppAction::Resize {
+                height: initial_height,
+            })
+            .await?;
         // Run the configured startup action (for example `feed`) before the
         // first draw, so the launch view is the one the user asked for.
         if !startup.is_empty() {
@@ -194,7 +203,10 @@ fn queue_terminal_event(
                 queued_actions.push_back(command.into());
             }
         }
-        Event::Resize(_, _) => *redraw = true,
+        Event::Resize(_, height) => {
+            queued_actions.push_back(AppAction::Resize { height });
+            *redraw = true;
+        }
         _ => {}
     }
     false
@@ -228,6 +240,10 @@ pub struct App {
     media_policy: MediaPolicyConfig,
     terminal_capabilities: TerminalCapabilities,
     collision_policy: CollisionPolicy,
+    /// Latest terminal height, used to size feed pages to the primary pane.
+    /// Zero means unknown (no Resize seen yet); feeds then fall back to the
+    /// fixed default limit.
+    terminal_height: u16,
     quit: bool,
 }
 
@@ -296,7 +312,18 @@ impl App {
             media_policy,
             terminal_capabilities,
             collision_policy,
+            terminal_height: 0,
             quit: false,
+        }
+    }
+
+    /// Page size for the current terminal: exactly what fits the primary
+    /// pane when the height is known, otherwise the fixed default.
+    fn feed_limit(&self) -> u32 {
+        if self.terminal_height == 0 {
+            FeedQuery::DEFAULT_LIMIT
+        } else {
+            render::feed_limit_for_height(self.terminal_height) as u32
         }
     }
 
@@ -357,6 +384,10 @@ impl App {
     pub async fn dispatch(&mut self, action: AppAction) -> Result<()> {
         match action {
             AppAction::Input(command) => self.dispatch_command(command).await,
+            AppAction::Resize { height } => {
+                self.terminal_height = height;
+                Ok(())
+            }
             AppAction::Profile(command) => self.dispatch_profile(command).await,
             AppAction::SubmitDraft(id) => self.submit_draft(id).await,
             AppAction::DiscardDraft(id) => {
@@ -825,6 +856,8 @@ impl App {
         let context = self.state.active.clone();
         self.state.status.pending = true;
         let profile = context.profile.id.clone();
+        // Pull exactly what the primary pane can show at the current size.
+        self.state.view.feed_query.limit = Some(self.feed_limit());
         let query = self.state.view.feed_query.clone();
         let request = self.begin_request(RequestIdentity::Feed);
         match self
@@ -1311,6 +1344,7 @@ impl App {
             .push(self.state.view.feed_query.page.clone());
         let mut query = self.state.view.feed_query.clone();
         query.page = Some(cursor.clone());
+        query.limit = Some(self.feed_limit());
         let result = self.repository.api.feed(&self.state.active, query).await;
         match result {
             Ok(page) => {
@@ -1335,6 +1369,7 @@ impl App {
         };
         let mut query = self.state.view.feed_query.clone();
         query.page = previous.clone();
+        query.limit = Some(self.feed_limit());
         let result = self.repository.api.feed(&self.state.active, query).await;
         match result {
             Ok(page) => {
@@ -2332,6 +2367,24 @@ mod tests {
     use serde_json::json;
     use std::sync::Arc;
     use url::Url;
+
+    #[test]
+    fn resize_events_are_queued_as_actions() {
+        let mut input = crate::input::InputEngine::new();
+        let mut queued = VecDeque::new();
+        let mut redraw = false;
+        assert!(!queue_terminal_event(
+            Event::Resize(120, 40),
+            &mut input,
+            &mut queued,
+            &mut redraw
+        ));
+        assert!(redraw, "a resize must trigger a redraw");
+        assert!(
+            matches!(queued.pop_front(), Some(AppAction::Resize { height: 40 })),
+            "the resize is queued so the app can re-size feed pages"
+        );
+    }
 
     #[test]
     fn queues_text_and_escape_while_action_is_in_flight() {
