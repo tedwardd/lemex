@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::help::{HelpIndex, contextual_help, mode_label};
-use super::state::{CommunitiesModal, Modal, ThreadModal};
+use super::state::{CommunitiesModal, HelpModal, Modal, ThreadModal};
 use super::{DownloadsRender, RenderModel};
 
 /// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
@@ -73,7 +73,7 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
             Modal::Communities(communities) => {
                 render_communities(frame, areas[1], communities, &suffix)
             }
-            Modal::Help(query) => render_help(frame, areas[1], query, &suffix),
+            Modal::Help(help) => render_help(frame, areas[1], help, &suffix),
         }
     }
 
@@ -247,60 +247,54 @@ fn render_thread(
     frame.render_widget(paragraph, area);
 }
 
-fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, query: &str, depth: &str) {
-    // Help keeps its two-pane layout (index list + groups) inside one
-    // centered modal box, full width so command descriptions stay readable.
+fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpModal, depth: &str) {
+    // Help is one full-width column: command + description on a wrapped
+    // line each, so long descriptions never run off the edge of a cramped
+    // side pane. The group list is folded into the footer; `:help <group>`
+    // still filters by it.
     let area = modal_area(content, 10, 9);
     frame.render_widget(Clear, area);
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(area);
 
-    let entries = HelpIndex::default().search(query);
-    let items = entries
-        .iter()
-        .map(|entry| {
-            ListItem::new(Line::from(vec![
-                Span::styled(entry.command, Style::default().add_modifier(Modifier::BOLD)),
-                Span::raw("  —  "),
-                Span::raw(entry.description),
-            ]))
-        })
-        .collect::<Vec<_>>();
-    let title = if query.is_empty() {
-        format!("Help — all commands{depth}")
-    } else {
-        format!("Help — \"{query}\"{depth}")
-    };
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(title))
-        .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
-        .highlight_symbol("▶ ");
-    // Wipe the pane first so a short help list does not leave stale feed
-    // content visible below its last row.
-    frame.render_widget(Clear, body[0]);
-    frame.render_stateful_widget(list, body[0], &mut ListState::default());
-
+    let entries = HelpIndex::default().search(&help.query);
+    let mut lines: Vec<Line> = Vec::with_capacity(entries.len() + 3);
+    lines.push(Line::from(Span::styled(
+        format!("{} matching command(s)", entries.len()),
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    for entry in &entries {
+        lines.push(Line::from(vec![
+            Span::styled(entry.command, Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw("  —  "),
+            Span::raw(entry.description),
+        ]));
+    }
     let mut groups: Vec<&'static str> = Vec::new();
     for entry in &entries {
         if !groups.contains(&entry.group) {
             groups.push(entry.group);
         }
     }
-    let lines = std::iter::once(Line::from("Searchable help"))
-        .chain(std::iter::once(Line::from(format!(
-            "{} matching command(s)",
-            entries.len()
-        ))))
-        .chain(std::iter::once(Line::from("")))
-        .chain(groups.iter().map(|group| Line::from(format!("• {group}"))))
-        .collect::<Vec<_>>();
-    let detail = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).title("Help groups"))
-        .wrap(Wrap { trim: false });
-    frame.render_widget(Clear, body[1]);
-    frame.render_widget(detail, body[1]);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        format!("Groups: {}", groups.join("  •  ")),
+        Style::default().add_modifier(Modifier::DIM),
+    )));
+
+    // Clamp the scroll so a short index (or a long scroll) never leaves
+    // blank space under the box; wrapped lines are taller than the line
+    // count, so reaching the bottom may need one more j.
+    let pane_lines = area.height.saturating_sub(2) as usize;
+    let scroll = help.scroll.min(lines.len().saturating_sub(pane_lines)) as u16;
+    let title = if help.query.is_empty() {
+        format!("Help — all commands{depth} (j/k: scroll, Esc: close)")
+    } else {
+        format!("Help — \"{}\"{depth} (j/k: scroll, Esc: close)", help.query)
+    };
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, area);
 }
 
 fn render_downloads(
@@ -554,13 +548,29 @@ mod tests {
             modals: Vec::new(),
         };
         if let Some(query) = help {
-            model.modals.push(Modal::Help(query));
+            model.modals.push(Modal::Help(HelpModal::new(query)));
         }
         model
     }
 
     fn rendered(model: &RenderModel) -> String {
         rendered_at(model, 80, 24)
+    }
+
+    #[test]
+    fn help_descriptions_wrap_instead_of_running_off_the_edge() {
+        // Long descriptions must wrap onto continuation lines — the old
+        // side-by-side List layout truncated them at the pane edge.
+        let model = model(Some("communities".into()), false);
+        let text = rendered_at(&model, 60, 48);
+        // Wrapping breaks lines at spaces, so compare without spaces: the
+        // description's tail must be present no matter where the wrap lands
+        // (a truncated List would lose it entirely).
+        let compact = text.replace(' ', "");
+        assert!(
+            compact.contains("switchesthelist"),
+            "a wrapped help entry must show its full description, got: {text}"
+        );
     }
 
     #[test]

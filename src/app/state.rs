@@ -88,6 +88,21 @@ impl ThreadModal {
     }
 }
 
+/// The searchable help index, shown as a scrollable wrapped list.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct HelpModal {
+    /// Query filtering the index (empty = all commands).
+    pub query: String,
+    /// Scroll offset (in lines) of the help content.
+    pub scroll: usize,
+}
+
+impl HelpModal {
+    pub fn new(query: String) -> Self {
+        Self { query, scroll: 0 }
+    }
+}
+
 /// A transient overlay drawn over the primary content. Modals are stacked
 /// bottom (index 0) to top (last); the last one has focus and `Esc` pops one
 /// level. Opening beyond [`MAX_MODALS`] evicts the oldest.
@@ -99,7 +114,7 @@ pub enum Modal {
     /// The community-list picker.
     Communities(CommunitiesModal),
     /// Searchable command help (the query filters the index).
-    Help(String),
+    Help(HelpModal),
 }
 
 /// Depth cap for the modal stack; deeper nesting is evicted oldest-first.

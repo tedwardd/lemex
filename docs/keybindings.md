@@ -124,8 +124,9 @@ bottom-to-top (at most three deep; the depth shows in the title as
   `j`/`k` or `Ctrl-d`/`Ctrl-u` scroll it).
 - `C` / `:communities` opens the **community picker**; `Enter` opens the
   selected community's feed and pops the picker.
-- `:help [topic]` opens **help** (re-help replaces the help modal instead of
-  stacking a second one).
+- `:help [topic]` opens **help** as a single full-width wrapped column
+  (command + description per line, `j`/`k` or `Ctrl-d`/`Ctrl-u` scrolls;
+  re-help replaces the help modal instead of stacking a second one).
 - `Esc` (`:close`) pops one level. `:help` above `C` above a thread is fine:
   each `Esc` unwinds one of them.
 - **Navigation replaces the feed and dismisses the thread modal** — its post

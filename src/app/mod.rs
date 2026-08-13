@@ -607,7 +607,10 @@ impl App {
                         communities.move_selection(count as isize);
                         return Ok(());
                     }
-                    Some(Modal::Help(_)) => return Ok(()),
+                    Some(Modal::Help(help)) => {
+                        help.scroll = help.scroll.saturating_add(count as usize);
+                        return Ok(());
+                    }
                     None => {}
                 }
                 self.move_selection(count as isize);
@@ -623,7 +626,10 @@ impl App {
                         communities.move_selection(-(count as isize));
                         return Ok(());
                     }
-                    Some(Modal::Help(_)) => return Ok(()),
+                    Some(Modal::Help(help)) => {
+                        help.scroll = help.scroll.saturating_sub(count as usize);
+                        return Ok(());
+                    }
                     None => {}
                 }
                 self.move_selection(-(count as isize));
@@ -659,18 +665,34 @@ impl App {
                 Ok(())
             }
             Command::ScrollDetailDown { count } => {
-                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
-                    thread.scroll = thread
-                        .scroll
-                        .saturating_add(DETAIL_SCROLL_STEP * count as usize);
+                match self.state.view.top_modal_mut() {
+                    Some(Modal::Thread(thread)) => {
+                        thread.scroll = thread
+                            .scroll
+                            .saturating_add(DETAIL_SCROLL_STEP * count as usize);
+                    }
+                    Some(Modal::Help(help)) => {
+                        help.scroll = help
+                            .scroll
+                            .saturating_add(DETAIL_SCROLL_STEP * count as usize);
+                    }
+                    _ => {}
                 }
                 Ok(())
             }
             Command::ScrollDetailUp { count } => {
-                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
-                    thread.scroll = thread
-                        .scroll
-                        .saturating_sub(DETAIL_SCROLL_STEP * count as usize);
+                match self.state.view.top_modal_mut() {
+                    Some(Modal::Thread(thread)) => {
+                        thread.scroll = thread
+                            .scroll
+                            .saturating_sub(DETAIL_SCROLL_STEP * count as usize);
+                    }
+                    Some(Modal::Help(help)) => {
+                        help.scroll = help
+                            .scroll
+                            .saturating_sub(DETAIL_SCROLL_STEP * count as usize);
+                    }
+                    _ => {}
                 }
                 Ok(())
             }
@@ -1519,7 +1541,9 @@ impl App {
         }
         self.state
             .view
-            .push_modal(Modal::Help(query.unwrap_or_default()));
+            .push_modal(Modal::Help(state::HelpModal::new(
+                query.unwrap_or_default(),
+            )));
         self.state
             .status
             .success("help: type :help <topic> to filter; Esc closes");

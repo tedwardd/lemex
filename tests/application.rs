@@ -3023,7 +3023,7 @@ async fn help_command_opens_searchable_help_and_back_closes_it() {
     .unwrap();
     assert_eq!(
         match app.state.view.top_modal() {
-            Some(levim::app::Modal::Help(query)) => Some(query.as_str()),
+            Some(levim::app::Modal::Help(help)) => Some(help.query.as_str()),
             _ => None,
         },
         Some("downloads")
