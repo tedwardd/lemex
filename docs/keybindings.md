@@ -118,8 +118,8 @@ Threads, the community list, and help are **floating centered modals** drawn
 over the primary content: none ever fills the window — margins on every
 side show the feed (or downloads panel) around the box, so they read as
 overlays above the content. Each modal carries its own colors — cyan
-borders/titles and a solid gray surface — so it stands apart from the
-content behind it on any terminal theme. They stack
+borders/titles on a dark surface with light text — a self-contained palette
+that stands apart from the content behind it on any terminal theme. They stack
 bottom-to-top (at most three deep; the depth shows in the title as
 `(N/3)` when stacked), and the focused modal — the top of the stack — takes
 `j`/`k`, `gg`/`G`, `Enter`, and `Esc`:

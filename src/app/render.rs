@@ -205,10 +205,14 @@ fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatu
 /// Modal accent: borders and titles. A distinct accent makes an open modal
 /// read as an overlay instead of blending into the content behind it.
 const MODAL_ACCENT: Color = Color::Cyan;
-/// Modal surface: the box interior's background. A solid mid-tone keeps the
-/// modal readable and separates it from the feed on any terminal theme —
-/// without a surface, an overlay is indistinguishable from the content.
-const MODAL_SURFACE: Color = Color::Gray;
+/// Modal surface: the box interior's background. A dark surface with light
+/// text is a self-contained palette — the modal does not depend on the
+/// terminal's default foreground, which on some themes is dark-on-dark and
+/// would make overlay text unreadable.
+const MODAL_SURFACE: Color = Color::DarkGray;
+/// Modal text: explicit light foreground on the dark surface, so modal
+/// content stays readable on any terminal theme.
+const MODAL_TEXT: Color = Color::White;
 
 /// Paint a modal's surface and chrome (Clear, then a background-filled block
 /// with accent borders and title) and return the interior rect plus the
@@ -219,7 +223,7 @@ fn modal_chrome(
     title: String,
 ) -> (ratatui::layout::Rect, Style) {
     frame.render_widget(Clear, area);
-    let surface = Style::default().bg(MODAL_SURFACE);
+    let surface = Style::default().fg(MODAL_TEXT).bg(MODAL_SURFACE);
     let accent = Style::default().fg(MODAL_ACCENT);
     frame.render_widget(
         Block::default()
@@ -460,7 +464,7 @@ fn render_communities(
             Line::from(Span::styled(
                 row,
                 Style::default()
-                    .fg(MODAL_SURFACE)
+                    .fg(Color::Black)
                     .bg(MODAL_ACCENT)
                     .add_modifier(Modifier::BOLD),
             ))
@@ -659,8 +663,13 @@ mod tests {
         );
         assert_eq!(
             buffer[(70, 7)].style().bg,
-            Some(Color::Gray),
-            "the interior sits on the modal surface"
+            Some(Color::DarkGray),
+            "the interior sits on the dark modal surface"
+        );
+        assert_eq!(
+            buffer[(70, 7)].style().fg,
+            Some(Color::White),
+            "modal text is explicitly light for contrast on any theme"
         );
     }
 
