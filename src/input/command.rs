@@ -47,6 +47,11 @@ pub enum Command {
     /// Cancel the pending destructive action (default key: `n`).
     Cancel,
     Text(String),
+    /// Delete the last character of the compose/command line (Backspace).
+    Backspace,
+    /// Abandon the current command or search line without submitting
+    /// (Esc in command/search mode); the open view is left untouched.
+    CancelLine,
     SubmitLine(String),
     Noop,
 }
@@ -71,6 +76,8 @@ impl Command {
             "insert" => Some(Command::EnterInsert),
             "visual" => Some(Command::EnterVisual),
             "command" => Some(Command::EnterCommand),
+            "backspace" => Some(Command::Backspace),
+            "cancel-line" => Some(Command::CancelLine),
             "search" | "search-forward" => Some(Command::EnterSearch { backward: false }),
             "search-backward" => Some(Command::EnterSearch { backward: true }),
             "back" => Some(Command::Back),

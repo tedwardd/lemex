@@ -102,6 +102,7 @@ impl InputEngine {
         self.pending.clear();
         match key {
             KeyCode::Esc => self.leave_modal(Command::Back),
+            KeyCode::Backspace => Command::Backspace,
             KeyCode::Char(character) => Command::Text(character.to_string()),
             _ => Command::Noop,
         }
@@ -110,7 +111,10 @@ impl InputEngine {
     fn handle_line_mode(&mut self, key: KeyCode) -> Command {
         self.pending.clear();
         match key {
-            KeyCode::Esc => self.leave_modal(Command::Back),
+            // Esc abandons the line: a distinct command so the app can clear
+            // the visible compose text without treating it as navigation
+            // back (which would also close an open thread).
+            KeyCode::Esc => self.leave_modal(Command::CancelLine),
             KeyCode::Enter => {
                 self.mode = Mode::Normal;
                 self.count = 0;
@@ -118,7 +122,7 @@ impl InputEngine {
             }
             KeyCode::Backspace => {
                 self.line.pop();
-                Command::Noop
+                Command::Backspace
             }
             KeyCode::Char(character) => {
                 self.line.push(character);

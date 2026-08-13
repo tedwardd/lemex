@@ -162,6 +162,37 @@ fn colon_enters_command_mode_and_enter_submits_line() {
 }
 
 #[test]
+fn escape_abandons_the_command_line_without_touching_the_view() {
+    let mut engine = InputEngine::default();
+    engine.handle(key(':'));
+    engine.handle(key('m'));
+    assert_eq!(
+        engine.handle(escape()),
+        Command::CancelLine,
+        "Esc in command mode abandons the line"
+    );
+    assert_eq!(engine.mode(), Mode::Normal);
+    // The app clears the visible text on CancelLine (covered by the
+    // application test); the engine's own line buffer is gone.
+}
+
+#[test]
+fn backspace_emits_a_command_in_insert_mode_too() {
+    let mut engine = InputEngine::default();
+    engine.handle(key('i'));
+    assert_eq!(
+        engine.handle(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+        Command::Backspace,
+        "insert-mode backspace must reach the app so the draft shrinks"
+    );
+    assert_eq!(
+        engine.handle(escape()),
+        Command::Back,
+        "insert Esc keeps its semantics"
+    );
+}
+
+#[test]
 fn escape_leaves_insert_and_visual_modes() {
     let mut engine = InputEngine::default();
 
@@ -189,13 +220,13 @@ fn normal_maps_motions_open_refresh_search_and_quit() {
         Command::EnterSearch { backward: false }
     );
     assert_eq!(engine.mode(), Mode::SearchForward);
-    assert_eq!(engine.handle(escape()), Command::Back);
+    assert_eq!(engine.handle(escape()), Command::CancelLine);
     assert_eq!(
         engine.handle(key('?')),
         Command::EnterSearch { backward: true }
     );
     assert_eq!(engine.mode(), Mode::SearchBackward);
-    assert_eq!(engine.handle(escape()), Command::Back);
+    assert_eq!(engine.handle(escape()), Command::CancelLine);
     assert_eq!(engine.handle(key('q')), Command::Quit);
 }
 
@@ -221,7 +252,7 @@ fn search_submits_and_backspace_updates_line() {
     assert_eq!(engine.handle(key('b')), Command::Text("b".into()));
     assert_eq!(
         engine.handle(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
-        Command::Noop
+        Command::Backspace
     );
     assert_eq!(engine.handle(enter()), Command::SubmitLine("a".into()));
     assert_eq!(engine.mode(), Mode::Normal);

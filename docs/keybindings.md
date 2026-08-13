@@ -55,8 +55,10 @@ action is in flight are queued and applied when the action completes.
 ## Command line
 
 Commands are entered with `:` and submitted with `Enter`. A leading `:` on
-the line is optional. The compose buffer is cleared after every submission so
-secrets typed for `:login` never linger on screen.
+the line is optional. `Backspace` deletes the previous character of the line
+(or of an insert-mode draft), and `Esc` abandons the line without submitting
+it — leaving an open thread untouched. The compose buffer is cleared after
+every submission so secrets typed for `:login` never linger on screen.
 
 | Command | Purpose |
 | --- | --- |

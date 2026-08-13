@@ -577,6 +577,20 @@ impl App {
                 self.state.view.compose.push_str(&text);
                 Ok(())
             }
+            Command::Backspace => {
+                // The compose buffer mirrors the command line and the insert
+                // draft; deleting the engine's line must delete the visible
+                // text too, or backspace looks dead.
+                self.state.view.compose.pop();
+                Ok(())
+            }
+            Command::CancelLine => {
+                // Abandoning a command/search line clears its visible text
+                // and returns to Normal without touching the open view.
+                self.state.mode = Mode::Normal;
+                self.state.view.compose.clear();
+                Ok(())
+            }
             Command::SubmitLine(line) => self.submit_line(line).await,
             Command::MoveLeft { .. } | Command::MoveRight { .. } | Command::Noop => Ok(()),
         }

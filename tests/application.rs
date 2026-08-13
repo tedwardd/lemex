@@ -1321,6 +1321,32 @@ async fn feed_page_size_scales_with_the_terminal_height() {
 }
 
 #[tokio::test]
+async fn backspace_edits_the_compose_line_and_cancel_clears_it() {
+    let mut app = fixture_app();
+    app.dispatch(AppAction::Input(Command::Text("media".into())))
+        .await
+        .unwrap();
+    assert_eq!(app.state.view.compose, "media");
+
+    app.dispatch(AppAction::Input(Command::Backspace))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.compose, "medi",
+        "backspace must shrink the visible command line"
+    );
+
+    app.dispatch(AppAction::Input(Command::CancelLine))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.compose, "",
+        "cancelling a command line clears its visible text"
+    );
+    assert_eq!(app.state.mode, lemmy::input::Mode::Normal);
+}
+
+#[tokio::test]
 async fn next_and_previous_page_flip_the_feed() {
     let api = Arc::new(PagedFeedApi::default());
     let mut app = App::new(
