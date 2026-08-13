@@ -184,11 +184,13 @@ fn render_content(frame: &mut Frame, content: ratatui::layout::Rect, model: &Ren
     frame.render_stateful_widget(table, content, &mut table_state);
 }
 
-/// Center a modal box of `fraction` of the content pane's size, and blank
-/// its rect so the content underneath never shows through.
-fn modal_area(content: ratatui::layout::Rect, fraction: u16) -> ratatui::layout::Rect {
-    let width = (content.width * fraction / 10).clamp(40, 72);
-    let height = (content.height * fraction / 10).clamp(10, content.height);
+/// Center a modal box over the content pane and blank its rect so the
+/// content underneath never shows through. `width` and `height` are tenths
+/// (10 = 100% of the pane); reading modals get the full width so long text
+/// is never clipped at an arbitrary column.
+fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatui::layout::Rect {
+    let width = (content.width * width / 10).max(40).min(content.width);
+    let height = (content.height * height / 10).clamp(10, content.height);
     let x = content.x + content.width.saturating_sub(width) / 2;
     let y = content.y + content.height.saturating_sub(height) / 2;
     ratatui::layout::Rect::new(x, y, width, height)
@@ -201,7 +203,7 @@ fn render_thread(
     thread: &ThreadModal,
     depth: &str,
 ) {
-    let area = modal_area(content, 9);
+    let area = modal_area(content, 10, 9);
     frame.render_widget(Clear, area);
 
     let detail = &thread.post;
@@ -247,8 +249,8 @@ fn render_thread(
 
 fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, query: &str, depth: &str) {
     // Help keeps its two-pane layout (index list + groups) inside one
-    // centered modal box.
-    let area = modal_area(content, 9);
+    // centered modal box, full width so command descriptions stay readable.
+    let area = modal_area(content, 10, 9);
     frame.render_widget(Clear, area);
     let body = Layout::default()
         .direction(Direction::Horizontal)
@@ -390,7 +392,7 @@ fn render_communities(
     modal: &CommunitiesModal,
     depth: &str,
 ) {
-    let area = modal_area(content, 7);
+    let area = modal_area(content, 7, 7);
     // The modal floats over the feed: wipe its rect first so cells the
     // community list does not paint (empty space under the last row) are
     // blank instead of showing the primary content through.
@@ -559,6 +561,26 @@ mod tests {
 
     fn rendered(model: &RenderModel) -> String {
         rendered_at(model, 80, 24)
+    }
+
+    #[test]
+    fn help_modal_spans_the_content_width_on_wide_terminals() {
+        // Help descriptions were being clipped at a hard 72-column cap; the
+        // modal must use the full content width so text stays readable.
+        let model = model(Some(String::new()), false);
+        let backend = TestBackend::new(140, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|frame| render(frame, &model))
+            .expect("render help modal");
+        let buffer = terminal.backend().buffer();
+        // The content pane spans x=0..140, y=3..18; the box's right border
+        // must sit at the far edge, not a narrow centered box.
+        let right_edge = buffer[(139, 4)].symbol();
+        assert!(
+            matches!(right_edge, "│" | "┐" | "╎" | "|"),
+            "the help box must reach the right edge of the pane, got {right_edge:?}"
+        );
     }
 
     #[test]
