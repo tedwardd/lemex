@@ -4,7 +4,8 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{
-        Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Wrap,
+        Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState,
+        Wrap,
     },
 };
 
@@ -271,6 +272,9 @@ fn render_help(frame: &mut Frame, body: &[ratatui::layout::Rect], query: &str) {
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
         .highlight_symbol("▶ ");
+    // Wipe the pane first so a short help list does not leave stale feed
+    // content visible below its last row.
+    frame.render_widget(Clear, body[0]);
     frame.render_stateful_widget(list, body[0], &mut ListState::default());
 
     let mut groups: Vec<&'static str> = Vec::new();
@@ -290,6 +294,7 @@ fn render_help(frame: &mut Frame, body: &[ratatui::layout::Rect], query: &str) {
     let detail = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title("Help groups"))
         .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, body[1]);
     frame.render_widget(detail, body[1]);
 }
 
@@ -336,6 +341,9 @@ fn render_downloads(
         )))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED))
         .highlight_symbol("▶ ");
+    // Wipe the pane first so a short record list does not leave stale feed
+    // content visible below its last row.
+    frame.render_widget(Clear, body[0]);
     frame.render_stateful_widget(list, body[0], &mut list_state);
 
     let detail_lines = match downloads
@@ -366,6 +374,7 @@ fn render_downloads(
     let detail = Paragraph::new(detail_lines)
         .block(Block::default().borders(Borders::ALL).title("Download"))
         .wrap(Wrap { trim: false });
+    frame.render_widget(Clear, body[1]);
     frame.render_widget(detail, body[1]);
 }
 
@@ -378,6 +387,10 @@ fn render_communities(frame: &mut Frame, content: ratatui::layout::Rect, modal: 
     let x = content.x + content.width.saturating_sub(width) / 2;
     let y = content.y + content.height.saturating_sub(height) / 2;
     let area = ratatui::layout::Rect::new(x, y, width, height);
+    // The modal floats over the feed: wipe its rect first so cells the
+    // community list does not paint (empty space under the last row) are
+    // blank instead of showing the primary content through.
+    frame.render_widget(Clear, area);
 
     let listing = match modal.listing {
         crate::api::FeedListing::All => "All",
@@ -537,6 +550,60 @@ mod tests {
 
     fn rendered(model: &RenderModel) -> String {
         rendered_at(model, 80, 24)
+    }
+
+    #[test]
+    fn communities_modal_empty_space_does_not_show_content_through() {
+        // Render a feed first, then open the modal over the same buffer:
+        // cells inside the modal that the short community list does not
+        // paint must be blank, not leftover feed content.
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        let feed_model = {
+            let mut feed = model(None, false);
+            feed.posts = (1..=8)
+                .map(|index| crate::api::PostView {
+                    id: crate::PostId(index),
+                    title: format!("post {index} under the modal"),
+                    body: None,
+                    url: None,
+                    community_id: crate::CommunityId(1),
+                    creator_id: crate::UserId(1),
+                    score: index,
+                    comments: index,
+                    published: None,
+                })
+                .collect();
+            feed
+        };
+        terminal
+            .draw(|frame| render(frame, &feed_model))
+            .expect("render feed");
+        let mut modal_model = feed_model.clone();
+        modal_model.communities = Some(CommunitiesModal {
+            communities: vec![crate::api::CommunityView {
+                id: crate::CommunityId(1),
+                name: "main".into(),
+                title: None,
+                subscribers: 1,
+                subscribed: false,
+            }],
+            listing: crate::api::FeedListing::Local,
+            selected: Some(0),
+        });
+        terminal
+            .draw(|frame| render(frame, &modal_model))
+            .expect("render modal");
+        let buffer = terminal.backend().buffer();
+        // The modal spans y=3..13, x=10..70 at this size. A cell inside the
+        // box below its single row is covered by the feed's title text
+        // (painted at x≈18..38) in the first draw; with the fix it must be
+        // blank, not the feed showing through.
+        let probe = buffer[(20, 8)].symbol();
+        assert_eq!(
+            probe, " ",
+            "modal empty space must be blank, not feed content ({probe:?})"
+        );
     }
 
     #[test]
