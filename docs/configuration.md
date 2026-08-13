@@ -149,6 +149,10 @@ pending = "yellow"     # status bar
 ready = "green"        # status bar
 ```
 
+The palette is part of the interface, so the client always renders it: the
+`NO_COLOR` environment variable (no-color.org) is deliberately overridden
+at startup. To run without colors, set every key to `"reset"`.
+
 ## Logging
 
 Logging is off by default and redacts credentials, tokens, private content,

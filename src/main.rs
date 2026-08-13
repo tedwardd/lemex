@@ -212,6 +212,13 @@ fn main() -> Result<()> {
         .build()
         .map_err(|error| AppError::Terminal(format!("could not start Tokio runtime: {error}")))?;
     let (app, keymaps, startup) = runtime.block_on(build_app())?;
+    // crossterm 0.29 silently suppresses every color when NO_COLOR is set
+    // (no-color.org), turning the palette — including the user-configured
+    // [colors] section — into a no-op. The palette is part of the TUI's
+    // interface (status states, modal elevation) and explicitly
+    // configurable, so the client always renders it; users who want no
+    // colors can set every [colors] key to "reset".
+    crossterm::style::Colored::set_ansi_color_disabled(false);
     let terminal = ratatui::init();
     let result = run_terminal(app, terminal, &runtime, &keymaps, &startup);
     ratatui::restore();

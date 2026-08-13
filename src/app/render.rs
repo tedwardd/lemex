@@ -622,6 +622,125 @@ mod tests {
     }
 
     #[test]
+    fn colors_survive_the_render_pipeline_to_the_terminal_writer() {
+        // The full wire path: buffer -> diff -> crossterm backend -> bytes.
+        // If colors were stripped anywhere past the buffer, this fails.
+        #[derive(Clone)]
+        struct SharedSink(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+        impl std::io::Write for SharedSink {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let mut model = model(Some(String::new()), false);
+        model.colors = AppColors {
+            accent: Color::Red,
+            ..AppColors::default()
+        };
+        // crossterm suppresses colors when NO_COLOR is set (memoized once);
+        // the client forces its palette on at startup, so mirror that here or
+        // this wire-level check would see an empty SGR on NO_COLOR machines.
+        crossterm::style::Colored::set_ansi_color_disabled(false);
+        let sink = SharedSink(std::sync::Arc::new(std::sync::Mutex::new(Vec::new())));
+        let backend = ratatui::backend::CrosstermBackend::new(sink.clone());
+        let options = ratatui::TerminalOptions {
+            viewport: ratatui::Viewport::Fixed(ratatui::layout::Rect::new(0, 0, 140, 40)),
+        };
+        let mut terminal = ratatui::Terminal::with_options(backend, options).expect("terminal");
+        let frame = terminal
+            .draw(|frame| render(frame, &model))
+            .expect("render");
+        // The frame buffer must hold the accent on the modal's left border
+        // (x=7 at 140 columns) and the surface on its interior.
+        let border = &frame.buffer[(7, 5)];
+        assert_eq!(
+            border.fg,
+            Color::Red,
+            "the frame buffer must carry the accent fg on the border cell"
+        );
+        assert_eq!(
+            frame.buffer[(70, 7)].bg,
+            Color::DarkGray,
+            "the frame buffer must carry the surface bg on the interior"
+        );
+        // And the accent must reach the writer as an SGR sequence (crossterm
+        // 0.29 encodes named colors as 256-color indices): the full chain
+        // buffer -> diff -> crossterm backend -> bytes.
+        let bytes = sink.0.lock().unwrap().clone();
+        assert!(
+            bytes.windows(7).any(|window| window == b"\x1b[38;5;"),
+            "the accent-colored border must emit an SGR foreground sequence; got: {:?}",
+            String::from_utf8_lossy(&bytes[..bytes.len().min(300)])
+        );
+    }
+
+    #[test]
+    fn palette_from_a_real_config_file_reaches_rendered_cells() {
+        // The full chain: a config file on disk -> AppConfig::load ->
+        // AppColors -> App::with_colors -> render model -> painted cells.
+        let directory =
+            std::env::temp_dir().join(format!("levim-render-colors-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("config.toml");
+        std::fs::write(
+            &path,
+            "[colors]\naccent = \"red\"\nsurface = \"black\"\ntext = \"lightyellow\"\n[[profiles]]\nid = \"main\"\ninstance_url = \"https://example.test\"\n",
+        )
+        .unwrap();
+        let config = crate::config::AppConfig::load(&path).expect("config loads");
+        let mut model = model(Some(String::new()), false);
+        model.colors = crate::app::AppColors::from_config(&config.colors);
+        let text = rendered(&model);
+        assert!(text.contains("Help"), "help modal still renders");
+        // The colors themselves are asserted in custom_palette_reaches_rendered_cells;
+        // here the point is the config file path resolves them.
+        assert_eq!(
+            model.colors.accent,
+            Color::Red,
+            "accent parsed from the file"
+        );
+        assert_eq!(model.colors.surface, Color::Black);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn custom_palette_reaches_rendered_cells() {
+        let mut model = model(Some(String::new()), false);
+        model.colors = AppColors {
+            accent: Color::Red,
+            surface: Color::Black,
+            text: Color::LightYellow,
+            ..AppColors::default()
+        };
+        let backend = TestBackend::new(140, 40);
+        let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
+        terminal
+            .draw(|frame| render(frame, &model))
+            .expect("render help modal");
+        let buffer = terminal.backend().buffer();
+        assert_eq!(
+            buffer[(7, 5)].style().fg,
+            Some(Color::Red),
+            "the configured accent colors the border"
+        );
+        assert_eq!(
+            buffer[(70, 7)].style().bg,
+            Some(Color::Black),
+            "the configured surface fills the interior"
+        );
+        assert_eq!(
+            buffer[(70, 7)].style().fg,
+            Some(Color::LightYellow),
+            "the configured text color is used"
+        );
+    }
+
+    #[test]
     fn help_modal_floats_centered_with_margins() {
         // Every modal must look like an overlay: centered, with the content
         // visible on all four sides — never touching the pane's edges.
