@@ -1294,9 +1294,12 @@ async fn feed_page_size_scales_with_the_terminal_height() {
     // A 40-row terminal fits 23 rows in the primary pane.
     let expected = lemmy::app::render::feed_limit_for_height(40) as u32;
     assert_eq!(expected, 23);
-    app.dispatch(AppAction::Resize { height: 40 })
-        .await
-        .unwrap();
+    app.dispatch(AppAction::Resize {
+        width: 120,
+        height: 40,
+    })
+    .await
+    .unwrap();
     app.dispatch(AppAction::Input(Command::Refresh))
         .await
         .unwrap();

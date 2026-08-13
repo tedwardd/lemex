@@ -97,10 +97,14 @@ async fn run_terminal_async(
         let mut app = Some(app);
         // Feed pages are sized to the primary pane, so the app must know the
         // terminal height before any launch fetch runs.
-        let initial_height = terminal.size().map(|size| size.height).unwrap_or(24);
+        let (initial_width, initial_height) = terminal
+            .size()
+            .map(|size| (size.width, size.height))
+            .unwrap_or((80, 24));
         app.as_mut()
             .expect("application is present")
             .dispatch(AppAction::Resize {
+                width: initial_width,
                 height: initial_height,
             })
             .await?;
@@ -131,14 +135,27 @@ async fn run_terminal_async(
                     .map_err(|error| crate::error::AppError::Terminal(error.to_string()))?;
                 if kitty_pending.is_some() || kitty_clear {
                     let mut stdout = std::io::stdout();
-                    // Place the image just below the 3-row session header.
-                    if kitty_pending.is_some() {
-                        let _ = stdout.write_all(b"\x1b[3;1H");
-                    }
-                    if let Some(path) = kitty_pending
-                        && let Ok(bytes) = kitty::render_file(&path)
-                    {
-                        let _ = stdout.write_all(&bytes);
+                    if let Some(path) = kitty_pending {
+                        // Place the image in the detail/thread pane: below
+                        // the 3-row session header, on the right 48% of the
+                        // terminal, scaled to fit without distortion.
+                        let (width, height) = app
+                            .as_ref()
+                            .map(App::terminal_size)
+                            .unwrap_or((80, 24));
+                        let start_row: u16 = 4;
+                        let start_col: u16 = (width as f64 * 0.52) as u16 + 1;
+                        let area = (
+                            width.saturating_sub(start_col),
+                            height.saturating_sub(3 + 11),
+                        );
+                        let cells = kitty::image_dimensions(&path)
+                            .map(|image| kitty::fit_cells(image, area));
+                        let _ = stdout
+                            .write_all(format!("\x1b[{start_row};{start_col}H").as_bytes());
+                        if let Ok(bytes) = kitty::render_file(&path, cells) {
+                            let _ = stdout.write_all(&bytes);
+                        }
                     }
                     if kitty_clear {
                         let _ = stdout.write_all(kitty::clear_images());
@@ -224,8 +241,8 @@ fn queue_terminal_event(
                 queued_actions.push_back(command.into());
             }
         }
-        Event::Resize(_, height) => {
-            queued_actions.push_back(AppAction::Resize { height });
+        Event::Resize(width, height) => {
+            queued_actions.push_back(AppAction::Resize { width, height });
             *redraw = true;
         }
         _ => {}
@@ -261,9 +278,11 @@ pub struct App {
     media_policy: MediaPolicyConfig,
     terminal_capabilities: TerminalCapabilities,
     collision_policy: CollisionPolicy,
-    /// Latest terminal height, used to size feed pages to the primary pane.
-    /// Zero means unknown (no Resize seen yet); feeds then fall back to the
-    /// fixed default limit.
+    /// Latest terminal size: height sizes feed pages to the primary pane,
+    /// and both dimensions place kitty images in the detail pane. Zero means
+    /// unknown (no Resize seen yet); feeds then fall back to the fixed
+    /// default limit.
+    terminal_width: u16,
     terminal_height: u16,
     /// Kitty graphics image waiting to be emitted by the event loop, which
     /// owns all terminal writes; raw escapes from the async action task
@@ -341,6 +360,7 @@ impl App {
             media_policy,
             terminal_capabilities,
             collision_policy,
+            terminal_width: 0,
             terminal_height: 0,
             kitty_render_pending: None,
             kitty_clear_pending: false,
@@ -353,6 +373,10 @@ impl App {
     /// the protocol out-of-band.
     pub fn set_terminal_capabilities(&mut self, capabilities: TerminalCapabilities) {
         self.terminal_capabilities = capabilities;
+    }
+
+    fn terminal_size(&self) -> (u16, u16) {
+        (self.terminal_width, self.terminal_height)
     }
 
     fn take_kitty_pending(&mut self) -> Option<PathBuf> {
@@ -430,7 +454,8 @@ impl App {
     pub async fn dispatch(&mut self, action: AppAction) -> Result<()> {
         match action {
             AppAction::Input(command) => self.dispatch_command(command).await,
-            AppAction::Resize { height } => {
+            AppAction::Resize { width, height } => {
+                self.terminal_width = width;
                 self.terminal_height = height;
                 Ok(())
             }
@@ -1691,7 +1716,7 @@ impl App {
         // owns the terminal and emits the escape sequence during its next
         // redraw, serialized with the ratatui frame so raw bytes cannot
         // corrupt the screen.
-        match kitty::render_file(&path) {
+        match kitty::render_file(&path, None) {
             Ok(_) => {
                 self.kitty_render_pending = Some(path);
                 self.kitty_image_active = true;
@@ -2455,7 +2480,13 @@ mod tests {
         ));
         assert!(redraw, "a resize must trigger a redraw");
         assert!(
-            matches!(queued.pop_front(), Some(AppAction::Resize { height: 40 })),
+            matches!(
+                queued.pop_front(),
+                Some(AppAction::Resize {
+                    width: 120,
+                    height: 40
+                })
+            ),
             "the resize is queued so the app can re-size feed pages"
         );
     }
