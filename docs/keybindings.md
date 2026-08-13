@@ -26,6 +26,7 @@ command/search line.
 | `gg` / `G` | jump | jump to the top / bottom of the feed (`N gg` / `N G` jump to row N) |
 | `Enter` | open | open the selected post (or download) |
 | `o` | open media | open the selected post's media through the configured handler |
+| `C` | communities | open the community list (shortcut for `:communities`) |
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
 | `n` | next page | flip to the next feed page (replaces the list; feed pane focused) |
 | `p` | previous page | flip back to the previous feed page |
@@ -54,12 +55,14 @@ action is in flight are queued and applied when the action completes.
 ## Command line
 
 Commands are entered with `:` and submitted with `Enter`. A leading `:` on
-the line is optional. `Backspace` deletes the previous character of the line
-(or of an insert-mode draft), and `Esc` abandons the line without submitting
-it — leaving an open thread untouched. The compose buffer is cleared after
-every submission so secrets typed for `:login` never linger on screen, and
-while a `:login` line is being typed the password (the third token) is
-echoed as asterisks.
+the line is optional. `Tab` completes the command from the documented
+command index: a unique match fills in the whole command, several matches
+extend to their longest common prefix (press `Tab` again to reach it).
+`Backspace` deletes the previous character of the line (or of an insert-mode
+draft), and `Esc` abandons the line without submitting it — leaving an open
+thread untouched. The compose buffer is cleared after every submission so
+secrets typed for `:login` never linger on screen, and while a `:login` line
+is being typed the password (the third token) is echoed as asterisks.
 
 | Command | Purpose |
 | --- | --- |
@@ -72,7 +75,7 @@ echoed as asterisks.
 | `:whoami` | show the active session user or anonymous |
 | `:feed` | show the home feed |
 | `:subscribed` | show your subscribed communities' feed (requires login) |
-| `:communities` | open the community list as a centered modal — subscribed communities when logged in, local otherwise; `j`/`k` move, `Enter` opens a community, `Esc` closes, `:sort <subscribed\|local\|all>` switches the list |
+| `:communities` (or `C`) | open the community list as a centered modal — subscribed communities when logged in, local otherwise; rows show name and subscriber count (a `◉` glyph marks subscribed communities on the all/local lists); `j`/`k` move, `Enter` opens a community, `Esc` closes, `:sort <subscribed\|local\|all>` switches the list |
 | `:sort <name>` | set the feed sort — `Active` (default), `Hot`, `New`, `Old`, `TopDay`, `TopWeek`, `TopMonth`, `TopYear`, `TopAll`, `TopHour`, `TopSixHour`, `TopTwelveHour`, `MostComments`, `NewComments`; sticks for the session, so `:subscribed` after `:sort New` matches the web UI's `sort=New`. Inside the communities modal it instead switches the list: `:sort subscribed`, `:sort local`, `:sort all` |
 | `:community [<id>]` | open a community feed (defaults to the selected post's community) |
 | `:post` | open the selected post |

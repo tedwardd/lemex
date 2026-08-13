@@ -9,6 +9,9 @@ pub struct InputEngine {
     line: String,
     mappings: MappingTable,
     pending: Vec<KeyCode>,
+    /// Bare command names (no leading `:`) offered by Tab completion in
+    /// command mode; empty means completion is disabled.
+    completions: Vec<String>,
 }
 
 impl Default for InputEngine {
@@ -40,6 +43,8 @@ impl InputEngine {
         mappings.insert(':', Command::EnterCommand);
         mappings.insert('/', Command::EnterSearch { backward: false });
         mappings.insert('?', Command::EnterSearch { backward: true });
+        // Uppercase `C` — Communities: a one-key shortcut for `:communities`.
+        mappings.insert('C', Command::Communities);
         mappings.insert(KeyCode::Esc, Command::Back);
         mappings.insert(KeyCode::Enter, Command::Open);
 
@@ -49,7 +54,15 @@ impl InputEngine {
             line: String::new(),
             mappings,
             pending: Vec::new(),
+            completions: Vec::new(),
         }
+    }
+
+    /// Provide the command names Tab completion offers in command mode (bare
+    /// names, no leading `:`).
+    pub fn with_completions(mut self, completions: Vec<String>) -> Self {
+        self.completions = completions;
+        self
     }
 
     /// Apply persisted `[keymaps]` entries (command name → key sequence) on
@@ -73,6 +86,12 @@ impl InputEngine {
 
     pub fn mode(&self) -> Mode {
         self.mode
+    }
+
+    /// The current command/search line (no leading `:`), for tests and
+    /// completion inspection.
+    pub fn line(&self) -> &str {
+        &self.line
     }
 
     pub fn handle(&mut self, key: KeyEvent) -> Command {
@@ -131,7 +150,43 @@ impl InputEngine {
                 self.line.push(character);
                 Command::Text(character.to_string())
             }
+            KeyCode::Tab => {
+                self.complete_line();
+                if self.line.is_empty() {
+                    Command::Noop
+                } else {
+                    Command::CompleteLine(self.line.clone())
+                }
+            }
             _ => Command::Noop,
+        }
+    }
+
+    /// Tab-complete the command line: replace the typed prefix with the
+    /// longest common prefix of the matching command names (a single match
+    /// completes fully). Repeated presses do nothing once the common prefix
+    /// is reached.
+    fn complete_line(&mut self) {
+        let typed = self.line.trim().to_ascii_lowercase();
+        if typed.is_empty() {
+            return;
+        }
+        let matches = self
+            .completions
+            .iter()
+            .filter(|candidate| {
+                candidate.len() > typed.len() && candidate.to_ascii_lowercase().starts_with(&typed)
+            })
+            .collect::<Vec<_>>();
+        match matches.len() {
+            0 => {}
+            1 => self.line = matches[0].clone(),
+            _ => {
+                let prefix = longest_common_prefix(&matches);
+                if prefix.len() > typed.len() {
+                    self.line = prefix;
+                }
+            }
         }
     }
 
@@ -218,4 +273,26 @@ impl InputEngine {
         self.pending.clear();
         command
     }
+}
+
+/// The longest string every candidate starts with, spelled like the first
+/// candidate (case-insensitive comparison). Tab completion uses it to extend
+/// a typed prefix across several matches; every match shares the typed
+/// prefix, so the result is always at least that long.
+fn longest_common_prefix(candidates: &[&String]) -> String {
+    let first = candidates[0].as_bytes();
+    let mut prefix = String::new();
+    for (index, byte) in first.iter().enumerate() {
+        let shared = candidates[1..].iter().all(|candidate| {
+            candidate
+                .as_bytes()
+                .get(index)
+                .is_some_and(|own| byte.eq_ignore_ascii_case(own))
+        });
+        if !shared {
+            break;
+        }
+        prefix.push(*byte as char);
+    }
+    prefix
 }

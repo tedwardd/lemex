@@ -316,3 +316,92 @@ fn persisted_keymaps_bind_documented_commands_at_startup() {
         "unknown command names must be skipped"
     );
 }
+
+#[test]
+fn c_opens_the_communities_shortcut() {
+    assert_eq!(
+        InputEngine::default().handle(key('C')),
+        Command::Communities
+    );
+}
+
+fn tab() -> KeyEvent {
+    KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+}
+
+/// Drive command mode: `:` (unless already there), then each character, then
+/// a final key, returning the final command and the engine's line.
+fn type_command(engine: &mut InputEngine, text: &str, final_key: KeyEvent) -> (Command, String) {
+    if engine.mode() != Mode::Command {
+        engine.handle(key(':'));
+    }
+    for character in text.chars() {
+        engine.handle(key(character));
+    }
+    let command = engine.handle(final_key);
+    (command, engine.line().to_owned())
+}
+
+#[test]
+fn tab_completes_a_single_command_fully() {
+    let mut engine = InputEngine::default().with_completions(vec![
+        "communities".into(),
+        "community".into(),
+        "feed".into(),
+    ]);
+    let (command, line) = type_command(&mut engine, "feed", tab());
+    assert_eq!(
+        command,
+        Command::CompleteLine("feed".into()),
+        "a unique match completes to the full command"
+    );
+    assert_eq!(line, "feed");
+    // The completed line still submits as a command.
+    let (submitted, line) = type_command(&mut engine, "", enter());
+    assert_eq!(submitted, Command::SubmitLine("feed".into()));
+    assert!(line.is_empty(), "submitting clears the line");
+}
+
+#[test]
+fn tab_completes_to_the_longest_common_prefix() {
+    let mut engine = InputEngine::default().with_completions(vec![
+        "communities".into(),
+        "community".into(),
+        "feed".into(),
+    ]);
+    let (command, line) = type_command(&mut engine, "comm", tab());
+    assert_eq!(
+        command,
+        Command::CompleteLine("communit".into()),
+        "two matches share the prefix 'communit'"
+    );
+    assert_eq!(line, "communit");
+    // A second press cannot extend past the common prefix.
+    let (second, line) = type_command(&mut engine, "", tab());
+    assert_eq!(second, Command::CompleteLine("communit".into()));
+    assert_eq!(line, "communit");
+}
+
+#[test]
+fn tab_without_matches_leaves_the_line_alone() {
+    let mut engine = InputEngine::default().with_completions(vec!["feed".into()]);
+    let (command, line) = type_command(&mut engine, "xyz", tab());
+    assert_eq!(command, Command::CompleteLine("xyz".into()));
+    assert_eq!(line, "xyz", "no match: the typed text is untouched");
+}
+
+#[test]
+fn completion_is_case_insensitive_and_preserves_spelling() {
+    let mut engine = InputEngine::default().with_completions(vec!["Communities".into()]);
+    let (command, line) = type_command(&mut engine, "comm", tab());
+    assert_eq!(command, Command::CompleteLine("Communities".into()));
+    assert_eq!(line, "Communities", "the canonical spelling is inserted");
+}
+
+#[test]
+fn tab_does_nothing_without_completions_configured() {
+    let mut engine = InputEngine::default();
+    let (command, line) = type_command(&mut engine, "feed", tab());
+    assert_eq!(command, Command::CompleteLine("feed".into()));
+    assert_eq!(line, "feed", "no completions: the line is untouched");
+}

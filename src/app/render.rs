@@ -399,20 +399,19 @@ fn render_communities(frame: &mut Frame, content: ratatui::layout::Rect, modal: 
     };
     let mut lines: Vec<Line> = Vec::with_capacity(modal.communities.len());
     for (index, community) in modal.communities.iter().enumerate() {
-        let name = community.name.as_str();
-        let subscribers = community.subscribers;
-        let subscribed = if community.subscribed {
-            " [subscribed]"
-        } else {
-            ""
-        };
-        let label = match &community.title {
-            Some(title) if !title.trim().is_empty() && title.trim() != name => {
-                format!("{name} — {title}")
-            }
-            _ => name.to_owned(),
-        };
-        let row = format!("{label}  ({subscribers} subs){subscribed}");
+        // Just the name and the subscriber count. A subscribed community gets
+        // a glyph on the All/Local lists; on the Subscribed list every row is
+        // subscribed, so the marker would be redundant noise.
+        let marker =
+            if modal.listing == crate::api::FeedListing::Subscribed || !community.subscribed {
+                ""
+            } else {
+                "◉ "
+            };
+        let row = format!(
+            "{marker}{}  ({} subs)",
+            community.name, community.subscribers
+        );
         let line = if Some(index) == modal.selected {
             Line::from(Span::styled(
                 row,
@@ -480,9 +479,15 @@ fn network_style(model: &RenderModel) -> Style {
 /// echoed as asterisks so an onlooker (shoulder-surfing, screen capture)
 /// cannot read it while the user types. The buffer itself keeps the real
 /// text — the masking is display-only and matches the whitespace token
-/// splitting that `login_from_compose` performs.
+/// splitting that `login_from_compose` performs. A leading `:` on the line
+/// is optional and belongs to the first token.
 fn mask_login_password(compose: &str) -> String {
-    if !compose.trim_start().starts_with(":login") {
+    let command = compose
+        .trim_start()
+        .trim_start_matches(':')
+        .split_whitespace()
+        .next();
+    if command != Some("login") {
         return compose.to_owned();
     }
     let mut token_index = 0usize;
@@ -634,17 +639,52 @@ mod tests {
             text.contains("Communities — Local"),
             "the modal title shows the listing, got: {text}"
         );
+        // Rows are just name + subscribers; the title is not shown.
         assert!(
-            text.contains("main — Main Community"),
-            "a titled community shows its title"
+            text.contains("main  (1200 subs)"),
+            "the row shows name and subscribers, got: {text}"
         );
         assert!(
-            text.contains("(1200 subs) [subscribed]"),
-            "the subscriber count and subscription marker are shown"
+            !text.contains("Main Community"),
+            "the community title must not clutter the row"
+        );
+        // On a non-subscribed list, subscribed communities carry a glyph.
+        assert!(
+            text.contains("◉ main"),
+            "subscribed communities get a glyph on non-subscribed lists"
         );
         assert!(
-            text.contains("other"),
-            "an untitled community shows its name"
+            !text.contains("◉ other"),
+            "unsubscribed communities get no glyph"
+        );
+        assert!(
+            text.contains("other  (34 subs)"),
+            "an unsubscribed community shows its name and count"
+        );
+    }
+
+    #[test]
+    fn subscribed_list_rows_carry_no_glyph() {
+        let mut model = model(None, false);
+        model.communities = Some(CommunitiesModal {
+            communities: vec![crate::api::CommunityView {
+                id: crate::CommunityId(1),
+                name: "main".into(),
+                title: None,
+                subscribers: 1200,
+                subscribed: true,
+            }],
+            listing: crate::api::FeedListing::Subscribed,
+            selected: Some(0),
+        });
+        let text = rendered(&model);
+        assert!(
+            text.contains("main  (1200 subs)"),
+            "the subscribed list still shows name and count"
+        );
+        assert!(
+            !text.contains("◉"),
+            "marking subscribed communities on the subscribed list is redundant"
         );
     }
 
@@ -657,6 +697,12 @@ mod tests {
         assert_eq!(
             mask_login_password(":login alice s3cret extra"),
             ":login alice ****** *****"
+        );
+        // The compose buffer holds the line without the `:` that entered
+        // command mode; the mask must apply there too.
+        assert_eq!(
+            mask_login_password("login alice s3cret"),
+            "login alice ******"
         );
     }
 

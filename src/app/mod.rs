@@ -92,7 +92,9 @@ async fn run_terminal_async(
     });
 
     let result = async {
-        let mut input = crate::input::InputEngine::new().with_keymaps(keymaps);
+        let mut input = crate::input::InputEngine::new()
+            .with_keymaps(keymaps)
+            .with_completions(help::HelpIndex::default().completion_names());
         let mut ticks = tokio::time::interval(Duration::from_millis(100));
         let mut app = Some(app);
         // Feed pages are sized to the primary pane, so the app must know the
@@ -493,6 +495,13 @@ impl App {
                     return self.downloads_action(DownloadsAction::Reopen).await;
                 }
                 self.open_media_selected().await
+            }
+            Command::Communities => self.communities_command().await,
+            Command::CompleteLine(line) => {
+                // The engine already holds the completed line; mirror it into
+                // the visible compose buffer.
+                self.state.view.compose = line;
+                Ok(())
             }
             Command::Back => {
                 if self.state.view.communities.is_some() {

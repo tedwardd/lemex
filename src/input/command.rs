@@ -24,6 +24,9 @@ pub enum Command {
     /// Open the selected post's media through the configured handler
     /// (default key: `o`; equivalent to `:media`).
     OpenMedia,
+    /// Open the community-list modal (default key: `C`; equivalent to
+    /// `:communities`).
+    Communities,
     Refresh,
     /// Flip to the next feed page, replacing the list (default key: `>`).
     NextPage,
@@ -53,6 +56,9 @@ pub enum Command {
     /// Cancel the pending destructive action (default key: `n`).
     Cancel,
     Text(String),
+    /// The command line was tab-completed: the app replaces its compose
+    /// buffer with the completed line (which the engine already holds).
+    CompleteLine(String),
     /// Delete the last character of the compose/command line (Backspace).
     Backspace,
     /// Abandon the current command or search line without submitting
@@ -77,6 +83,7 @@ impl Command {
             "right" => Some(Command::MoveRight { count: 1 }),
             "open" => Some(Command::Open),
             "media" | "open-media" => Some(Command::OpenMedia),
+            "communities" | "community-list" => Some(Command::Communities),
             "refresh" => Some(Command::Refresh),
             "next-page" | "load-more" => Some(Command::NextPage),
             "previous-page" => Some(Command::PreviousPage),

@@ -44,7 +44,8 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
    [Configuration](docs/configuration.md) for details.
 2. Launch `levim`.
 3. `:feed` loads the home feed; `j`/`k` move, `n`/`p` flip pages, `Enter`
-   opens a post (j/k then scroll the thread), `Esc` closes it.
+   opens a post (j/k then scroll the thread), `Esc` closes it. `C` (or
+   `:communities`) opens the community list; `Tab` completes commands.
 4. `:login <username> <password>` signs in (the password is masked while
    typing); the session is stored in the OS credential store.
 5. `:help` (or `:help <topic>`) shows the searchable command index.

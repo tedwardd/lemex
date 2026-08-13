@@ -2222,7 +2222,7 @@ async fn communities_modal_defaults_to_local_when_anonymous() {
         Arc::new(MemoryCredentialStore::default()),
     );
 
-    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+    app.dispatch(AppAction::Input(Command::Communities))
         .await
         .unwrap();
 

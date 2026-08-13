@@ -53,6 +53,23 @@ impl HelpIndex {
             })
             .collect()
     }
+
+    /// Bare command names (no leading `:`) for Tab completion in command
+    /// mode, derived from the documented `:command` entries so completion and
+    /// help can never drift apart. Key-only entries (for example `j/k`) are
+    /// not commands and are excluded.
+    pub fn completion_names(&self) -> Vec<String> {
+        let mut names = self
+            .entries
+            .iter()
+            .filter(|entry| entry.command.starts_with(':'))
+            .filter_map(|entry| entry.command.split_whitespace().next())
+            .map(|name| name.trim_start_matches(':').to_owned())
+            .collect::<Vec<_>>();
+        names.sort();
+        names.dedup();
+        names
+    }
 }
 
 static HELP_ENTRIES: &[HelpEntry] = &[
@@ -156,6 +173,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
     HelpEntry {
         command: "n / p",
         description: "flip to the next / previous feed page (feed pane focused)",
+        group: "navigation",
+    },
+    HelpEntry {
+        command: "C",
+        description: "open the communities list (shortcut for :communities; Tab completes commands in the command line)",
         group: "navigation",
     },
     HelpEntry {
