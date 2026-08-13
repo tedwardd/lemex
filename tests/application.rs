@@ -2001,6 +2001,100 @@ async fn vote_command_accepts_up_down_and_clear() {
     );
 }
 
+/// API that records the feed queries it receives and returns one post.
+#[derive(Default)]
+struct SubscribedFeedApi {
+    queries: Arc<parking_lot::Mutex<Vec<FeedQuery>>>,
+}
+
+#[async_trait]
+impl LemmyApi for SubscribedFeedApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>> {
+        self.queries.lock().push(query);
+        Ok(Page {
+            items: vec![post_view(1, "Subscribed post")],
+            next_page: None,
+        })
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn subscribed_command_loads_the_subscribed_listing() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut context = fixture_context();
+    context.session = Some(levim::Session {
+        user_id: levim::UserId(7),
+        token: levim::SecretString::from("fixture-token"),
+    });
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        context,
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("subscribed".into())))
+        .await
+        .unwrap();
+
+    let queries = api.queries.lock();
+    assert_eq!(queries.len(), 1, "the subscribed feed must be fetched");
+    assert_eq!(
+        queries[0].listing,
+        levim::api::FeedListing::Subscribed,
+        "the request must carry the Subscribed listing (type_=Subscribed)"
+    );
+    assert!(
+        app.state.status.error.is_none(),
+        "loading the subscribed feed must not fail, got {:?}",
+        app.state.status.error
+    );
+}
+
+#[tokio::test]
+async fn subscribed_command_requires_login() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("subscribed".into())))
+        .await
+        .unwrap();
+
+    assert!(
+        app.state
+            .status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("login first")),
+        "without a session the command must explain, got {:?}",
+        app.state.status.error
+    );
+    assert!(
+        api.queries.lock().is_empty(),
+        "no feed request may be sent without a session"
+    );
+}
+
 #[tokio::test]
 async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
     let path = std::env::temp_dir().join(format!(

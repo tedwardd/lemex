@@ -31,10 +31,10 @@ command/search line.
 | `p` | previous page | flip back to the previous feed page |
 
 Feed pages are sized to the primary content pane: each fetch (first page,
-`n`, `p`, refresh, search) requests exactly as many posts as fit your
-current terminal height (capped at 50 — the Lemmy server maximum), and a
-resize re-sizes subsequent pages. With no terminal size known yet, the fixed
-20-post default is used.
+`n`, `p`, refresh, search, `:subscribed`) requests exactly as many posts as
+fit your current terminal height (capped at 50 — the Lemmy server maximum),
+and a resize re-sizes subsequent pages. With no terminal size known yet, the
+fixed 20-post default is used.
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |
@@ -71,6 +71,7 @@ echoed as asterisks.
 | `:logout` | log out; keeps non-secret profile metadata |
 | `:whoami` | show the active session user or anonymous |
 | `:feed` | show the home feed |
+| `:subscribed` | show your subscribed communities' feed (requires login) |
 | `:community [<id>]` | open a community feed (defaults to the selected post's community) |
 | `:post` | open the selected post |
 | `:search <query>` | search posts (filters download history with the panel open) |

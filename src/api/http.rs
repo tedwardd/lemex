@@ -417,10 +417,15 @@ impl LemmyApi for HttpLemmyApi {
     }
 
     async fn feed(&self, ctx: &ProfileContext, query: FeedQuery) -> Result<Page<PostView>> {
+        let listing = match query.listing {
+            crate::api::FeedListing::All => "All",
+            crate::api::FeedListing::Local => "Local",
+            crate::api::FeedListing::Subscribed => "Subscribed",
+        };
         let mut request = self
             .client
             .get(self.endpoint(ctx, "post/list")?)
-            .query(&[("sort", query.sort), ("type_", "All".into())]);
+            .query(&[("sort", query.sort), ("type_", listing.into())]);
         if let Some(cursor) = query.page {
             request = request.query(&[("page_cursor", cursor)]);
         }

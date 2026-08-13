@@ -400,6 +400,7 @@ fn feed_key(query: &FeedQuery) -> String {
         query.limit,
         query.community.map(|id| id.0),
         query.search.as_deref(),
+        query.listing,
     ))
     .unwrap_or_else(|_| "home".into())
 }
@@ -479,4 +480,41 @@ fn post_from_value(value: &Value) -> Result<PostView> {
             .and_then(Value::as_str)
             .map(str::to_owned),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::feed_key;
+    use crate::api::FeedQuery;
+
+    #[test]
+    fn home_feed_uses_the_short_home_key() {
+        assert_eq!(feed_key(&FeedQuery::home()), "home");
+    }
+
+    #[test]
+    fn subscribed_feed_gets_a_distinct_cache_key() {
+        // The subscribed listing and the home feed are different content and
+        // must never share a cache row.
+        let subscribed = FeedQuery::subscribed();
+        assert_ne!(
+            feed_key(&subscribed),
+            feed_key(&FeedQuery::home()),
+            "subscribed and home feeds must not share a cache key"
+        );
+        assert_ne!(feed_key(&subscribed), "home");
+    }
+
+    #[test]
+    fn listing_is_part_of_the_key_across_queries() {
+        let mut subscribed = FeedQuery::subscribed();
+        subscribed.community = Some(crate::CommunityId(3));
+        let mut home_in_community = FeedQuery::home();
+        home_in_community.community = Some(crate::CommunityId(3));
+        assert_ne!(
+            feed_key(&subscribed),
+            feed_key(&home_in_community),
+            "same community, different listing: keys must differ"
+        );
+    }
 }

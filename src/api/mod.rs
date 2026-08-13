@@ -18,6 +18,17 @@ pub trait LemmyApi: Send + Sync {
     async fn mutate(&self, ctx: &ProfileContext, mutation: Mutation) -> Result<MutationResult>;
 }
 
+/// Which listing a feed shows. Lemmy's `type_` parameter: the whole
+/// instance (`All`), only this instance's communities (`Local`), or the
+/// logged-in user's subscribed communities (`Subscribed`).
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
+pub enum FeedListing {
+    #[default]
+    All,
+    Local,
+    Subscribed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FeedQuery {
     pub sort: String,
@@ -27,6 +38,7 @@ pub struct FeedQuery {
     pub limit: Option<u32>,
     pub community: Option<CommunityId>,
     pub search: Option<String>,
+    pub listing: FeedListing,
 }
 
 impl FeedQuery {
@@ -41,6 +53,17 @@ impl FeedQuery {
             limit: Some(Self::DEFAULT_LIMIT),
             community: None,
             search: None,
+            listing: FeedListing::All,
+        }
+    }
+
+    /// The logged-in user's subscribed communities (`type_=Subscribed`), the
+    /// feed Lemmy's web UI shows for `listingType=Subscribed`. Needs a
+    /// session; without one the server has no subscriptions to show.
+    pub fn subscribed() -> Self {
+        Self {
+            listing: FeedListing::Subscribed,
+            ..Self::home()
         }
     }
 }

@@ -1035,6 +1035,21 @@ impl App {
                 self.state.view.next_page = None;
                 self.refresh_feed().await
             }
+            "subscribed" if !self.state.view.downloads_active() => {
+                // The subscribed listing needs a session: without one the
+                // server has no subscriptions to show. Refuse before any
+                // network activity so the user gets a clear reason.
+                if self.state.active.session.is_none() {
+                    self.state
+                        .status
+                        .failure("login first to view your subscribed feed");
+                    return Ok(());
+                }
+                self.state.view.feed_query = FeedQuery::subscribed();
+                self.state.view.search.clear();
+                self.state.view.next_page = None;
+                self.refresh_feed().await
+            }
             "search" if !self.state.view.downloads_active() => {
                 let query = args.join(" ").trim().to_owned();
                 self.state.view.search = query.clone();
@@ -1068,7 +1083,7 @@ impl App {
             // while the panel is open so they never act on the hidden feed
             // selection.
             "feed" | "media" | "download-media" | "download_media" | "community" | "post"
-            | "reply" | "edit" | "vote" | "save" | "subscribe"
+            | "reply" | "edit" | "vote" | "save" | "subscribe" | "subscribed"
                 if self.state.view.downloads_active() =>
             {
                 self.state

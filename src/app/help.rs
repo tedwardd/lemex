@@ -99,6 +99,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: ":subscribed",
+        description: "show your subscribed communities' feed (requires login)",
+        group: "navigation",
+    },
+    HelpEntry {
         command: ":community [<id>]",
         description: "open a community feed (defaults to the selected post's community)",
         group: "navigation",
