@@ -237,8 +237,8 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "mutation",
     },
     HelpEntry {
-        command: ":vote <score>",
-        description: "vote on the selected post",
+        command: ":vote <up|down|clear>",
+        description: "upvote, downvote, or clear your vote on the selected post",
         group: "mutation",
     },
     HelpEntry {

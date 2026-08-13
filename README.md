@@ -66,7 +66,7 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 | `j`/`k`, `Enter`, `Esc`, `r` | move, open, back, refresh |
 | `:profile`, `:profile <id>`, `:profile-new`, `:profile-delete` | manage profiles |
 | `:login`, `:logout`, `:whoami` | authentication |
-| `:vote <score>`, `:save`, `:subscribe`, `:reply`, `:edit`, `:delete` | interact |
+| `:vote <up\|down\|clear>`, `:save`, `:subscribe`, `:reply`, `:edit`, `:delete` | interact |
 | `y` / `Esc`, `:confirm`, `:yes`, `:cancel` | confirm / cancel destructive actions |
 | `o`, `:media`, `:download-media`, `:downloads` | view and download media |
 | `:close`, `:set ...`, `:help`, `:quit` | pane, configuration, help, exit |

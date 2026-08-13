@@ -79,7 +79,7 @@ every submission so secrets typed for `:login` never linger on screen.
 | `:delete` | delete the selected post (download with the panel open) |
 | `:confirm` / `:yes` | confirm the pending destructive action |
 | `:cancel` | cancel the pending destructive action |
-| `:vote <score>` | vote on the selected post |
+| `:vote <up\|down\|clear>` | upvote, downvote, or clear your vote |
 | `:save` | save the selected post |
 | `:subscribe` | subscribe to the selected post's community |
 | `:media` | open the selected post's media through the configured handler |

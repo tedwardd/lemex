@@ -1916,6 +1916,91 @@ async fn background_refresh_preserves_confirmed_post_update() {
     assert_eq!(cached.entity["items"][0]["title"], "confirmed");
 }
 
+/// API that records votes and reports them as confirmed.
+#[derive(Default)]
+struct VoteRecordingApi {
+    votes: Arc<parking_lot::Mutex<Vec<i8>>>,
+}
+
+#[async_trait]
+impl LemmyApi for VoteRecordingApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, mutation: Mutation) -> Result<MutationResult> {
+        if let Mutation::VotePost { score, .. } = mutation {
+            self.votes.lock().push(score);
+        }
+        Ok(MutationResult {
+            success: true,
+            post: None,
+            comment: None,
+            message: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn vote_command_accepts_up_down_and_clear() {
+    let api = Arc::new(VoteRecordingApi::default());
+    let mut context = fixture_context();
+    context.session = Some(levim::Session {
+        user_id: levim::UserId(7),
+        token: levim::SecretString::from("fixture-token"),
+    });
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        context,
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Voteable post")];
+    app.state.view.selected = Some(0);
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("vote up".into())))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.status.message, "saved",
+        "the upvote dispatches the mutation"
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("vote down".into())))
+        .await
+        .unwrap();
+    assert_eq!(app.state.status.message, "saved");
+    app.dispatch(AppAction::Input(Command::SubmitLine("vote clear".into())))
+        .await
+        .unwrap();
+    assert_eq!(app.state.status.message, "saved");
+
+    // A bogus word is rejected with a clear message instead of a number.
+    app.dispatch(AppAction::Input(Command::SubmitLine("vote maybe".into())))
+        .await
+        .unwrap();
+    assert!(
+        app.state
+            .status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("invalid vote")),
+        "unknown vote words are rejected, got {:?}",
+        app.state.status.error
+    );
+}
+
 #[tokio::test]
 async fn profile_switch_rehydrates_feed_without_deleted_tombstones() {
     let path = std::env::temp_dir().join(format!(

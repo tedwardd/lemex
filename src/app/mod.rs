@@ -1317,17 +1317,24 @@ impl App {
         .await
     }
 
-    /// `:vote <score>` — vote on the selected post.
+    /// `:vote <up|down|clear>` — vote on the selected post. Lemmy only has
+    /// up and down votes; the numeric spellings (-1, 0, 1) remain as
+    /// aliases.
     async fn vote_command(&mut self, args: &[&str]) -> Result<()> {
         let [score] = args else {
-            self.state.status.failure("usage: vote <score>");
+            self.state.status.failure("usage: vote <up|down|clear>");
             return Ok(());
         };
-        let Ok(score) = score.parse::<i8>() else {
-            self.state
-                .status
-                .failure("score must be a number (typically -1, 0, or 1)");
-            return Ok(());
+        let score: i8 = match *score {
+            "up" | "u" | "1" => 1,
+            "down" | "d" | "-1" => -1,
+            "clear" | "none" | "remove" | "0" => 0,
+            other => {
+                self.state
+                    .status
+                    .failure(format!("invalid vote {other:?}: use up, down, or clear"));
+                return Ok(());
+            }
         };
         let Some(id) = self.state.selected_post() else {
             self.state.status.failure("no post selected");
