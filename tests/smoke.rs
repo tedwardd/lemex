@@ -734,6 +734,53 @@ fn media_handlers_receive_a_local_file() {
     let _ = std::fs::remove_file(&destination);
 }
 
+/// Reopening the same media within a session reuses the already-downloaded
+/// file instead of fetching it again: the second `:media` must not create a
+/// new download record and must say the cached file was used.
+#[test]
+fn reopening_the_same_media_reuses_the_cached_file() {
+    let port = spawn_http_server(b"fixture media bytes".to_vec(), "image/png");
+    let media_url = Url::parse(&format!("http://127.0.0.1:{port}/pic.png")).unwrap();
+    let media = MediaConfig {
+        handlers: HashMap::from([("image/png".to_owned(), "cp %s /dev/null".to_owned())]),
+        ..Default::default()
+    };
+    let runtime = support::runtime();
+    let api = support::api(&runtime, || fixture_api_with_body("{}"));
+    let mut app =
+        FixtureApp::with_runtime(runtime, "media-reuse", api, anonymous_context(), media, &[]);
+    let mut engine = InputEngine::new();
+    app.app.state.view.posts = vec![post_view(1, "Media post", Some(media_url))];
+    app.app.state.view.selected = Some(0);
+
+    app.command(&mut engine, "media").expect("first open");
+    assert!(
+        app.app.state.status.message.contains("external handler"),
+        "first open downloads and spawns the handler, got {:?}",
+        app.app.state.status.message
+    );
+
+    app.command(&mut engine, "media").expect("second open");
+    assert!(
+        app.app.state.status.message.contains("reused cached file"),
+        "the second open must reuse the cached file, got {:?}",
+        app.app.state.status.message
+    );
+
+    app.dispatch(AppAction::ShowDownloads)
+        .expect("open the downloads panel");
+    let records = app
+        .model()
+        .downloads
+        .expect("the downloads panel renders")
+        .records;
+    assert_eq!(
+        records.len(),
+        1,
+        "reopening the same media must not add a second download record"
+    );
+}
+
 /// Media download and history inspection: `:download-media` fetches through a
 /// loopback server, the session downloads panel shows the completed record
 /// and filters it, a confirmed delete removes the local file, and quitting

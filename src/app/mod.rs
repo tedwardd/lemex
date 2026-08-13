@@ -1494,8 +1494,21 @@ impl App {
     /// Fetch the media to a scratch file for an external handler, which
     /// cannot open remote URLs. Reuses the session download manager, so the
     /// transfer is cancellable and shows up in the downloads panel; on
-    /// failure a status message is set and `None` is returned.
-    async fn download_for_handler(&mut self, media: &MediaRef) -> Option<PathBuf> {
+    /// failure a status message is set and `None` is returned. Returns
+    /// `(path, reused)` where `reused` is true when an existing completed
+    /// download of the same URL was found instead of re-fetching it.
+    async fn download_for_handler(&mut self, media: &MediaRef) -> Option<(PathBuf, bool)> {
+        // The same media is often opened repeatedly while browsing; reuse a
+        // completed, not-deleted local copy of this URL (either a handler
+        // scratch file or a user download) instead of fetching it again.
+        if let Some(existing) = self.downloads.history().all().iter().find(|record| {
+            record.media.url == media.url
+                && record.status == DownloadStatus::Completed
+                && !record.local_file_deleted
+                && record.local_path.exists()
+        }) {
+            return Some((existing.local_path.clone(), true));
+        }
         let scratch = std::env::temp_dir().join(filename_for(media));
         let request = DownloadRequest {
             media: media.clone(),
@@ -1516,7 +1529,7 @@ impl App {
         self.scratch_downloads.insert(id);
         match tokio::time::timeout(Duration::from_secs(30), self.downloads.wait_for(id)).await {
             Ok(DownloadStatus::Completed) => match self.downloads.history().get(id) {
-                Some(record) => Some(record.local_path),
+                Some(record) => Some((record.local_path, false)),
                 None => {
                     self.state.status.failure("media download vanished");
                     None
@@ -1634,21 +1647,22 @@ impl App {
                 // Handlers open local files, not URLs (imv/feh/zathura
                 // cannot fetch); download the media to a scratch file first
                 // unless a local path was already supplied.
-                let source = match local {
-                    Some(path) => path,
+                let (source, reused) = match local {
+                    Some(path) => (path, false),
                     None => match self.download_for_handler(&media).await {
-                        Some(path) => path,
+                        Some((path, reused)) => (path, reused),
                         None => return Ok(()),
                     },
                 };
+                let cached_note = if reused { " (reused cached file)" } else { "" };
                 match spawn_detached(&command, source.as_os_str(), &mime) {
-                    Ok(()) if is_ssh => self.state.status.success(
-                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal)",
-                    ),
+                    Ok(()) if is_ssh => self.state.status.success(format!(
+                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal){cached_note}"
+                    )),
                     Ok(()) => self
                         .state
                         .status
-                        .success("opened media with external handler"),
+                        .success(format!("opened media with external handler{cached_note}")),
                     Err(error) => self.state.status.failure(error.to_string()),
                 }
                 Ok(())
