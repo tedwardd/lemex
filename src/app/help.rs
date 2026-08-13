@@ -258,11 +258,6 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "config",
     },
     HelpEntry {
-        command: ":set media kitty on|off",
-        description: "toggle kitty media rendering",
-        group: "config",
-    },
-    HelpEntry {
         command: ":set media mailcap on|off",
         description: "toggle mailcap handler use",
         group: "config",

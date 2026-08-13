@@ -184,6 +184,22 @@ fn profile_only_config_preserves_media_defaults() {
 }
 
 #[test]
+fn deprecated_kitty_enabled_key_is_accepted_and_ignored() {
+    // Configs written before inline kitty rendering was removed still carry
+    // `kitty_enabled`; they must keep parsing (the raw layer is strict about
+    // unknown fields) while the value has no effect on the domain config.
+    let source = "[media]\nkitty_enabled = true\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert!(config.media.mailcap_enabled, "media defaults still apply");
+    let encoded = config.to_toml().unwrap();
+    assert!(
+        !encoded.contains("kitty_enabled"),
+        "the deprecated key must not be re-emitted"
+    );
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap(), config);
+}
+
+#[test]
 fn relative_config_path_writes_and_reloads() {
     let directory = temporary_directory();
     {

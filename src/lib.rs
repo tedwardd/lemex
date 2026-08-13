@@ -22,5 +22,5 @@ pub use domain::{
 pub use error::{AppError, Result};
 pub use media::{
     CollisionPolicy, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig,
-    SessionDownloadHistory, TerminalCapabilities,
+    SessionDownloadHistory,
 };

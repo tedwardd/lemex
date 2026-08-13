@@ -35,7 +35,7 @@ use crate::{
     input::{Command, Mode},
     media::{
         CollisionPolicy, DownloadEvent, DownloadManager, DownloadRequest, MediaHandler,
-        MediaPolicyConfig, TerminalCapabilities, build_argv, filename_for, kitty,
+        MediaPolicyConfig, build_argv, filename_for,
     },
     profiles::{CredentialStore, ProfileStore, default_store},
 };
@@ -125,55 +125,9 @@ async fn run_terminal_async(
 
         while !quit {
             if redraw {
-                // The event loop is the only writer to the terminal, so the
-                // kitty escapes are emitted here, adjacent to the ratatui
-                // frame, instead of from the async action task.
-                let kitty_pending = app.as_mut().and_then(App::take_kitty_pending);
-                let kitty_clear = app.as_mut().is_some_and(App::take_kitty_clear);
                 terminal
                     .draw(|frame| render::render(frame, &model))
                     .map_err(|error| crate::error::AppError::Terminal(error.to_string()))?;
-                if kitty_pending.is_some() || kitty_clear {
-                    let mut stdout = std::io::stdout();
-                    if let Some(path) = kitty_pending {
-                        // Place the image in the detail/thread pane: below
-                        // the 3-row session header, on the right 48% of the
-                        // terminal, scaled to fit without distortion.
-                        let (width, height) = app
-                            .as_ref()
-                            .map(App::terminal_size)
-                            .unwrap_or((80, 24));
-                        let start_row: u16 = 4;
-                        let start_col: u16 = (width as f64 * 0.52) as u16 + 1;
-                        let area = (
-                            width.saturating_sub(start_col),
-                            height.saturating_sub(3 + 11),
-                        );
-                        let cell_px = kitty::cell_pixels();
-                        let placement = match kitty::image_dimensions(&path) {
-                            Some(image) if cell_px != (0, 0) => {
-                                let (cols, rows) = kitty::fit_cells(image, area, cell_px);
-                                kitty::ImagePlacement::Rect { cols, rows }
-                            }
-                            // Cell size unknown: fit the columns and let the
-                            // terminal derive the rows from the source
-                            // aspect, which is distortion-free by the
-                            // protocol. A partial TIOCGWINSZ pixel value is
-                            // treated as unknown too.
-                            Some(_) => kitty::ImagePlacement::FitColumns { cols: area.0 },
-                            None => kitty::ImagePlacement::Native,
-                        };
-                        let _ = stdout
-                            .write_all(format!("\x1b[{start_row};{start_col}H").as_bytes());
-                        if let Ok(bytes) = kitty::render_file(&path, placement) {
-                            let _ = stdout.write_all(&bytes);
-                        }
-                    }
-                    if kitty_clear {
-                        let _ = stdout.write_all(kitty::clear_images());
-                    }
-                    let _ = stdout.flush();
-                }
                 redraw = false;
             }
 
@@ -288,22 +242,12 @@ pub struct App {
     next_generation: u64,
     downloads: DownloadManager,
     media_policy: MediaPolicyConfig,
-    terminal_capabilities: TerminalCapabilities,
     collision_policy: CollisionPolicy,
-    /// Latest terminal size: height sizes feed pages to the primary pane,
-    /// and both dimensions place kitty images in the detail pane. Zero means
-    /// unknown (no Resize seen yet); feeds then fall back to the fixed
-    /// default limit.
+    /// Latest terminal size: height sizes feed pages to the primary pane.
+    /// Zero means unknown (no Resize seen yet); feeds then fall back to the
+    /// fixed default limit.
     terminal_width: u16,
     terminal_height: u16,
-    /// Kitty graphics image waiting to be emitted by the event loop, which
-    /// owns all terminal writes; raw escapes from the async action task
-    /// interleave with redraws and corrupt the screen.
-    kitty_render_pending: Option<PathBuf>,
-    /// Delete-all kitty placements on the next redraw.
-    kitty_clear_pending: bool,
-    /// A kitty image is currently shown; the next input key dismisses it.
-    kitty_image_active: bool,
     quit: bool,
 }
 
@@ -359,9 +303,6 @@ impl App {
             .unwrap_or_else(|| crate::config::cache_dir().join("downloads"));
         let collision_policy = CollisionPolicy::from_config(&media.collision_policy);
         let media_policy = MediaPolicyConfig::from_config(&media);
-        let terminal_capabilities = TerminalCapabilities {
-            kitty: kitty::detect_support(),
-        };
         Self {
             state,
             repository: Repository::new(api, cache, credentials),
@@ -370,33 +311,11 @@ impl App {
             next_generation: 0,
             downloads: DownloadManager::new(downloads_directory),
             media_policy,
-            terminal_capabilities,
             collision_policy,
             terminal_width: 0,
             terminal_height: 0,
-            kitty_render_pending: None,
-            kitty_clear_pending: false,
-            kitty_image_active: false,
             quit: false,
         }
-    }
-
-    /// Terminal capabilities override for tests and environments that probe
-    /// the protocol out-of-band.
-    pub fn set_terminal_capabilities(&mut self, capabilities: TerminalCapabilities) {
-        self.terminal_capabilities = capabilities;
-    }
-
-    fn terminal_size(&self) -> (u16, u16) {
-        (self.terminal_width, self.terminal_height)
-    }
-
-    fn take_kitty_pending(&mut self) -> Option<PathBuf> {
-        self.kitty_render_pending.take()
-    }
-
-    fn take_kitty_clear(&mut self) -> bool {
-        std::mem::take(&mut self.kitty_clear_pending)
     }
 
     /// Page size for the current terminal: exactly what fits the primary
@@ -514,14 +433,6 @@ impl App {
     }
 
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
-        // A kitty image overlays the interface; the first key after it
-        // simply dismisses it (the loop clears the placement on the next
-        // redraw) so the user always has a way out.
-        if self.kitty_image_active {
-            self.kitty_image_active = false;
-            self.kitty_clear_pending = true;
-            return Ok(());
-        }
         match command {
             Command::Open => {
                 if self.state.view.downloads_active() {
@@ -1187,8 +1098,6 @@ impl App {
             ["keymap", name, sequence] => {
                 config.set_keymap((*name).to_owned(), (*sequence).to_owned())
             }
-            ["media", "kitty", "on"] => config.set_kitty(true),
-            ["media", "kitty", "off"] => config.set_kitty(false),
             ["media", "mailcap", "on"] => config.set_mailcap(true),
             ["media", "mailcap", "off"] => config.set_mailcap(false),
             ["download-dir", directory] | ["download-directory", directory] => {
@@ -1207,7 +1116,7 @@ impl App {
             ["logging", "on", level] => config.set_logging(true, Some((*level).to_owned())),
             ["logging", "off", level] => config.set_logging(false, Some((*level).to_owned())),
             _ => {
-                self.state.status.failure("usage: set keymap <name> <keys> | set media <kitty|mailcap> <on|off> | set download-dir <path> | set collision-policy <prompt|overwrite|unique-name> | set cache-dir <path> | set cache-size <bytes> | set logging <on|off> [level]");
+                self.state.status.failure("usage: set keymap <name> <keys> | set media mailcap <on|off> | set download-dir <path> | set collision-policy <prompt|overwrite|unique-name> | set cache-dir <path> | set cache-size <bytes> | set logging <on|off> [level]");
                 return Ok(());
             }
         };
@@ -1611,19 +1520,8 @@ impl App {
                 }
             }
         }
-        let handler = self
-            .media_policy
-            .select(&media, &self.terminal_capabilities);
-        // When the user opted into kitty rendering but the terminal does not
-        // advertise the protocol (tmux, or a terminal without graphics
-        // support), say so instead of silently falling back.
-        let kitty_note = if self.media_policy.kitty_enabled && !self.terminal_capabilities.kitty {
-            " (kitty requested but not available in this terminal)"
-        } else {
-            ""
-        };
+        let handler = self.media_policy.select(&media);
         match handler {
-            MediaHandler::KittyInline => self.render_kitty(media, local).await,
             MediaHandler::Mailcap { command } | MediaHandler::External { command } => {
                 if !media.url.username().is_empty() || media.url.password().is_some() {
                     self.state
@@ -1636,12 +1534,12 @@ impl App {
                 // fail invisibly. Say so instead of reporting success, and
                 // when the session is SSH tell the user the handler runs on
                 // the remote host either way.
-                let is_ssh = crate::media::kitty::environment_is_ssh(
+                let is_ssh = crate::media::environment_is_ssh(
                     std::env::var("SSH_CONNECTION").ok().as_deref(),
                     std::env::var("SSH_CLIENT").ok().as_deref(),
                     std::env::var("SSH_TTY").ok().as_deref(),
                 );
-                let has_display = crate::media::kitty::environment_has_display(
+                let has_display = crate::media::environment_has_display(
                     std::env::var("DISPLAY").ok().as_deref(),
                     std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
                 );
@@ -1660,13 +1558,13 @@ impl App {
                     None => OsStr::new(media.url.as_str()).to_os_string(),
                 };
                 match spawn_detached(&command, &source, &mime) {
-                    Ok(()) if is_ssh => self.state.status.success(format!(
-                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal){kitty_note}"
-                    )),
+                    Ok(()) if is_ssh => self.state.status.success(
+                        "opened media with external handler on this host (SSH session — the handler runs where lemmy is, not on your local terminal)",
+                    ),
                     Ok(()) => self
                         .state
                         .status
-                        .success(format!("opened media with external handler{kitty_note}")),
+                        .success("opened media with external handler"),
                     Err(error) => self.state.status.failure(error.to_string()),
                 }
                 Ok(())
@@ -1674,76 +1572,12 @@ impl App {
             MediaHandler::MetadataOnly => {
                 let mime =
                     crate::media::resolve_mime(&media, None).unwrap_or_else(|| "unknown".into());
-                self.state.status.success(format!(
-                    "no media handler for {mime}; metadata only{kitty_note}"
-                ));
+                self.state
+                    .status
+                    .success(format!("no media handler for {mime}; metadata only"));
                 Ok(())
             }
         }
-    }
-
-    async fn render_kitty(&mut self, media: MediaRef, local: Option<PathBuf>) -> Result<()> {
-        let path = match local {
-            Some(path) if path.exists() => path,
-            _ => {
-                let scratch = std::env::temp_dir().join(filename_for(&media));
-                let request = DownloadRequest {
-                    media: media.clone(),
-                    profile: self.state.active.profile.id.clone(),
-                    instance_url: self.state.active.profile.instance_url.clone(),
-                    destination: scratch,
-                    collision: CollisionPolicy::UniqueName,
-                };
-                match self.downloads.start(request).await {
-                    Ok(id) => {
-                        let outcome = tokio::time::timeout(
-                            Duration::from_secs(30),
-                            self.downloads.wait_for(id),
-                        )
-                        .await;
-                        match outcome {
-                            Ok(DownloadStatus::Completed) => match self.downloads.history().get(id)
-                            {
-                                Some(record) => record.local_path,
-                                None => {
-                                    self.state.status.failure("kitty render download vanished");
-                                    return Ok(());
-                                }
-                            },
-                            Ok(status) => {
-                                self.state.status.failure(format!(
-                                    "kitty render download did not complete ({status})"
-                                ));
-                                return Ok(());
-                            }
-                            Err(_) => {
-                                self.state.status.failure("kitty render download timed out");
-                                return Ok(());
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        self.state.status.failure(error.to_string());
-                        return Ok(());
-                    }
-                }
-            }
-        };
-        // Validate the file now, but do not write anything: the event loop
-        // owns the terminal and emits the escape sequence during its next
-        // redraw, serialized with the ratatui frame so raw bytes cannot
-        // corrupt the screen.
-        match kitty::render_file(&path, kitty::ImagePlacement::Native) {
-            Ok(_) => {
-                self.kitty_render_pending = Some(path);
-                self.kitty_image_active = true;
-                self.state
-                    .status
-                    .success("rendered media via kitty graphics protocol (press any key to close)");
-            }
-            Err(error) => self.state.status.failure(error.to_string()),
-        }
-        Ok(())
     }
 
     fn toggle_downloads_panel(&mut self) {

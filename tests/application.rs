@@ -1509,7 +1509,6 @@ async fn media_command_opens_the_detail_pane() {
         fixture_context(),
         Arc::new(MemoryCredentialStore::default()),
         MediaConfig {
-            kitty_enabled: false,
             mailcap_enabled: false,
             ..MediaConfig::default()
         },
@@ -1531,7 +1530,7 @@ async fn media_command_opens_the_detail_pane() {
         .unwrap();
     assert!(
         app.state.view.detail_open,
-        ":media must split off the pane so kitty images have a pane to render into"
+        ":media must split off the detail pane when a thread or media view is requested"
     );
     assert!(
         app.state.status.message.contains("metadata only"),

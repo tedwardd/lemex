@@ -6,35 +6,24 @@ use crate::domain::MediaRef;
 
 use super::mailcap::{MailcapEntry, find_entry};
 
-/// Capabilities reported by the terminal that the client runs in.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct TerminalCapabilities {
-    pub kitty: bool,
-}
-
 /// What the client should do with a media reference.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MediaHandler {
     /// Run a parsed mailcap entry (or the default external opener) with a
     /// safely constructed argv.
     Mailcap { command: String },
-    /// Render the media inline through the Kitty graphics protocol.
-    KittyInline,
     /// Run an explicitly configured handler command.
     External { command: String },
     /// No handler applies; only metadata is available.
     MetadataOnly,
 }
 
-/// Policy that turns a media reference plus terminal capabilities into a handler.
-///
-/// Mailcap is the default external handler. Kitty is selected only when both
-/// `kitty_enabled` and the terminal capability check succeed. Explicitly
-/// configured handlers win over mailcap; unsupported types degrade to
-/// metadata-only handling.
+/// Policy that turns a media reference into a handler. Explicitly configured
+/// handlers win over mailcap; unsupported types degrade to metadata-only
+/// handling. All rendering is external (mailcap or a configured command) —
+/// there is no inline terminal graphics path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaPolicyConfig {
-    pub kitty_enabled: bool,
     pub mailcap_enabled: bool,
     /// MIME type -> command template (explicit user configuration).
     pub handlers: HashMap<String, String>,
@@ -49,7 +38,6 @@ pub const DEFAULT_MAILCAP_COMMAND: &str = "xdg-open %s";
 impl Default for MediaPolicyConfig {
     fn default() -> Self {
         Self {
-            kitty_enabled: false,
             mailcap_enabled: true,
             handlers: HashMap::new(),
             mailcap_entries: Vec::new(),
@@ -60,18 +48,14 @@ impl Default for MediaPolicyConfig {
 impl MediaPolicyConfig {
     pub fn from_config(config: &crate::config::MediaConfig) -> Self {
         Self {
-            kitty_enabled: config.kitty_enabled,
             mailcap_enabled: config.mailcap_enabled,
             handlers: config.handlers.clone(),
             mailcap_entries: super::mailcap::load_entries(),
         }
     }
 
-    pub fn select(&self, media: &MediaRef, capabilities: &TerminalCapabilities) -> MediaHandler {
+    pub fn select(&self, media: &MediaRef) -> MediaHandler {
         let mime = resolve_mime(media, None).unwrap_or_default();
-        if is_image(&mime) && self.kitty_enabled && capabilities.kitty {
-            return MediaHandler::KittyInline;
-        }
         if let Some(command) = self.handlers.get(&mime) {
             return MediaHandler::External {
                 command: command.clone(),

@@ -14,7 +14,6 @@ use super::paths;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MediaConfig {
-    pub kitty_enabled: bool,
     pub mailcap_enabled: bool,
     pub download_directory: Option<PathBuf>,
     pub collision_policy: String,
@@ -24,7 +23,6 @@ pub struct MediaConfig {
 impl Default for MediaConfig {
     fn default() -> Self {
         Self {
-            kitty_enabled: false,
             mailcap_enabled: true,
             download_directory: None,
             collision_policy: "prompt".to_owned(),
@@ -231,7 +229,11 @@ struct RawProfile {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawMediaConfig {
-    #[serde(default)]
+    /// Deprecated: accepted for backward compatibility with configs that
+    /// still set it, but inline kitty graphics rendering was removed and
+    /// this key no longer has any effect. Never re-emitted on save.
+    #[serde(default, skip_serializing)]
+    #[expect(dead_code)] // kept solely so legacy configs keep parsing
     kitty_enabled: bool,
     #[serde(default = "default_mailcap_enabled")]
     mailcap_enabled: bool,
@@ -265,7 +267,6 @@ fn default_collision_policy() -> String {
 impl RawMediaConfig {
     fn into_config(self) -> MediaConfig {
         MediaConfig {
-            kitty_enabled: self.kitty_enabled,
             mailcap_enabled: self.mailcap_enabled,
             download_directory: self.download_directory,
             collision_policy: self.collision_policy,
@@ -275,7 +276,7 @@ impl RawMediaConfig {
 
     fn from_config(config: &MediaConfig) -> Self {
         Self {
-            kitty_enabled: config.kitty_enabled,
+            kitty_enabled: false,
             mailcap_enabled: config.mailcap_enabled,
             download_directory: config.download_directory.clone(),
             collision_policy: config.collision_policy.clone(),
@@ -355,11 +356,6 @@ impl AppConfig {
             )));
         }
         self.keymaps.insert(name, sequence);
-        Ok(())
-    }
-
-    pub fn set_kitty(&mut self, enabled: bool) -> Result<()> {
-        self.media.kitty_enabled = enabled;
         Ok(())
     }
 

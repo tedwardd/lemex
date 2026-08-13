@@ -29,7 +29,7 @@ use lemmy::{
     config::MediaConfig,
     domain::{DownloadStatus, MediaRef, PostId, Profile, ProfileContext, ProfileId},
     input::{Command, InputEngine},
-    media::{MediaHandler, MediaPolicyConfig, TerminalCapabilities},
+    media::{MediaHandler, MediaPolicyConfig},
 };
 use url::Url;
 
@@ -567,37 +567,17 @@ fn authenticated_mutation_succeeds_only_with_session() {
     );
 }
 
-/// Mailcap selection: mailcap is the default handler even when Kitty is
-/// available, Kitty rendering requires explicit opt-in plus terminal
-/// capability, explicit handlers win over mailcap, and disabling mailcap in
-/// the app degrades media opening to metadata-only.
+/// Handler selection: mailcap is the default, explicit handlers win over
+/// mailcap, and disabling mailcap in the app degrades media opening to
+/// metadata-only. There is no inline terminal graphics path.
 #[test]
-fn mailcap_is_default_and_kitty_is_opt_in() {
+fn mailcap_is_default_and_handlers_are_explicit() {
     let media = MediaRef::new(Url::parse("https://example.com/photo.png").unwrap());
 
     let policy = MediaPolicyConfig::default();
     assert!(
-        matches!(
-            policy.select(&media, &TerminalCapabilities { kitty: true }),
-            MediaHandler::Mailcap { .. }
-        ),
-        "mailcap is the default even when kitty is available"
-    );
-
-    let opt_in = MediaPolicyConfig {
-        kitty_enabled: true,
-        ..Default::default()
-    };
-    assert_eq!(
-        opt_in.select(&media, &TerminalCapabilities { kitty: true }),
-        MediaHandler::KittyInline
-    );
-    assert!(
-        matches!(
-            opt_in.select(&media, &TerminalCapabilities { kitty: false }),
-            MediaHandler::Mailcap { .. }
-        ),
-        "kitty opt-in without terminal capability falls back to mailcap"
+        matches!(policy.select(&media), MediaHandler::Mailcap { .. }),
+        "mailcap is the default handler"
     );
 
     let handlers = MediaPolicyConfig {
@@ -605,7 +585,7 @@ fn mailcap_is_default_and_kitty_is_opt_in() {
         ..Default::default()
     };
     assert_eq!(
-        handlers.select(&media, &TerminalCapabilities::default()),
+        handlers.select(&media),
         MediaHandler::External {
             command: "viewer %s".to_owned()
         }
@@ -675,58 +655,6 @@ fn extensionless_media_url_is_probed_for_its_mime_type() {
         app.app.state.status.message.contains("metadata only"),
         "with mailcap off the probed media is still metadata-only, got {:?}",
         app.app.state.status.message
-    );
-}
-
-/// Kitty rendering: with the terminal capability present and kitty enabled,
-/// `:media` stages the image for the event loop and the next key dismisses
-/// it without acting on that key, so the user always has a way out of the
-/// overlay.
-#[test]
-fn kitty_image_renders_and_dismisses_on_any_key() {
-    let port = spawn_http_server(b"fake png bytes".to_vec(), "image/png");
-    let media_url = Url::parse(&format!("http://127.0.0.1:{port}/pic.png")).unwrap();
-    let media = MediaConfig {
-        kitty_enabled: true,
-        ..Default::default()
-    };
-    let runtime = support::runtime();
-    let api = support::api(&runtime, || fixture_api_with_body("{}"));
-    let mut app = FixtureApp::with_runtime(runtime, "kitty", api, anonymous_context(), media, &[]);
-    app.app
-        .set_terminal_capabilities(TerminalCapabilities { kitty: true });
-    let mut engine = InputEngine::new();
-    app.app.state.view.posts = vec![
-        post_view(1, "Image post", Some(media_url)),
-        post_view(2, "Plain post", None),
-    ];
-    app.app.state.view.selected = Some(0);
-
-    app.command(&mut engine, "media").expect("render via kitty");
-    assert!(
-        app.app
-            .state
-            .status
-            .message
-            .contains("press any key to close"),
-        "rendering must advertise the dismiss hint, got {:?}",
-        app.app.state.status.message
-    );
-
-    // The next key closes the image and does nothing else.
-    app.press(&mut engine, key('j')).expect("dismiss key");
-    assert_eq!(
-        app.app.state.selected_index(),
-        0,
-        "the dismiss key must not move the selection"
-    );
-
-    // Keys work normally afterwards.
-    app.press(&mut engine, key('j')).expect("move down");
-    assert_eq!(
-        app.app.state.selected_index(),
-        1,
-        "keys work normally after the image is dismissed"
     );
 }
 

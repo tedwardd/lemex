@@ -11,7 +11,7 @@ use lemmy::{
     domain::{DownloadStatus, MediaRef, ProfileId},
     media::{
         CollisionPolicy, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig,
-        TerminalCapabilities, build_argv, find_entry, parse_mailcap, resolve_mime,
+        build_argv, find_entry, parse_mailcap, resolve_mime,
     },
 };
 use url::Url;
@@ -92,20 +92,10 @@ fn spawn_http_server(body: &'static [u8], content_type: &'static str) -> u16 {
 }
 
 #[test]
-fn mailcap_is_default_even_when_kitty_is_available() {
+fn mailcap_is_the_default_handler() {
     let policy = MediaPolicyConfig::default();
-    let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: true });
+    let handler = policy.select(&image_media());
     assert!(matches!(handler, MediaHandler::Mailcap { .. }));
-}
-
-#[test]
-fn kitty_is_selected_only_when_enabled_and_supported() {
-    let policy = MediaPolicyConfig {
-        kitty_enabled: true,
-        ..Default::default()
-    };
-    let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: true });
-    assert_eq!(handler, MediaHandler::KittyInline);
 }
 
 #[tokio::test]
@@ -120,22 +110,12 @@ async fn cancelled_download_is_recorded_in_session_history() {
 }
 
 #[test]
-fn kitty_requires_terminal_support_even_when_enabled() {
-    let policy = MediaPolicyConfig {
-        kitty_enabled: true,
-        ..Default::default()
-    };
-    let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: false });
-    assert!(matches!(handler, MediaHandler::Mailcap { .. }));
-}
-
-#[test]
 fn explicit_handler_configuration_wins_over_mailcap() {
     let mut policy = MediaPolicyConfig::default();
     policy
         .handlers
         .insert("image/png".into(), "custom-viewer %s".into());
-    let handler = policy.select(&image_media(), &TerminalCapabilities { kitty: false });
+    let handler = policy.select(&image_media());
     assert_eq!(
         handler,
         MediaHandler::External {
@@ -148,7 +128,7 @@ fn explicit_handler_configuration_wins_over_mailcap() {
 fn unsupported_types_return_metadata_only() {
     let media = MediaRef::new(Url::parse("https://example.com/data.zzz").unwrap());
     let policy = MediaPolicyConfig::default();
-    let handler = policy.select(&media, &TerminalCapabilities { kitty: true });
+    let handler = policy.select(&media);
     assert_eq!(handler, MediaHandler::MetadataOnly);
 }
 

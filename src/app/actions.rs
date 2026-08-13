@@ -100,7 +100,7 @@ pub enum DownloadsAction {
 #[derive(Debug)]
 pub enum AppAction {
     Input(Command),
-    /// Terminal size changed; the feed page size and the kitty image
+    /// Terminal size changed; the feed page size is sized to the primary
     /// placement adapt to it.
     Resize {
         width: u16,
