@@ -11,8 +11,8 @@ pub mod text;
 pub use app::{App, AppAction, AppState, ProfileCommand, RenderModel};
 
 pub use api::{
-    CommentView, FeedListing, FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, MutationResult,
-    Page, PostDetail, PostView, SiteInfo,
+    CommentView, CommunityQuery, CommunityView, FeedListing, FeedQuery, HttpLemmyApi, LemmyApi,
+    LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo,
 };
 pub use config::{AppConfig, CacheConfig, MediaConfig};
 pub use domain::{

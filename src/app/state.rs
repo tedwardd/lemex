@@ -36,6 +36,8 @@ pub struct View {
     /// default); `:sort <name>` changes it and it sticks until the next
     /// `:sort`.
     pub feed_sort: String,
+    /// Open community-list modal, centered over the primary content.
+    pub communities: Option<CommunitiesModal>,
     pub downloads: Option<DownloadsPanel>,
     /// Active help filter; `Some` shows the help index instead of content.
     pub help: Option<String>,
@@ -48,6 +50,61 @@ pub struct View {
 pub struct DownloadsPanel {
     pub query: String,
     pub selected: Option<DownloadId>,
+}
+
+/// Open community-list modal (centered over the primary content). `None` in
+/// the view means closed. The modal fetches `community/list` for its listing
+/// on open and whenever `:sort` switches the listing.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct CommunitiesModal {
+    pub communities: Vec<crate::api::CommunityView>,
+    pub listing: crate::api::FeedListing,
+    pub selected: Option<usize>,
+}
+
+impl CommunitiesModal {
+    pub fn new(listing: crate::api::FeedListing) -> Self {
+        Self {
+            communities: Vec::new(),
+            listing,
+            selected: None,
+        }
+    }
+
+    pub fn selected_community(&self) -> Option<crate::domain::CommunityId> {
+        self.selected
+            .and_then(|index| self.communities.get(index))
+            .map(|community| community.id)
+    }
+
+    pub fn move_selection(&mut self, delta: isize) {
+        let Some(max) = self.communities.len().checked_sub(1) else {
+            self.selected = None;
+            return;
+        };
+        let current = self.selected.unwrap_or_default() as isize;
+        self.selected = Some((current + delta).clamp(0, max as isize) as usize);
+    }
+
+    pub fn goto_first(&mut self, count: usize) {
+        let Some(last) = self.communities.len().checked_sub(1) else {
+            self.selected = None;
+            return;
+        };
+        self.selected = Some(count.saturating_sub(1).min(last));
+    }
+
+    pub fn goto_last(&mut self, count: usize) {
+        let Some(last) = self.communities.len().checked_sub(1) else {
+            self.selected = None;
+            return;
+        };
+        self.selected = Some(if count <= 1 {
+            last
+        } else {
+            count.saturating_sub(1).min(last)
+        });
+    }
 }
 
 impl Default for View {
@@ -64,6 +121,7 @@ impl Default for View {
             feed_query: crate::api::FeedQuery::home(),
             search: String::new(),
             feed_sort: "Active".into(),
+            communities: None,
             downloads: None,
             help: None,
             detail_scroll: 0,
@@ -93,6 +151,7 @@ impl View {
         // still loads the new instance's feed sorted by New.
         self.feed_query.sort = self.feed_sort.clone();
         self.search.clear();
+        self.communities = None;
         self.help = None;
     }
 
@@ -449,6 +508,8 @@ pub struct RenderModel {
     pub has_more: bool,
     pub status: Status,
     pub downloads: Option<DownloadsRender>,
+    /// Open community-list modal, centered over the primary content.
+    pub communities: Option<CommunitiesModal>,
     /// Active help filter shown in place of content.
     pub help: Option<String>,
     /// Scroll offset (in lines) of the open detail/thread pane.
@@ -476,6 +537,7 @@ impl AppState {
             has_more: self.view.next_page.is_some(),
             status: self.status.clone(),
             downloads: None,
+            communities: self.view.communities.clone(),
             help: self.view.help.clone(),
             detail_scroll: self.view.detail_scroll,
         }

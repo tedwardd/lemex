@@ -12,6 +12,7 @@ pub enum RequestIdentity {
     Feed,
     Post(PostId),
     Comments(PostId),
+    Communities,
     Mutation(Mutation),
 }
 
@@ -81,6 +82,11 @@ pub enum ApiResult {
         request: RequestToken,
         post: PostId,
         result: Result<Vec<CommentView>>,
+    },
+    Communities {
+        profile: ProfileId,
+        request: RequestToken,
+        result: Result<crate::api::Page<crate::api::CommunityView>>,
     },
 }
 

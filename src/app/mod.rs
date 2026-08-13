@@ -473,6 +473,16 @@ impl App {
     async fn dispatch_command(&mut self, command: Command) -> Result<()> {
         match command {
             Command::Open => {
+                if let Some(modal) = &mut self.state.view.communities {
+                    // Enter in the community modal opens the selected
+                    // community's feed and closes the modal.
+                    let Some(id) = modal.selected_community() else {
+                        self.state.status.failure("no community selected");
+                        return Ok(());
+                    };
+                    self.state.view.communities = None;
+                    return self.open_community(id).await;
+                }
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Reopen).await;
                 }
@@ -484,8 +494,20 @@ impl App {
                 }
                 self.open_media_selected().await
             }
-            Command::Back => self.close_detail_pane().await,
-            Command::ClosePane => self.close_detail_pane().await,
+            Command::Back => {
+                if self.state.view.communities.is_some() {
+                    self.state.view.communities = None;
+                    return Ok(());
+                }
+                self.close_detail_pane().await
+            }
+            Command::ClosePane => {
+                if self.state.view.communities.is_some() {
+                    self.state.view.communities = None;
+                    return Ok(());
+                }
+                self.close_detail_pane().await
+            }
             Command::Quit => {
                 self.quit();
                 Ok(())
@@ -500,7 +522,7 @@ impl App {
                 }
             }
             Command::Cancel => {
-                // User-reachable cancellation (default key `n`); acts only on
+                // User-reachable cancellation (Esc or `:cancel`); acts only on
                 // a staged confirmation, so the key never swallows unrelated
                 // input when nothing is pending.
                 if self.state.status.confirmation_pending {
@@ -509,6 +531,9 @@ impl App {
                 Ok(())
             }
             Command::Refresh => {
+                if self.state.view.communities.is_some() {
+                    return self.refresh_communities().await;
+                }
                 if self.state.view.downloads_active() {
                     return self.downloads_action(DownloadsAction::Retry).await;
                 }
@@ -529,6 +554,10 @@ impl App {
                 self.previous_page().await
             }
             Command::MoveDown { count } => {
+                if let Some(modal) = &mut self.state.view.communities {
+                    modal.move_selection(count as isize);
+                    return Ok(());
+                }
                 // Opening the detail/thread pane focuses it: j/k then scroll
                 // the thread instead of moving the feed selection.
                 if self.state.view.detail_open {
@@ -540,6 +569,10 @@ impl App {
                 Ok(())
             }
             Command::MoveUp { count } => {
+                if let Some(modal) = &mut self.state.view.communities {
+                    modal.move_selection(-(count as isize));
+                    return Ok(());
+                }
                 if self.state.view.detail_open {
                     self.state.view.detail_scroll =
                         self.state.view.detail_scroll.saturating_sub(count as usize);
@@ -549,6 +582,10 @@ impl App {
                 Ok(())
             }
             Command::GoToFirst { count } => {
+                if let Some(modal) = &mut self.state.view.communities {
+                    modal.goto_first(count as usize);
+                    return Ok(());
+                }
                 // `gg` (or `N gg`) jumps to the Nth row; the default count
                 // of one lands on the first row. An empty feed clears the
                 // selection instead of pointing nowhere.
@@ -558,6 +595,10 @@ impl App {
                 Ok(())
             }
             Command::GoToLast { count } => {
+                if let Some(modal) = &mut self.state.view.communities {
+                    modal.goto_last(count as usize);
+                    return Ok(());
+                }
                 // `G` jumps to the last row; `N G` to the Nth row (clamped).
                 let last = self.state.view.posts.len().checked_sub(1);
                 self.state.view.selected = last.map(|last| {
@@ -783,6 +824,85 @@ impl App {
         Ok(())
     }
 
+    /// `:communities` — open the community-list modal (toggles closed when
+    /// already open). Defaults to the subscribed communities when logged in,
+    /// otherwise the local ones.
+    async fn communities_command(&mut self) -> Result<()> {
+        if self.state.view.communities.is_some() {
+            self.state.view.communities = None;
+            return Ok(());
+        }
+        let listing = if self.state.active.session.is_some() {
+            crate::api::FeedListing::Subscribed
+        } else {
+            crate::api::FeedListing::Local
+        };
+        self.state.view.communities = Some(state::CommunitiesModal::new(listing));
+        self.refresh_communities().await
+    }
+
+    /// Fetch the community list for the modal's current listing.
+    async fn refresh_communities(&mut self) -> Result<()> {
+        let Some(modal) = self.state.view.communities.as_ref() else {
+            return Ok(());
+        };
+        let context = self.state.active.clone();
+        let query = crate::api::CommunityQuery {
+            listing: modal.listing,
+            limit: Some(crate::api::CommunityQuery::DEFAULT_LIMIT),
+        };
+        let request = self.begin_request(RequestIdentity::Communities);
+        let result = self.repository.api.communities(&context, query).await;
+        self.apply_api_result(ApiResult::Communities {
+            profile: context.profile.id,
+            request,
+            result,
+        });
+        Ok(())
+    }
+
+    /// `:sort <subscribed|local|all>` — switch which community list the modal
+    /// shows (the feed sort doesn't apply inside the modal).
+    async fn sort_communities_command(&mut self, args: &[&str]) -> Result<()> {
+        let [name] = args else {
+            self.state
+                .status
+                .failure("usage: sort <subscribed|local|all> (communities list)");
+            return Ok(());
+        };
+        let listing = match name.to_ascii_lowercase().as_str() {
+            "subscribed" => crate::api::FeedListing::Subscribed,
+            "local" => crate::api::FeedListing::Local,
+            "all" => crate::api::FeedListing::All,
+            other => {
+                self.state.status.failure(format!(
+                    "unknown community list {other:?}: use subscribed, local, or all"
+                ));
+                return Ok(());
+            }
+        };
+        if let Some(modal) = &mut self.state.view.communities {
+            modal.listing = listing;
+        }
+        self.refresh_communities().await?;
+        if self.state.status.error.is_none() {
+            self.state.status.success(format!(
+                "showing {} communities",
+                Self::listing_label(listing)
+            ));
+        }
+        Ok(())
+    }
+
+    /// Lowercase label for a community listing, for status messages.
+    fn listing_label(listing: crate::api::FeedListing) -> &'static str {
+        match listing {
+            crate::api::FeedListing::All => "all",
+            crate::api::FeedListing::Local => "local",
+            crate::api::FeedListing::Subscribed => "subscribed",
+        }
+    }
+
     async fn login_from_compose(&mut self) -> Result<()> {
         let mut tokens = self.state.view.compose.split_whitespace();
         let first = tokens.next().unwrap_or_default().trim_start_matches(':');
@@ -1006,6 +1126,16 @@ impl App {
         let mut parts = trimmed.split_whitespace();
         let command = parts.next().unwrap_or_default();
         let args: Vec<&str> = parts.collect();
+        // While the community modal is open, only commands that belong to it
+        // run; everything else would act on the hidden feed underneath.
+        if self.state.view.communities.is_some()
+            && !matches!(command, "sort" | "communities" | "close" | "help" | "quit")
+        {
+            self.state
+                .status
+                .failure("close the communities list before using content commands");
+            return Ok(());
+        }
         let result = match command {
             "profile" => match args.as_slice() {
                 [] => self.execute_profile_command(ProfileCommand::List).await,
@@ -1130,6 +1260,7 @@ impl App {
             // selection.
             "feed" | "media" | "download-media" | "download_media" | "community" | "post"
             | "reply" | "edit" | "vote" | "save" | "subscribe" | "subscribed" | "sort"
+            | "communities"
                 if self.state.view.downloads_active() =>
             {
                 self.state
@@ -1137,7 +1268,16 @@ impl App {
                     .failure("close the downloads panel before using content commands");
                 Ok(())
             }
-            "sort" => self.sort_command(&args).await,
+            "communities" if !self.state.view.downloads_active() => {
+                self.communities_command().await
+            }
+            "sort" => {
+                if self.state.view.communities.is_some() {
+                    self.sort_communities_command(&args).await
+                } else {
+                    self.sort_command(&args).await
+                }
+            }
             "media" => self.open_media_selected().await,
             "download-media" | "download_media" => self.download_media_selected().await,
             "community" => self.community_command(&args).await,
@@ -2227,6 +2367,9 @@ impl App {
             }
             | ApiResult::Comments {
                 profile, request, ..
+            }
+            | ApiResult::Communities {
+                profile, request, ..
             } => (profile, request),
         };
         if profile != &self.state.active.profile.id
@@ -2386,6 +2529,31 @@ impl App {
                         }
                         Err(error) => self.state.status.failure(error.to_string()),
                     }
+                }
+            }
+            ApiResult::Communities { result, .. } => {
+                if self.state.view.communities.is_none() {
+                    // The modal was closed while the fetch was in flight;
+                    // keep the status clean.
+                    return;
+                }
+                match result {
+                    Ok(page) => {
+                        let modal = self
+                            .state
+                            .view
+                            .communities
+                            .as_mut()
+                            .expect("modal presence checked above");
+                        modal.communities = page.items;
+                        modal.selected = (!modal.communities.is_empty()).then_some(0);
+                        let (count, listing) = (modal.communities.len(), modal.listing);
+                        self.state.status.success(format!(
+                            "{} communities ({count})",
+                            Self::listing_label(listing)
+                        ));
+                    }
+                    Err(error) => self.state.status.failure(error.to_string()),
                 }
             }
         }

@@ -9,6 +9,7 @@ use ratatui::{
 };
 
 use super::help::{HelpIndex, contextual_help, mode_label};
+use super::state::CommunitiesModal;
 use super::{DownloadsRender, RenderModel};
 
 /// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
@@ -58,6 +59,12 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
             render_downloads(frame, areas.as_ref(), downloads)
         }
         _ => render_content(frame, areas.as_ref(), model),
+    }
+
+    // The community list is a centered modal drawn on top of the primary
+    // content pane (the feed stays visible around its edges).
+    if let Some(modal) = &model.communities {
+        render_communities(frame, areas[1], modal);
     }
 
     let compose = Paragraph::new(if model.compose.is_empty() {
@@ -362,6 +369,65 @@ fn render_downloads(
     frame.render_widget(detail, body[1]);
 }
 
+/// Draw the community-list modal centered over the primary content pane.
+/// The box is 3/4 of the pane's width and height, so the feed stays visible
+/// around the edges while the list has room for its rows.
+fn render_communities(frame: &mut Frame, content: ratatui::layout::Rect, modal: &CommunitiesModal) {
+    let width = (content.width * 3 / 4).clamp(40, 64);
+    let height = (content.height * 3 / 4).clamp(10, content.height);
+    let x = content.x + content.width.saturating_sub(width) / 2;
+    let y = content.y + content.height.saturating_sub(height) / 2;
+    let area = ratatui::layout::Rect::new(x, y, width, height);
+
+    let listing = match modal.listing {
+        crate::api::FeedListing::All => "All",
+        crate::api::FeedListing::Local => "Local",
+        crate::api::FeedListing::Subscribed => "Subscribed",
+    };
+    let mut lines: Vec<Line> = Vec::with_capacity(modal.communities.len());
+    for (index, community) in modal.communities.iter().enumerate() {
+        let name = community.name.as_str();
+        let subscribers = community.subscribers;
+        let subscribed = if community.subscribed {
+            " [subscribed]"
+        } else {
+            ""
+        };
+        let label = match &community.title {
+            Some(title) if !title.trim().is_empty() && title.trim() != name => {
+                format!("{name} — {title}")
+            }
+            _ => name.to_owned(),
+        };
+        let row = format!("{label}  ({subscribers} subs){subscribed}");
+        let line = if Some(index) == modal.selected {
+            Line::from(Span::styled(
+                row,
+                Style::default().add_modifier(Modifier::REVERSED),
+            ))
+        } else {
+            Line::from(row)
+        };
+        lines.push(line);
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(
+            "(no communities yet — j/k to move, Enter to open, Esc to close)",
+        ));
+    }
+    let title = format!("Communities — {listing} (j/k: move, Enter: open, Esc: close)");
+    // Keep the selection visible, but never scroll content that already fits.
+    let visible_rows = height.saturating_sub(2) as usize;
+    let scroll = modal
+        .selected
+        .map(|selected| selected.saturating_sub(visible_rows.saturating_sub(1)))
+        .unwrap_or_default() as u16;
+    let paragraph = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::ALL).title(title))
+        .scroll((scroll, 0));
+    frame.render_widget(paragraph, area);
+}
+
 fn selected_index(model: &RenderModel) -> Option<usize> {
     model.selected.filter(|index| *index < model.posts.len())
 }
@@ -463,6 +529,7 @@ mod tests {
                 selected: None,
                 records: Vec::new(),
             }),
+            communities: None,
             help,
             detail_scroll: 0,
         }
@@ -470,6 +537,48 @@ mod tests {
 
     fn rendered(model: &RenderModel) -> String {
         rendered_at(model, 80, 24)
+    }
+
+    #[test]
+    fn communities_modal_renders_centered_with_selection() {
+        let mut model = model(None, false);
+        model.communities = Some(CommunitiesModal {
+            communities: vec![
+                crate::api::CommunityView {
+                    id: crate::CommunityId(1),
+                    name: "main".into(),
+                    title: Some("Main Community".into()),
+                    subscribers: 1200,
+                    subscribed: true,
+                },
+                crate::api::CommunityView {
+                    id: crate::CommunityId(2),
+                    name: "other".into(),
+                    title: None,
+                    subscribers: 34,
+                    subscribed: false,
+                },
+            ],
+            listing: crate::api::FeedListing::Local,
+            selected: Some(1),
+        });
+        let text = rendered(&model);
+        assert!(
+            text.contains("Communities — Local"),
+            "the modal title shows the listing, got: {text}"
+        );
+        assert!(
+            text.contains("main — Main Community"),
+            "a titled community shows its title"
+        );
+        assert!(
+            text.contains("(1200 subs) [subscribed]"),
+            "the subscriber count and subscription marker are shown"
+        );
+        assert!(
+            text.contains("other"),
+            "an untitled community shows its name"
+        );
     }
 
     #[test]

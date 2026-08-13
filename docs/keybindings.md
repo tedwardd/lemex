@@ -72,7 +72,8 @@ echoed as asterisks.
 | `:whoami` | show the active session user or anonymous |
 | `:feed` | show the home feed |
 | `:subscribed` | show your subscribed communities' feed (requires login) |
-| `:sort <name>` | set the feed sort — `Active` (default), `Hot`, `New`, `Old`, `TopDay`, `TopWeek`, `TopMonth`, `TopYear`, `TopAll`, `TopHour`, `TopSixHour`, `TopTwelveHour`, `MostComments`, `NewComments`; sticks for the session, so `:subscribed` after `:sort New` matches the web UI's `sort=New` |
+| `:communities` | open the community list as a centered modal — subscribed communities when logged in, local otherwise; `j`/`k` move, `Enter` opens a community, `Esc` closes, `:sort <subscribed\|local\|all>` switches the list |
+| `:sort <name>` | set the feed sort — `Active` (default), `Hot`, `New`, `Old`, `TopDay`, `TopWeek`, `TopMonth`, `TopYear`, `TopAll`, `TopHour`, `TopSixHour`, `TopTwelveHour`, `MostComments`, `NewComments`; sticks for the session, so `:subscribed` after `:sort New` matches the web UI's `sort=New`. Inside the communities modal it instead switches the list: `:sort subscribed`, `:sort local`, `:sort all` |
 | `:community [<id>]` | open a community feed (defaults to the selected post's community) |
 | `:post` | open the selected post |
 | `:search <query>` | search posts (filters download history with the panel open) |

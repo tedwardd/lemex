@@ -16,6 +16,19 @@ pub trait LemmyApi: Send + Sync {
     async fn comments(&self, ctx: &ProfileContext, post_id: PostId) -> Result<Vec<CommentView>>;
     async fn login(&self, request: LoginRequest) -> Result<Session>;
     async fn mutate(&self, ctx: &ProfileContext, mutation: Mutation) -> Result<MutationResult>;
+    /// List communities (`community/list`): the whole instance (`All`), only
+    /// local ones (`Local`), or the logged-in user's subscriptions
+    /// (`Subscribed`). The default refuses so test doubles that never list
+    /// communities stay untouched.
+    async fn communities(
+        &self,
+        _ctx: &ProfileContext,
+        _query: CommunityQuery,
+    ) -> Result<Page<CommunityView>> {
+        Err(crate::error::AppError::Network(
+            "communities: unsupported by this API".into(),
+        ))
+    }
 }
 
 /// Which listing a feed shows. Lemmy's `type_` parameter: the whole
@@ -116,6 +129,29 @@ pub struct CommentView {
     /// Display name of the comment author, for thread rendering.
     pub creator_name: String,
     pub score: i64,
+}
+
+/// A community as returned by `community/list`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommunityView {
+    pub id: CommunityId,
+    pub name: String,
+    pub title: Option<String>,
+    pub subscribers: i64,
+    /// Whether the session is subscribed to this community (server-reported).
+    pub subscribed: bool,
+}
+
+/// Query for the community list: which listing, and how many rows.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommunityQuery {
+    pub listing: FeedListing,
+    pub limit: Option<u32>,
+}
+
+impl CommunityQuery {
+    /// The server's maximum, like the feed: 50 rows per fetch.
+    pub const DEFAULT_LIMIT: u32 = 50;
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

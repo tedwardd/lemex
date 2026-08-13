@@ -104,6 +104,11 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
+        command: ":communities",
+        description: "open the community list (subscribed when logged in, else local); Enter opens, Esc closes, :sort switches the list",
+        group: "navigation",
+    },
+    HelpEntry {
         command: ":sort <name>",
         description: "set the feed sort (Active, Hot, New, Old, TopDay, TopWeek, ...); sticks for the session",
         group: "navigation",

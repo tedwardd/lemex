@@ -343,6 +343,26 @@ fn normalize_post(value: &Value) -> Result<PostView> {
     })
 }
 
+fn normalize_community(value: &Value) -> crate::api::CommunityView {
+    let community = value.get("community").unwrap_or(value);
+    crate::api::CommunityView {
+        id: crate::domain::CommunityId(number(community, "id")),
+        name: crate::text::clean_text(string(community, "name").unwrap_or_default().as_str()),
+        title: string(community, "title").map(|title| crate::text::clean_text(&title)),
+        subscribers: metric(
+            value.get("counts").unwrap_or(&Value::Null),
+            community,
+            "subscribers",
+        ),
+        // Lemmy reports subscription state as a string enum
+        // (`Subscribed` | `NotSubscribed` | `Pending`), not a boolean.
+        subscribed: value
+            .get("subscribed")
+            .and_then(Value::as_str)
+            .is_some_and(|state| state == "Subscribed"),
+    }
+}
+
 fn normalize_comment(value: &Value, post_id: PostId) -> CommentView {
     let comment = value.get("comment").unwrap_or(value);
     let creator = value.get("creator").unwrap_or(&Value::Null);
@@ -509,6 +529,43 @@ impl LemmyApi for HttpLemmyApi {
             .unwrap_or_default())
     }
 
+    async fn communities(
+        &self,
+        ctx: &ProfileContext,
+        query: crate::api::CommunityQuery,
+    ) -> Result<crate::api::Page<crate::api::CommunityView>> {
+        let listing = match query.listing {
+            crate::api::FeedListing::All => "All",
+            crate::api::FeedListing::Local => "Local",
+            crate::api::FeedListing::Subscribed => "Subscribed",
+        };
+        let mut request = self
+            .client
+            .get(self.endpoint(ctx, "community/list")?)
+            .query(&[("type_", listing)]);
+        if let Some(limit) = query.limit {
+            request = request.query(&[("limit", limit)]);
+        }
+        let response = self
+            .read_json(self.auth_request(request, ctx), "communities")
+            .await?;
+        let items = response
+            .get("communities")
+            .and_then(Value::as_array)
+            .ok_or_else(|| {
+                AppError::Network("communities: response did not contain communities".into())
+            })?
+            .iter()
+            .take(MAX_ARRAY_ITEMS)
+            .map(normalize_community)
+            .collect();
+        let next_page = response
+            .get("next_page")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        Ok(crate::api::Page { items, next_page })
+    }
+
     async fn login(&self, request: LoginRequest) -> Result<Session> {
         let profile = request.profile.clone();
         let instance_url = request.instance_url.clone();
@@ -624,7 +681,29 @@ fn mutation_request_parts(mutation: &Mutation) -> Result<(&'static str, Value)> 
 
 #[cfg(test)]
 mod tests {
-    use super::server_detail;
+    use super::{normalize_community, server_detail};
+
+    #[test]
+    fn normalize_community_reads_subscription_state_string() {
+        // Real Lemmy reports subscription as a string enum, not a boolean.
+        let subscribed = serde_json::json!({
+            "community": {"id": 5, "name": "machining", "title": "Machining"},
+            "counts": {"subscribers": 123},
+            "subscribed": "Subscribed",
+        });
+        let view = normalize_community(&subscribed);
+        assert!(view.subscribed, "Subscribed state must be honored");
+        assert_eq!(view.id.0, 5);
+        assert_eq!(view.name, "machining");
+        assert_eq!(view.subscribers, 123);
+
+        let not_subscribed = serde_json::json!({
+            "community": {"id": 6, "name": "other"},
+            "counts": {"subscribers": 1},
+            "subscribed": "NotSubscribed",
+        });
+        assert!(!normalize_community(&not_subscribed).subscribed);
+    }
 
     #[test]
     fn server_detail_extracts_and_truncates_error_text() {

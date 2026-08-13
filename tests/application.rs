@@ -2001,10 +2001,12 @@ async fn vote_command_accepts_up_down_and_clear() {
     );
 }
 
-/// API that records the feed queries it receives and returns one post.
+/// API that records the feed and community queries it receives and returns
+/// one post / two communities.
 #[derive(Default)]
 struct SubscribedFeedApi {
     queries: Arc<parking_lot::Mutex<Vec<FeedQuery>>>,
+    community_queries: Arc<parking_lot::Mutex<Vec<levim::api::CommunityQuery>>>,
 }
 
 #[async_trait]
@@ -2016,6 +2018,32 @@ impl LemmyApi for SubscribedFeedApi {
         self.queries.lock().push(query);
         Ok(Page {
             items: vec![post_view(1, "Subscribed post")],
+            next_page: None,
+        })
+    }
+    async fn communities(
+        &self,
+        _: &ProfileContext,
+        query: levim::api::CommunityQuery,
+    ) -> Result<levim::api::Page<levim::api::CommunityView>> {
+        self.community_queries.lock().push(query);
+        Ok(levim::api::Page {
+            items: vec![
+                levim::api::CommunityView {
+                    id: levim::CommunityId(1),
+                    name: "main".into(),
+                    title: Some("Main Community".into()),
+                    subscribers: 1200,
+                    subscribed: true,
+                },
+                levim::api::CommunityView {
+                    id: levim::CommunityId(2),
+                    name: "other".into(),
+                    title: None,
+                    subscribers: 34,
+                    subscribed: false,
+                },
+            ],
             next_page: None,
         })
     }
@@ -2182,6 +2210,160 @@ async fn sort_command_rejects_unknown_names() {
         app.state.status.error
     );
     assert!(api.queries.lock().is_empty(), "no request for a bad sort");
+}
+
+#[tokio::test]
+async fn communities_modal_defaults_to_local_when_anonymous() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+
+    assert!(app.state.view.communities.is_some(), "the modal must open");
+    {
+        let queries = api.community_queries.lock();
+        assert_eq!(queries.len(), 1, "the community list must be fetched");
+        assert_eq!(
+            queries[0].listing,
+            levim::api::FeedListing::Local,
+            "anonymous opens the local list"
+        );
+    }
+    let modal = app.state.view.communities.as_ref().unwrap();
+    assert_eq!(modal.communities.len(), 2);
+    assert_eq!(modal.selected, Some(0), "the first row is selected");
+    assert_eq!(
+        modal.selected_community(),
+        Some(levim::CommunityId(1)),
+        "Enter opens the selected community"
+    );
+    assert!(app.state.status.message.contains("local communities"));
+}
+
+#[tokio::test]
+async fn communities_modal_defaults_to_subscribed_when_logged_in() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut context = fixture_context();
+    context.session = Some(levim::Session {
+        user_id: levim::UserId(7),
+        token: levim::SecretString::from("fixture-token"),
+    });
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        context,
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+
+    let queries = api.community_queries.lock();
+    assert_eq!(
+        queries[0].listing,
+        levim::api::FeedListing::Subscribed,
+        "logged in opens the subscribed list"
+    );
+}
+
+#[tokio::test]
+async fn sort_switches_the_communities_listing() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+
+    app.dispatch(AppAction::Input(Command::SubmitLine("sort all".into())))
+        .await
+        .unwrap();
+
+    {
+        let queries = api.community_queries.lock();
+        assert_eq!(queries.len(), 2, "switching the listing refetches");
+        assert_eq!(queries[1].listing, levim::api::FeedListing::All);
+    }
+    assert_eq!(
+        app.state.view.communities.as_ref().unwrap().listing,
+        levim::api::FeedListing::All
+    );
+
+    // A feed sort name is not a community listing.
+    app.dispatch(AppAction::Input(Command::SubmitLine("sort New".into())))
+        .await
+        .unwrap();
+    assert!(
+        app.state
+            .status
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("unknown community list")),
+        "post sorts must be rejected inside the modal, got {:?}",
+        app.state.status.error
+    );
+}
+
+#[tokio::test]
+async fn enter_in_communities_modal_opens_the_community_feed() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+
+    app.dispatch(AppAction::Input(Command::Open)).await.unwrap();
+
+    assert!(
+        app.state.view.communities.is_none(),
+        "Enter must close the modal"
+    );
+    assert_eq!(
+        app.state.view.feed_query.community,
+        Some(levim::CommunityId(1)),
+        "the selected community's feed must load"
+    );
+    let feed_queries = api.queries.lock();
+    assert_eq!(feed_queries.len(), 1, "the community feed must be fetched");
+    assert_eq!(feed_queries[0].community, Some(levim::CommunityId(1)));
+}
+
+#[tokio::test]
+async fn escape_closes_the_communities_modal() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+    assert!(app.state.view.communities.is_some());
+
+    app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
+    assert!(
+        app.state.view.communities.is_none(),
+        "Esc must close the modal"
+    );
 }
 
 #[tokio::test]
