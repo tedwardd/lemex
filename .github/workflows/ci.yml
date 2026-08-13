@@ -32,7 +32,17 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Lint with clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: |
+          rustc --version
+          cargo clippy --all-targets --all-features -- -D warnings 2>&1 | tee clippy.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Upload clippy log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-log
+          path: clippy.log
 
       - name: Run all tests
         run: cargo test --all-targets --all-features
