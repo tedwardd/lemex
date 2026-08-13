@@ -1641,6 +1641,29 @@ async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_clos
 }
 
 #[tokio::test]
+async fn custom_palette_reaches_the_render_model() {
+    let colors = levim::AppColors {
+        accent: ratatui::style::Color::LightBlue,
+        surface: ratatui::style::Color::Rgb(0x1c, 0x1c, 0x1c),
+        ..levim::AppColors::default()
+    };
+    let mut app = fixture_app().with_colors(colors);
+    app.dispatch(AppAction::Input(Command::SubmitLine("help".into())))
+        .await
+        .unwrap();
+    let model = app.render_model();
+    assert_eq!(
+        model.colors.accent,
+        ratatui::style::Color::LightBlue,
+        "the configured accent reaches rendering"
+    );
+    assert_eq!(
+        model.colors.surface,
+        ratatui::style::Color::Rgb(0x1c, 0x1c, 0x1c)
+    );
+}
+
+#[tokio::test]
 async fn no_modals_by_default_and_a_thread_opens_one() {
     let mut app = fixture_app();
     assert!(

@@ -10,7 +10,7 @@ use ratatui::{
 };
 
 use super::help::{HelpIndex, contextual_help, mode_label};
-use super::state::{CommunitiesModal, HelpModal, Modal, ThreadModal};
+use super::state::{AppColors, CommunitiesModal, HelpModal, Modal, ThreadModal};
 use super::{DownloadsRender, RenderModel};
 
 /// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
@@ -69,11 +69,11 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
             String::new()
         };
         match modal {
-            Modal::Thread(thread) => render_thread(frame, areas[1], thread, &suffix),
+            Modal::Thread(thread) => render_thread(frame, areas[1], thread, &suffix, &model.colors),
             Modal::Communities(communities) => {
-                render_communities(frame, areas[1], communities, &suffix)
+                render_communities(frame, areas[1], communities, &suffix, &model.colors)
             }
-            Modal::Help(help) => render_help(frame, areas[1], help, &suffix),
+            Modal::Help(help) => render_help(frame, areas[1], help, &suffix, &model.colors),
         }
     }
 
@@ -202,18 +202,6 @@ fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatu
     ratatui::layout::Rect::new(x, y, width, height)
 }
 
-/// Modal accent: borders and titles. A distinct accent makes an open modal
-/// read as an overlay instead of blending into the content behind it.
-const MODAL_ACCENT: Color = Color::Cyan;
-/// Modal surface: the box interior's background. A dark surface with light
-/// text is a self-contained palette — the modal does not depend on the
-/// terminal's default foreground, which on some themes is dark-on-dark and
-/// would make overlay text unreadable.
-const MODAL_SURFACE: Color = Color::DarkGray;
-/// Modal text: explicit light foreground on the dark surface, so modal
-/// content stays readable on any terminal theme.
-const MODAL_TEXT: Color = Color::White;
-
 /// Paint a modal's surface and chrome (Clear, then a background-filled block
 /// with accent borders and title) and return the interior rect plus the
 /// surface style the content widget must carry so no holes show through.
@@ -221,10 +209,11 @@ fn modal_chrome(
     frame: &mut Frame,
     area: ratatui::layout::Rect,
     title: String,
+    colors: &AppColors,
 ) -> (ratatui::layout::Rect, Style) {
     frame.render_widget(Clear, area);
-    let surface = Style::default().fg(MODAL_TEXT).bg(MODAL_SURFACE);
-    let accent = Style::default().fg(MODAL_ACCENT);
+    let surface = Style::default().fg(colors.text).bg(colors.surface);
+    let accent = Style::default().fg(colors.accent);
     frame.render_widget(
         Block::default()
             .borders(Borders::ALL)
@@ -248,12 +237,14 @@ fn render_thread(
     content: ratatui::layout::Rect,
     thread: &ThreadModal,
     depth: &str,
+    colors: &AppColors,
 ) {
     let area = modal_area(content, 9, 9);
     let (inner, surface) = modal_chrome(
         frame,
         area,
         format!("Thread{depth} — j/k or Ctrl-d/u to scroll, Esc to close"),
+        colors,
     );
 
     let detail = &thread.post;
@@ -296,7 +287,13 @@ fn render_thread(
     frame.render_widget(paragraph, inner);
 }
 
-fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpModal, depth: &str) {
+fn render_help(
+    frame: &mut Frame,
+    content: ratatui::layout::Rect,
+    help: &HelpModal,
+    depth: &str,
+    colors: &AppColors,
+) {
     // Help is one full column: command + description on a wrapped line
     // each, so long descriptions never run off the edge of a cramped side
     // pane. The group list is folded into the footer; `:help <group>`
@@ -307,7 +304,7 @@ fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpMod
     } else {
         format!("Help — \"{}\"{depth} (j/k: scroll, Esc: close)", help.query)
     };
-    let (inner, surface) = modal_chrome(frame, area, title);
+    let (inner, surface) = modal_chrome(frame, area, title, colors);
 
     let entries = HelpIndex::default().search(&help.query);
     let mut lines: Vec<Line> = Vec::with_capacity(entries.len() + 3);
@@ -435,6 +432,7 @@ fn render_communities(
     content: ratatui::layout::Rect,
     modal: &CommunitiesModal,
     depth: &str,
+    colors: &AppColors,
 ) {
     let area = modal_area(content, 7, 7);
     let listing = match modal.listing {
@@ -443,7 +441,7 @@ fn render_communities(
         crate::api::FeedListing::Subscribed => "Subscribed",
     };
     let title = format!("Communities — {listing}{depth} (j/k: move, Enter: open, Esc: close)");
-    let (inner, surface) = modal_chrome(frame, area, title);
+    let (inner, surface) = modal_chrome(frame, area, title, colors);
 
     let mut lines: Vec<Line> = Vec::with_capacity(modal.communities.len());
     for (index, community) in modal.communities.iter().enumerate() {
@@ -465,7 +463,7 @@ fn render_communities(
                 row,
                 Style::default()
                     .fg(Color::Black)
-                    .bg(MODAL_ACCENT)
+                    .bg(colors.accent)
                     .add_modifier(Modifier::BOLD),
             ))
         } else {
@@ -511,12 +509,14 @@ fn network_label(model: &RenderModel) -> &'static str {
 
 fn network_style(model: &RenderModel) -> Style {
     match network_label(model) {
-        "ERROR" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        "ERROR" => Style::default()
+            .fg(model.colors.error)
+            .add_modifier(Modifier::BOLD),
         "PENDING" => Style::default()
-            .fg(Color::Yellow)
+            .fg(model.colors.pending)
             .add_modifier(Modifier::BOLD),
         _ => Style::default()
-            .fg(Color::Green)
+            .fg(model.colors.ready)
             .add_modifier(Modifier::BOLD),
     }
 }
@@ -593,6 +593,7 @@ mod tests {
                 records: Vec::new(),
             }),
             modals: Vec::new(),
+            colors: AppColors::default(),
         };
         if let Some(query) = help {
             model.modals.push(Modal::Help(HelpModal::new(query)));

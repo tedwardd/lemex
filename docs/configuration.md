@@ -129,6 +129,26 @@ total feed payload; a single entry larger than the cap is evicted too, and
 drafts are exempt. When the key is absent a 64 MiB default applies, so the
 cache is bounded out of the box.
 
+## Colors
+
+The UI palette is customizable with a `[colors]` section. Every key accepts
+a color name (`black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
+`gray`, `darkgray`, `lightred`, `lightgreen`, `lightyellow`, `lightblue`,
+`lightmagenta`, `lightcyan`, `white`, `reset` — case-insensitive) or
+`#rrggbb` hex, and falls back to the standard palette when absent. Unknown
+values are rejected at load time so a typo never silently renders with the
+wrong color.
+
+```toml
+[colors]
+accent = "cyan"        # modal borders, titles, picker selection
+surface = "darkgray"   # modal interior background
+text = "white"         # modal interior text
+error = "red"          # status bar
+pending = "yellow"     # status bar
+ready = "green"        # status bar
+```
+
 ## Logging
 
 Logging is off by default and redacts credentials, tokens, private content,

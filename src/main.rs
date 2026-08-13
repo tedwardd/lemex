@@ -144,7 +144,8 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         ProfileContext { profile, session },
         credentials,
         media,
-    );
+    )
+    .with_colors(levim::AppColors::from_config(&config.colors));
     match (first_run_note, logging_note) {
         (Some(first), Some(logging)) => {
             app.state.status.message = format!("{first} | {logging}");

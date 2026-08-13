@@ -8,13 +8,13 @@ pub mod input;
 pub mod media;
 pub mod profiles;
 pub mod text;
-pub use app::{App, AppAction, AppState, ProfileCommand, RenderModel};
+pub use app::{App, AppAction, AppColors, AppState, ProfileCommand, RenderModel};
 
 pub use api::{
     CommentView, CommunityQuery, CommunityView, FeedListing, FeedQuery, HttpLemmyApi, LemmyApi,
     LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo,
 };
-pub use config::{AppConfig, CacheConfig, MediaConfig};
+pub use config::{AppConfig, CacheConfig, ColorsConfig, MediaConfig};
 pub use domain::{
     ActiveProfile, CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, DownloadId,
     DownloadRecord, DownloadStatus, EditCommentRequest, EditPostRequest, MediaRef, Mutation,

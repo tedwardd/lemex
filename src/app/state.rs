@@ -10,10 +10,61 @@ use super::actions::PendingAction;
 use crate::{
     api::{CommentView, PostView},
     cache::{CacheStore, Draft, DraftId},
+    config::ColorsConfig,
     domain::{DownloadId, DownloadRecord, PostId, ProfileContext, ProfileId},
     error::Result,
     input::Mode,
 };
+
+/// The resolved UI palette applied at render time. Built from the `[colors]`
+/// config section; absent keys fall back to the standard palette.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AppColors {
+    /// Modal borders and titles (and the community-picker selection).
+    pub accent: ratatui::style::Color,
+    /// Modal interior background.
+    pub surface: ratatui::style::Color,
+    /// Modal interior text.
+    pub text: ratatui::style::Color,
+    /// Status-bar error color.
+    pub error: ratatui::style::Color,
+    /// Status-bar pending color.
+    pub pending: ratatui::style::Color,
+    /// Status-bar ready color.
+    pub ready: ratatui::style::Color,
+}
+
+impl Default for AppColors {
+    fn default() -> Self {
+        Self {
+            accent: ratatui::style::Color::Cyan,
+            surface: ratatui::style::Color::DarkGray,
+            text: ratatui::style::Color::White,
+            error: ratatui::style::Color::Red,
+            pending: ratatui::style::Color::Yellow,
+            ready: ratatui::style::Color::Green,
+        }
+    }
+}
+
+impl AppColors {
+    /// Resolve a config palette; an unparsable key (which the config loader
+    /// already rejects) falls back to the default color.
+    pub fn from_config(config: &ColorsConfig) -> Self {
+        let fallback = Self::default();
+        let resolve = |value: &str, fallback: ratatui::style::Color| {
+            crate::config::parse_color(value).unwrap_or(fallback)
+        };
+        Self {
+            accent: resolve(&config.accent, fallback.accent),
+            surface: resolve(&config.surface, fallback.surface),
+            text: resolve(&config.text, fallback.text),
+            error: resolve(&config.error, fallback.error),
+            pending: resolve(&config.pending, fallback.pending),
+            ready: resolve(&config.ready, fallback.ready),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct View {
@@ -593,6 +644,8 @@ pub struct RenderModel {
     pub downloads: Option<DownloadsRender>,
     /// Open modals, bottom to top; the last is focused.
     pub modals: Vec<Modal>,
+    /// The UI palette, resolved from the `[colors]` config section.
+    pub colors: AppColors,
 }
 
 /// Render snapshot of the downloads panel, populated by the application layer.
@@ -615,6 +668,7 @@ impl AppState {
             status: self.status.clone(),
             downloads: None,
             modals: self.view.modals.clone(),
+            colors: AppColors::default(),
         }
     }
 }

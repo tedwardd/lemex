@@ -8,7 +8,7 @@ use std::{
 use async_trait::async_trait;
 use levim::profiles::KeyringCredentialStore;
 use levim::{
-    AppConfig, AppError, ProfileId, SecretString, Session, UserId,
+    AppConfig, AppError, ColorsConfig, ProfileId, SecretString, Session, UserId,
     api::{
         CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
         SiteInfo,
@@ -392,4 +392,46 @@ async fn logout_removes_session_and_keeps_non_secret_profile_metadata() {
             .is_none()
     );
     assert!(profiles.get(&ProfileId::from("main")).is_ok());
+}
+
+#[test]
+fn colors_section_parses_round_trips_and_rejects_bad_values() {
+    // Absent [colors]: the standard palette applies.
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert_eq!(config.colors, ColorsConfig::default());
+
+    // Custom named and hex colors parse and round-trip.
+    let custom = "[colors]\naccent = 'lightblue'\nsurface = '#1c1c1c'\ntext = 'lightcyan'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(custom).unwrap();
+    assert_eq!(config.colors.accent, "lightblue");
+    assert_eq!(config.colors.surface, "#1c1c1c");
+    let encoded = config.to_toml().unwrap();
+    assert_eq!(
+        AppConfig::from_toml(&encoded).unwrap().colors,
+        config.colors
+    );
+
+    // Resolving the palette yields the ratatui colors.
+    let app_colors = levim::AppColors::from_config(&config.colors);
+    assert_eq!(app_colors.accent, ratatui::style::Color::LightBlue);
+    assert_eq!(
+        app_colors.surface,
+        ratatui::style::Color::Rgb(0x1c, 0x1c, 0x1c)
+    );
+    assert_eq!(app_colors.text, ratatui::style::Color::LightCyan);
+
+    // A typo is a configuration error, not a silent fallback.
+    for bad in ["blurple", "#12345", "#gggggg"] {
+        let source = format!(
+            "[colors]\naccent = '{bad}'\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n"
+        );
+        assert!(
+            matches!(
+                AppConfig::from_toml(&source),
+                Err(AppError::Configuration(_))
+            ),
+            "color {bad:?} must be rejected"
+        );
+    }
 }

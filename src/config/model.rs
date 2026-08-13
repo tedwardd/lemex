@@ -59,6 +59,75 @@ pub struct LogConfig {
     pub level: Option<String>,
 }
 
+/// Customizable UI palette. Every key accepts a color name (`red`, `cyan`,
+/// `darkgray`, …) or `#rrggbb` hex and defaults to the client's standard
+/// palette when absent.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ColorsConfig {
+    /// Modal borders and titles (and the community-picker selection).
+    pub accent: String,
+    /// Modal interior background.
+    pub surface: String,
+    /// Modal interior text.
+    pub text: String,
+    /// Status-bar error color.
+    pub error: String,
+    /// Status-bar pending color.
+    pub pending: String,
+    /// Status-bar ready color.
+    pub ready: String,
+}
+
+impl Default for ColorsConfig {
+    fn default() -> Self {
+        Self {
+            accent: "cyan".into(),
+            surface: "darkgray".into(),
+            text: "white".into(),
+            error: "red".into(),
+            pending: "yellow".into(),
+            ready: "green".into(),
+        }
+    }
+}
+
+/// Parse a color specification: a named ANSI color (case-insensitive) or
+/// `#rrggbb` hex. `None` for anything else so callers can attach context.
+pub fn parse_color(value: &str) -> Option<ratatui::style::Color> {
+    use ratatui::style::Color;
+    let trimmed = value.trim();
+    let color = match trimmed.to_ascii_lowercase().as_str() {
+        "black" => Color::Black,
+        "red" => Color::Red,
+        "green" => Color::Green,
+        "yellow" => Color::Yellow,
+        "blue" => Color::Blue,
+        "magenta" => Color::Magenta,
+        "cyan" => Color::Cyan,
+        "gray" => Color::Gray,
+        "darkgray" => Color::DarkGray,
+        "lightred" => Color::LightRed,
+        "lightgreen" => Color::LightGreen,
+        "lightyellow" => Color::LightYellow,
+        "lightblue" => Color::LightBlue,
+        "lightmagenta" => Color::LightMagenta,
+        "lightcyan" => Color::LightCyan,
+        "white" => Color::White,
+        "reset" => Color::Reset,
+        _ if trimmed.starts_with('#') => {
+            let hex = trimmed.trim_start_matches('#');
+            if hex.len() == 6 && hex.chars().all(|character| character.is_ascii_hexdigit()) {
+                let value = u32::from_str_radix(hex, 16).ok()?;
+                Color::Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8)
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    Some(color)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct AppConfig {
     pub profiles: Vec<Profile>,
@@ -68,6 +137,8 @@ pub struct AppConfig {
     pub logging: LogConfig,
     /// Action run once at launch (for example `feed`); empty means none.
     pub startup: String,
+    /// UI palette; absent keys fall back to the standard colors.
+    pub colors: ColorsConfig,
     /// Permit `http://` instance URLs. Off by default: credentials (login
     /// password, session JWT) must not travel in cleartext unless the user
     /// explicitly opts in.
@@ -142,6 +213,7 @@ impl AppConfig {
         }
 
         let startup = validate_startup(&raw.startup)?;
+        let colors = raw.colors.into_config()?;
         Ok(Self {
             profiles,
             keymaps: raw.keymaps,
@@ -149,6 +221,7 @@ impl AppConfig {
             cache: raw.cache.into_config(),
             logging: raw.logging.into_config(),
             startup,
+            colors,
             allow_insecure_http: raw.allow_insecure_http,
         })
     }
@@ -202,6 +275,7 @@ impl AppConfig {
             cache: RawCacheConfig::from_config(&self.cache),
             logging: RawLogConfig::from_config(&self.logging),
             startup: self.startup.clone(),
+            colors: RawColorsConfig::from_config(&self.colors),
             allow_insecure_http: self.allow_insecure_http,
         };
         toml::to_string_pretty(&raw)
@@ -236,6 +310,8 @@ struct RawConfig {
     logging: RawLogConfig,
     #[serde(default)]
     startup: String,
+    #[serde(default)]
+    colors: RawColorsConfig,
     /// Opt-in to `http://` instance URLs (credentials travel in cleartext).
     #[serde(default)]
     allow_insecure_http: bool,
@@ -374,6 +450,95 @@ impl RawCacheConfig {
         Self {
             directory: config.directory.clone(),
             max_size_bytes: config.max_size_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawColorsConfig {
+    #[serde(default = "default_color_accent")]
+    accent: String,
+    #[serde(default = "default_color_surface")]
+    surface: String,
+    #[serde(default = "default_color_text")]
+    text: String,
+    #[serde(default = "default_color_error")]
+    error: String,
+    #[serde(default = "default_color_pending")]
+    pending: String,
+    #[serde(default = "default_color_ready")]
+    ready: String,
+}
+
+impl Default for RawColorsConfig {
+    fn default() -> Self {
+        Self {
+            accent: default_color_accent(),
+            surface: default_color_surface(),
+            text: default_color_text(),
+            error: default_color_error(),
+            pending: default_color_pending(),
+            ready: default_color_ready(),
+        }
+    }
+}
+
+fn default_color_accent() -> String {
+    "cyan".into()
+}
+fn default_color_surface() -> String {
+    "darkgray".into()
+}
+fn default_color_text() -> String {
+    "white".into()
+}
+fn default_color_error() -> String {
+    "red".into()
+}
+fn default_color_pending() -> String {
+    "yellow".into()
+}
+fn default_color_ready() -> String {
+    "green".into()
+}
+
+impl RawColorsConfig {
+    fn into_config(self) -> Result<ColorsConfig> {
+        // Validate every key at load time so a typo never silently renders
+        // with a fallback color.
+        for (key, value) in [
+            ("accent", &self.accent),
+            ("surface", &self.surface),
+            ("text", &self.text),
+            ("error", &self.error),
+            ("pending", &self.pending),
+            ("ready", &self.ready),
+        ] {
+            if parse_color(value).is_none() {
+                return Err(AppError::Configuration(format!(
+                    "[colors] {key}: unknown color {value:?}; use a named color or #rrggbb"
+                )));
+            }
+        }
+        Ok(ColorsConfig {
+            accent: self.accent,
+            surface: self.surface,
+            text: self.text,
+            error: self.error,
+            pending: self.pending,
+            ready: self.ready,
+        })
+    }
+
+    fn from_config(config: &ColorsConfig) -> Self {
+        Self {
+            accent: config.accent.clone(),
+            surface: config.surface.clone(),
+            text: config.text.clone(),
+            error: config.error.clone(),
+            pending: config.pending.clone(),
+            ready: config.ready.clone(),
         }
     }
 }

@@ -45,8 +45,8 @@ pub use actions::{
 };
 pub use repository::{CachedRead, Repository};
 pub use state::{
-    AppState, CommunitiesModal, DownloadsPanel, DownloadsRender, DraftStore, Modal, RenderModel,
-    Status, ThreadModal, View,
+    AppColors, AppState, CommunitiesModal, DownloadsPanel, DownloadsRender, DraftStore, Modal,
+    RenderModel, Status, ThreadModal, View,
 };
 
 pub fn run_terminal(
@@ -251,6 +251,8 @@ pub struct App {
     scratch_downloads: HashSet<crate::domain::DownloadId>,
     media_policy: MediaPolicyConfig,
     collision_policy: CollisionPolicy,
+    /// Resolved `[colors]` palette applied at render time.
+    colors: state::AppColors,
     /// Latest terminal size: height sizes feed pages to the primary pane.
     /// Zero means unknown (no Resize seen yet); feeds then fall back to the
     /// fixed default limit.
@@ -321,10 +323,17 @@ impl App {
             scratch_downloads: HashSet::new(),
             media_policy,
             collision_policy,
+            colors: state::AppColors::default(),
             terminal_width: 0,
             terminal_height: 0,
             quit: false,
         }
+    }
+
+    /// Apply the `[colors]` palette from configuration.
+    pub fn with_colors(mut self, colors: state::AppColors) -> Self {
+        self.colors = colors;
+        self
     }
 
     /// Best-effort removal of completed scratch files created for external
@@ -383,6 +392,7 @@ impl App {
 
     pub fn render_model(&self) -> RenderModel {
         let mut model = self.state.render_model();
+        model.colors = self.colors.clone();
         model.downloads = self
             .state
             .view
