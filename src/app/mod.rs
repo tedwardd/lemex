@@ -1706,6 +1706,12 @@ impl App {
                 }
                 Ok(())
             }
+            MediaHandler::Refused { mime } => {
+                self.state.status.failure(format!(
+                    "refusing to open executable media type {mime} — configure an explicit [media] handlers entry to allow it"
+                ));
+                Ok(())
+            }
             MediaHandler::MetadataOnly => {
                 let mime =
                     crate::media::resolve_mime(&media, None).unwrap_or_else(|| "unknown".into());

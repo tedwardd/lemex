@@ -7,6 +7,7 @@ pub mod error;
 pub mod input;
 pub mod media;
 pub mod profiles;
+pub mod text;
 pub use app::{App, AppAction, AppState, ProfileCommand, RenderModel};
 
 pub use api::{

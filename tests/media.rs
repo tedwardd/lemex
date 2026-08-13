@@ -72,6 +72,16 @@ fn slow_download_request() -> DownloadRequest {
 
 /// A tiny HTTP server that answers one request per connection with a fixed body.
 fn spawn_http_server(body: &'static [u8], content_type: &'static str) -> u16 {
+    spawn_http_server_with_length(body, content_type, body.len())
+}
+
+/// Like [`spawn_http_server`] but with an explicit (possibly false) declared
+/// `Content-Length`, for testing size-limit handling.
+fn spawn_http_server_with_length(
+    body: &'static [u8],
+    content_type: &'static str,
+    declared: usize,
+) -> u16 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
@@ -80,8 +90,7 @@ fn spawn_http_server(body: &'static [u8], content_type: &'static str) -> u16 {
             let mut buffer = [0u8; 4096];
             let _ = stream.read(&mut buffer);
             let headers = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
+                "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nContent-Length: {declared}\r\nConnection: close\r\n\r\n",
             );
             let _ = stream.write_all(headers.as_bytes());
             let _ = stream.write_all(body);
@@ -118,8 +127,15 @@ fn mailcap_is_the_default_handler() {
     assert!(matches!(handler, MediaHandler::Mailcap { .. }));
 }
 
+/// Tests that create or remove the real scratch directory (`$TMPDIR/levim-client`)
+/// must not race with each other, so they share one mutex.
+static SCRATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[test]
 fn scratch_dir_is_nested_under_the_system_temp_dir() {
+    let _guard = SCRATCH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let directory = levim::media::scratch_dir();
     assert!(
         directory.starts_with(std::env::temp_dir()),
@@ -135,6 +151,9 @@ fn scratch_dir_is_nested_under_the_system_temp_dir() {
 
 #[test]
 fn clean_scratch_dir_removes_the_whole_subtree() {
+    let _guard = SCRATCH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let directory = levim::media::scratch_dir();
     std::fs::create_dir_all(directory.join("nested")).unwrap();
     std::fs::write(directory.join("stale.bin"), b"stale").unwrap();
@@ -145,6 +164,42 @@ fn clean_scratch_dir_removes_the_whole_subtree() {
         "the whole scratch subtree must be removed"
     );
     // A missing directory is not an error (idempotent sweep).
+    levim::media::clean_scratch_dir().unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn ensure_scratch_dir_refuses_a_symlinked_scratch_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::fs::symlink;
+
+    let _guard = SCRATCH_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let directory = levim::media::scratch_dir();
+    // A different local user can pre-create $TMPDIR/levim-client as a symlink
+    // to a victim directory; the client must refuse to follow it.
+    let victim = std::env::temp_dir().join(format!("levim-scratch-victim-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&victim);
+    let _ = std::fs::remove_file(&directory);
+    std::fs::create_dir_all(&victim).unwrap();
+    symlink(&victim, &directory).unwrap();
+    let error = levim::media::ensure_scratch_dir()
+        .expect_err("a symlinked scratch dir must be refused, not followed");
+    assert!(
+        error.to_string().contains("symlink"),
+        "the error must explain the refusal, got {error}"
+    );
+    // The victim directory must not have been touched.
+    assert!(!victim.join("planted.bin").exists());
+
+    // Cleanup: remove the symlink and restore a working directory with the
+    // restrictive mode the real call applies.
+    std::fs::remove_file(&directory).unwrap();
+    let _ = std::fs::remove_dir_all(&victim);
+    levim::media::ensure_scratch_dir().unwrap();
+    let mode = std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o700, "the scratch dir must be private to the user");
     levim::media::clean_scratch_dir().unwrap();
 }
 
@@ -180,6 +235,48 @@ fn unsupported_types_return_metadata_only() {
     let policy = MediaPolicyConfig::default();
     let handler = policy.select(&media);
     assert_eq!(handler, MediaHandler::MetadataOnly);
+}
+
+#[test]
+fn executable_media_is_refused_unless_explicitly_configured() {
+    let policy = MediaPolicyConfig::default();
+    // A .desktop URL and a shell-script Content-Type must never reach a
+    // generic opener (xdg-open) — one keystroke on a crafted post would
+    // become code execution.
+    for url in [
+        "https://example.com/evil.desktop",
+        "https://example.com/trojan.sh",
+        "https://example.com/payload.jar",
+        "https://example.com/run",
+    ] {
+        let media = MediaRef::new(Url::parse(url).unwrap());
+        let handler = policy.select(&media);
+        assert!(
+            matches!(handler, MediaHandler::Refused { .. }),
+            "{url} must be refused, got {handler:?}"
+        );
+    }
+    let mut script = MediaRef::new(Url::parse("https://example.com/script").unwrap());
+    script.mime_type = Some("text/x-shellscript".into());
+    assert!(matches!(
+        policy.select(&script),
+        MediaHandler::Refused { .. }
+    ));
+
+    // An explicit MIME -> command entry is consent: it still opens. (In the
+    // real flow the Content-Type probe populates mime_type before select.)
+    let mut policy = policy;
+    policy
+        .handlers
+        .insert("application/x-desktop".into(), "run-desktop %s".into());
+    let mut media = MediaRef::new(Url::parse("https://example.com/evil.desktop").unwrap());
+    media.mime_type = Some("application/x-desktop".into());
+    assert_eq!(
+        policy.select(&media),
+        MediaHandler::External {
+            command: "run-desktop %s".into()
+        }
+    );
 }
 
 #[test]
@@ -285,6 +382,31 @@ async fn download_completes_and_renames_atomically() {
         .filter(|entry| entry.file_name().to_string_lossy().contains(".part-"))
         .count();
     assert_eq!(leftovers, 0);
+}
+
+#[tokio::test]
+async fn download_refuses_a_declared_oversized_body() {
+    let manager = test_download_manager();
+    // The media host lies about the size: 3 GiB declared, tiny real body.
+    // The download must fail fast on the declared length instead of
+    // streaming "3 GiB" worth of data.
+    let port = spawn_http_server_with_length(b"tiny", "image/png", 3 * 1024 * 1024 * 1024);
+    let destination = test_dir().join("huge.bin");
+    let request = download_request(
+        Url::parse(&format!("http://127.0.0.1:{port}/huge.bin")).unwrap(),
+        destination.clone(),
+        CollisionPolicy::Overwrite,
+    );
+    let id = manager.start(request).await.unwrap();
+    let status = manager.wait_for(id).await;
+    let DownloadStatus::Failed(message) = status else {
+        panic!("oversized download must fail, got {status:?}");
+    };
+    assert!(
+        message.contains("refusing download larger"),
+        "the failure must explain the size cap, got {message}"
+    );
+    assert!(!destination.exists(), "no file may be planted");
 }
 
 #[tokio::test]

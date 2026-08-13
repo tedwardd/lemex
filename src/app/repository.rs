@@ -386,9 +386,17 @@ fn feed_key(query: &FeedQuery) -> String {
     if query == &FeedQuery::home() {
         return "home".into();
     }
+    // The pagination cursor is opaque server data: a hostile instance could
+    // mint unboundedly long or unboundedly many distinct cursors. Truncate
+    // it so a single key can never exceed ~256 bytes; real Lemmy cursors are
+    // short base64-ish tokens, so legit pages still get distinct keys.
+    let bounded_cursor = query
+        .page
+        .as_deref()
+        .map(|cursor| cursor.chars().take(256).collect::<String>());
     serde_json::to_string(&(
         query.sort.as_str(),
-        query.page.as_deref(),
+        bounded_cursor.as_deref(),
         query.limit,
         query.community.map(|id| id.0),
         query.search.as_deref(),

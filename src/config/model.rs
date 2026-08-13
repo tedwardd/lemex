@@ -31,10 +31,24 @@ impl Default for MediaConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+/// Default cap on the feed cache when the config does not set one: 64 MiB of
+/// cached post JSON keeps browsing history bounded on disk. Drafts live in a
+/// separate table and are never evicted.
+pub const DEFAULT_CACHE_SIZE_BYTES: u64 = 64 * 1024 * 1024;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CacheConfig {
     pub directory: Option<PathBuf>,
     pub max_size_bytes: Option<u64>,
+}
+
+impl Default for CacheConfig {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            max_size_bytes: Some(DEFAULT_CACHE_SIZE_BYTES),
+        }
+    }
 }
 
 /// Opt-in diagnostic logging policy. Logs redact credentials, tokens,
@@ -54,6 +68,10 @@ pub struct AppConfig {
     pub logging: LogConfig,
     /// Action run once at launch (for example `feed`); empty means none.
     pub startup: String,
+    /// Permit `http://` instance URLs. Off by default: credentials (login
+    /// password, session JWT) must not travel in cleartext unless the user
+    /// explicitly opts in.
+    pub allow_insecure_http: bool,
 }
 
 impl AppConfig {
@@ -100,6 +118,12 @@ impl AppConfig {
                     "instance URL must use http or https".to_owned(),
                 ));
             }
+            if instance_url.scheme() == "http" && !raw.allow_insecure_http {
+                return Err(AppError::Configuration(format!(
+                    "profile {} uses an http:// instance URL: credentials would travel in cleartext; set allow_insecure_http = true in the config to accept this deliberately",
+                    id.0
+                )));
+            }
             if instance_url.host_str().is_none() {
                 return Err(AppError::Configuration(
                     "instance URL must include a host".to_owned(),
@@ -125,6 +149,7 @@ impl AppConfig {
             cache: raw.cache.into_config(),
             logging: raw.logging.into_config(),
             startup,
+            allow_insecure_http: raw.allow_insecure_http,
         })
     }
 
@@ -146,6 +171,12 @@ impl AppConfig {
                 return Err(AppError::Configuration(
                     "instance URL must use http or https".to_owned(),
                 ));
+            }
+            if profile.instance_url.scheme() == "http" && !self.allow_insecure_http {
+                return Err(AppError::Configuration(format!(
+                    "profile {} uses an http:// instance URL: set allow_insecure_http = true in the config to accept this deliberately",
+                    profile.id
+                )));
             }
             if profile.instance_url.host_str().is_none()
                 || !profile.instance_url.username().is_empty()
@@ -171,6 +202,7 @@ impl AppConfig {
             cache: RawCacheConfig::from_config(&self.cache),
             logging: RawLogConfig::from_config(&self.logging),
             startup: self.startup.clone(),
+            allow_insecure_http: self.allow_insecure_http,
         };
         toml::to_string_pretty(&raw)
             .map_err(|error| AppError::Configuration(format!("cannot encode TOML: {error}")))
@@ -204,6 +236,9 @@ struct RawConfig {
     logging: RawLogConfig,
     #[serde(default)]
     startup: String,
+    /// Opt-in to `http://` instance URLs (credentials travel in cleartext).
+    #[serde(default)]
+    allow_insecure_http: bool,
 }
 
 /// Startup actions the client will run once at launch. Empty means the
@@ -301,13 +336,26 @@ impl RawMediaConfig {
     }
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct RawCacheConfig {
     #[serde(default)]
     directory: Option<PathBuf>,
-    #[serde(default)]
+    #[serde(default = "default_cache_size")]
     max_size_bytes: Option<u64>,
+}
+
+impl Default for RawCacheConfig {
+    fn default() -> Self {
+        Self {
+            directory: None,
+            max_size_bytes: Some(DEFAULT_CACHE_SIZE_BYTES),
+        }
+    }
+}
+
+fn default_cache_size() -> Option<u64> {
+    Some(DEFAULT_CACHE_SIZE_BYTES)
 }
 
 impl RawCacheConfig {

@@ -63,7 +63,7 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     let compose = Paragraph::new(if model.compose.is_empty() {
         "(empty compose buffer)".to_owned()
     } else {
-        model.compose.clone()
+        mask_login_password(&model.compose)
     })
     .block(
         Block::default()
@@ -73,13 +73,14 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     .wrap(Wrap { trim: false });
     frame.render_widget(compose, areas[2]);
 
+    let status_message = crate::text::clean_text(status_message(model));
     let mut status_lines = vec![Line::from(vec![
         Span::styled(
             format!("Mode: {}", mode_label(model.mode)),
             Style::default().add_modifier(Modifier::BOLD),
         ),
         Span::raw("  |  "),
-        Span::raw(status_message(model)),
+        Span::raw(status_message.as_str()),
     ])];
     if model.status.stale || model.status.retryable {
         status_lines.push(Line::from(
@@ -96,7 +97,7 @@ pub fn render(frame: &mut Frame, model: &RenderModel) {
     }
     if let Some(error) = &model.status.error {
         status_lines.push(Line::from(Span::styled(
-            format!("ERROR: {error}"),
+            format!("ERROR: {}", crate::text::clean_text(error)),
             Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )));
     }
@@ -395,6 +396,38 @@ fn network_style(model: &RenderModel) -> Style {
     }
 }
 
+/// Render the compose buffer with the `:login` password masked. The password
+/// is the third whitespace token (`:login <username> <password>`); it is
+/// echoed as asterisks so an onlooker (shoulder-surfing, screen capture)
+/// cannot read it while the user types. The buffer itself keeps the real
+/// text — the masking is display-only and matches the whitespace token
+/// splitting that `login_from_compose` performs.
+fn mask_login_password(compose: &str) -> String {
+    if !compose.trim_start().starts_with(":login") {
+        return compose.to_owned();
+    }
+    let mut token_index = 0usize;
+    let mut at_token_start = true;
+    let mut masked = String::with_capacity(compose.len());
+    for character in compose.chars() {
+        if character.is_whitespace() {
+            at_token_start = true;
+            masked.push(character);
+        } else {
+            if at_token_start {
+                token_index += 1;
+                at_token_start = false;
+            }
+            if token_index >= 3 {
+                masked.push('*');
+            } else {
+                masked.push(character);
+            }
+        }
+    }
+    masked
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +470,32 @@ mod tests {
 
     fn rendered(model: &RenderModel) -> String {
         rendered_at(model, 80, 24)
+    }
+
+    #[test]
+    fn login_password_is_masked_in_the_compose_buffer() {
+        assert_eq!(
+            mask_login_password(":login alice s3cret"),
+            ":login alice ******"
+        );
+        assert_eq!(
+            mask_login_password(":login alice s3cret extra"),
+            ":login alice ****** *****"
+        );
+    }
+
+    #[test]
+    fn login_masking_keeps_partial_and_unrelated_input_visible() {
+        // The username is never masked, and there is nothing to mask until
+        // the third token starts.
+        assert_eq!(mask_login_password(":login alice"), ":login alice");
+        assert_eq!(mask_login_password(":login ali"), ":login ali");
+        // Non-login commands are echoed verbatim.
+        assert_eq!(mask_login_password(":feed lemmy"), ":feed lemmy");
+        assert_eq!(
+            mask_login_password("not a login either"),
+            "not a login either"
+        );
     }
 
     /// Render into a terminal of the given size so layout tests can verify

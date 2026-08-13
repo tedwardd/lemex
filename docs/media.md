@@ -19,6 +19,15 @@ picks the first handler that applies:
 3. **Metadata only** — no handler applies; the client reports the MIME type
    and does not open anything.
 
+Media that could carry executable or script content — MIME types such as
+`application/x-desktop` or `text/x-shellscript`, or filenames ending in
+`.desktop`/`.sh`/`.jar`/`.exe`/… — is **refused** rather than handed to a
+generic opener (`xdg-open` or a wildcard mailcap entry): the media host
+controls both the `Content-Type` and the URL name, so opening such content
+with one keystroke would be code execution in your session. An explicit
+`[media.handlers]` entry for the exact MIME type is treated as consent and
+still opens.
+
 ## Mailcap
 
 Entries are loaded from `$MAILCAPS` (a `:`-separated list) or, when unset,
@@ -48,6 +57,11 @@ client exits; `levim --clean-temp` sweeps the whole directory — crash
 leftovers, stale files — without any per-file tracking. The scratch
 downloads also appear in the downloads panel, where they can be deleted
 individually.
+
+The scratch directory is protected against other local users: a pre-planted
+symlink at `${TMPDIR}/levim-client` is refused (never followed), and the
+directory is created 0700. Downloads are capped at 2 GiB per file, so a
+malicious media host cannot fill the disk with one endless stream.
 
 ## tmux and SSH
 

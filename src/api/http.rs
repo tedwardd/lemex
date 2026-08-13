@@ -11,6 +11,48 @@ use url::Url;
 
 const MAX_READ_ATTEMPTS: usize = 3;
 
+/// Hard cap on a single API response body. Lemmy responses are small
+/// (feeds are ≤ 50 posts); a malicious instance must not be able to make the
+/// client buffer an unbounded body (the request timeout bounds duration, not
+/// size).
+const MAX_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
+/// Hard cap on the number of items accepted from a server-provided list.
+/// The `limit` query parameter is client-side; a hostile server can ignore
+/// it and return an arbitrarily large array.
+const MAX_ARRAY_ITEMS: usize = 1024;
+
+/// Cap on server-derived text embedded in user-visible error messages.
+const MAX_ERROR_DETAIL_CHARS: usize = 200;
+
+/// Redirect policy for the authenticated API client. Credentials ride in the
+/// `Authorization` header and the JSON body, so a redirect off the configured
+/// origin must never be followed (reqwest would replay a 307/308 body to the
+/// target host), and a downgrade to plaintext http must never keep the
+/// header. Same-origin redirects (host canonicalization) and http→https
+/// upgrades stay allowed.
+fn api_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        let origin = attempt.previous().first();
+        let next = attempt.url();
+        let Some(origin) = origin else {
+            return attempt.stop();
+        };
+        let same_origin = origin.scheme() == next.scheme()
+            && origin.host_str() == next.host_str()
+            && origin.port_or_known_default() == next.port_or_known_default();
+        let https_upgrade = origin.scheme() == "http"
+            && next.scheme() == "https"
+            && origin.host_str() == next.host_str()
+            && origin.port_or_known_default() == next.port_or_known_default();
+        if same_origin || https_upgrade {
+            attempt.follow()
+        } else {
+            attempt.stop()
+        }
+    })
+}
+
 #[derive(Clone)]
 pub struct HttpLemmyApi {
     client: Client,
@@ -27,6 +69,7 @@ impl HttpLemmyApi {
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
         let client = Client::builder()
             .use_rustls_tls()
+            .redirect(api_redirect_policy())
             .timeout(timeout)
             // reqwest sends no User-Agent with these features, and at least
             // one public Lemmy edge resets connections that carry none.
@@ -105,13 +148,10 @@ impl HttpLemmyApi {
                         && is_transient(response.status())
                         && attempt + 1 < MAX_READ_ATTEMPTS
                     {
-                        if let Err(error) = response.bytes().await {
-                            return Err(network_error(
-                                operation,
-                                format!("could not read response body: {error}"),
-                                false,
-                            ));
-                        }
+                        // Drop the response without buffering it: reading the
+                        // body here would let a hostile server send an
+                        // unbounded stream on every transient status.
+                        drop(response);
                         tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1))).await;
                         continue;
                     }
@@ -172,13 +212,9 @@ fn network_error(operation: &str, detail: impl Into<String>, mutation: bool) -> 
 
 async fn parse_response(response: Response, operation: &str, mutation: bool) -> Result<Value> {
     let status = response.status();
-    let body = response.text().await.map_err(|error| {
-        network_error(
-            operation,
-            format!("could not read response body: {error}"),
-            mutation,
-        )
-    })?;
+    let body = read_body_bounded(response, MAX_RESPONSE_BYTES)
+        .await
+        .map_err(|error| network_error(operation, error.to_string(), mutation))?;
     if !status.is_success() {
         let detail = server_detail(&body);
         let message = format!("{operation} ({status}): {detail}");
@@ -204,8 +240,41 @@ async fn parse_response(response: Response, operation: &str, mutation: bool) -> 
     })
 }
 
+/// Read a response body into a string, refusing anything over `max` bytes.
+/// `Response::text` buffers without limit and the request timeout only bounds
+/// duration, so an endless body could otherwise exhaust memory.
+async fn read_body_bounded(mut response: Response, max: usize) -> Result<String> {
+    if let Some(length) = response.content_length()
+        && length as usize > max
+    {
+        return Err(AppError::Network(format!(
+            "response body too large ({length} bytes)"
+        )));
+    }
+    let mut bytes = Vec::new();
+    loop {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                if bytes.len().saturating_add(chunk.len()) > max {
+                    return Err(AppError::Network(format!(
+                        "response body exceeds the {max}-byte limit"
+                    )));
+                }
+                bytes.extend_from_slice(&chunk);
+            }
+            Ok(None) => break,
+            Err(error) => {
+                return Err(AppError::Network(format!(
+                    "could not read response body: {error}"
+                )));
+            }
+        }
+    }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 fn server_detail(body: &str) -> String {
-    serde_json::from_str::<Value>(body)
+    let detail = serde_json::from_str::<Value>(body)
         .ok()
         .and_then(|value| {
             value
@@ -220,7 +289,16 @@ fn server_detail(body: &str) -> String {
             } else {
                 body.trim().into()
             }
-        })
+        });
+    // The body is attacker-controlled: it must never reach the status bar or
+    // the log unbounded or carrying terminal/bidi control characters (which
+    // could forge log lines or reorder TUI text). Strip control characters,
+    // collapse newlines, and hard-truncate.
+    crate::text::clean_text(&detail)
+        .replace(['\n', '\r'], " ")
+        .chars()
+        .take(MAX_ERROR_DETAIL_CHARS)
+        .collect()
 }
 
 fn number(value: &Value, key: &str) -> i64 {
@@ -245,10 +323,13 @@ fn normalize_post(value: &Value) -> Result<PostView> {
     let url = string(post, "url").and_then(|raw| Url::parse(&raw).ok());
     Ok(PostView {
         id: PostId(number(post, "id")),
-        title: string(post, "name")
-            .or_else(|| string(post, "title"))
-            .unwrap_or_default(),
-        body: string(post, "body"),
+        title: crate::text::clean_text(
+            string(post, "name")
+                .or_else(|| string(post, "title"))
+                .unwrap_or_default()
+                .as_str(),
+        ),
+        body: string(post, "body").map(|body| crate::text::clean_text(&body)),
         url,
         community_id: crate::domain::CommunityId(number(post, "community_id")),
         creator_id: UserId(number(post, "creator_id")),
@@ -268,9 +349,13 @@ fn normalize_comment(value: &Value, post_id: PostId) -> CommentView {
     CommentView {
         id: CommentId(number(comment, "id")),
         post_id,
-        content: string(comment, "content").unwrap_or_default(),
+        content: crate::text::clean_text(string(comment, "content").unwrap_or_default().as_str()),
         creator_id: UserId(number(comment, "creator_id")),
-        creator_name: string(creator, "name").unwrap_or_else(|| "unknown".to_owned()),
+        creator_name: crate::text::clean_text(
+            string(creator, "name")
+                .unwrap_or_else(|| "unknown".to_owned())
+                .as_str(),
+        ),
         score: metric(
             value.get("counts").unwrap_or(&Value::Null),
             comment,
@@ -325,7 +410,7 @@ impl LemmyApi for HttpLemmyApi {
             .and_then(Value::as_i64)
             .map(UserId);
         Ok(SiteInfo {
-            name: name.to_owned(),
+            name: crate::text::clean_text(name),
             version: version.to_owned(),
             user_id,
         })
@@ -356,6 +441,7 @@ impl LemmyApi for HttpLemmyApi {
             .and_then(Value::as_array)
             .ok_or_else(|| AppError::Network("feed: response did not contain posts".into()))?
             .iter()
+            .take(MAX_ARRAY_ITEMS)
             .map(normalize_post)
             .collect::<Result<Vec<_>>>()?;
         let next_page = response
@@ -380,6 +466,7 @@ impl LemmyApi for HttpLemmyApi {
             .map(|comments| {
                 comments
                     .iter()
+                    .take(MAX_ARRAY_ITEMS)
                     .map(|comment| normalize_comment(comment, post.id))
                     .collect()
             })
@@ -410,6 +497,7 @@ impl LemmyApi for HttpLemmyApi {
             .map(|comments| {
                 comments
                     .iter()
+                    .take(MAX_ARRAY_ITEMS)
                     .map(|comment| normalize_comment(comment, post_id))
                     .collect()
             })
@@ -527,4 +615,41 @@ fn mutation_request_parts(mutation: &Mutation) -> Result<(&'static str, Value)> 
         ),
     };
     Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::server_detail;
+
+    #[test]
+    fn server_detail_extracts_and_truncates_error_text() {
+        let long = "x".repeat(500);
+        let detail = server_detail(&format!(r#"{{"error":"{long}"}}"#));
+        assert_eq!(
+            detail.chars().count(),
+            200,
+            "server detail must be truncated"
+        );
+    }
+
+    #[test]
+    fn server_detail_strips_terminal_and_bidi_control_characters() {
+        // A malicious instance can echo the token it received or craft an
+        // error body with escape sequences and bidi overrides; the detail
+        // must never carry them into the status bar or the log.
+        let detail = server_detail("boom\x1b[2J\x1b]0;evil\x07\u{202E}overridden");
+        assert!(!detail.contains('\u{1b}'), "ESC must be stripped");
+        assert!(
+            !detail.contains('\u{202E}'),
+            "bidi overrides must be stripped"
+        );
+        assert!(detail.contains("boom"), "the plain text survives");
+        assert!(!detail.contains('\n'), "newlines must be collapsed");
+    }
+
+    #[test]
+    fn server_detail_falls_back_to_the_trimmed_body() {
+        let detail = server_detail("not json at all");
+        assert_eq!(detail, "not json at all");
+    }
 }

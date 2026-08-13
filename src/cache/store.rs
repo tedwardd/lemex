@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt::Display, path::Path, sync::Mutex};
+use std::{collections::HashMap, fmt::Display, fs, path::Path, sync::Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
@@ -34,7 +34,17 @@ impl SqliteCacheStore {
         path: impl AsRef<Path>,
         max_size_bytes: Option<u64>,
     ) -> Result<Self> {
+        let path = path.as_ref();
         let connection = Connection::open(path).map_err(storage_error)?;
+        // The database holds cached post content and user drafts, which other
+        // local users must not be able to read: SQLite creates the file with
+        // the default umask mode (typically 0644). The default journal mode
+        // is DELETE, so no -wal/-shm side files are created.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).map_err(storage_error)?;
+        }
         Self::from_connection(connection, max_size_bytes)
     }
 

@@ -35,7 +35,7 @@ fn fixture_app() -> App {
     let context = ProfileContext {
         profile: Profile {
             id: ProfileId::from("fixture"),
-            instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+            instance_url: Url::parse("https://127.0.0.1/").unwrap(),
             account_label: Some("fixture".into()),
         },
         session: None,
@@ -73,7 +73,7 @@ fn failing_mutation_app() -> App {
     let context = ProfileContext {
         profile: Profile {
             id: ProfileId::from("fixture"),
-            instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+            instance_url: Url::parse("https://127.0.0.1/").unwrap(),
             account_label: Some("fixture".into()),
         },
         session: None,
@@ -2062,7 +2062,7 @@ async fn same_id_profile_replacement_rejects_old_refresh_cache_write() {
     let id = ProfileId::from("fixture");
     let old = Profile {
         id: id.clone(),
-        instance_url: Url::parse("http://old.example/").unwrap(),
+        instance_url: Url::parse("https://old.example/").unwrap(),
         account_label: Some("old".into()),
     };
     store.save(std::slice::from_ref(&old)).unwrap();
@@ -2125,7 +2125,7 @@ async fn app_new_active_unpersisted_same_id_replacement_rejects_old_refresh() {
     ));
     let old = Profile {
         id: id.clone(),
-        instance_url: Url::parse("http://old.example/").unwrap(),
+        instance_url: Url::parse("https://old.example/").unwrap(),
         account_label: Some("old".into()),
     };
     let cache = Arc::new(MemoryCache::default());
@@ -2226,7 +2226,7 @@ async fn successful_draft_stays_completed_after_switching_profiles() {
     let store = ProfileStore::new(&path);
     let fixture = Profile {
         id: ProfileId::from("fixture"),
-        instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+        instance_url: Url::parse("https://127.0.0.1/").unwrap(),
         account_label: Some("fixture".into()),
     };
     let other = Profile {
@@ -2405,7 +2405,7 @@ async fn deleting_a_profile_removes_metadata_and_session_but_keeps_active() {
     let store = ProfileStore::new(&path);
     let fixture = Profile {
         id: ProfileId::from("fixture"),
-        instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+        instance_url: Url::parse("https://127.0.0.1/").unwrap(),
         account_label: Some("fixture".into()),
     };
     let other = Profile {
@@ -2560,7 +2560,7 @@ async fn replacing_profile_invalidates_old_credentials_before_activation() {
     let id = ProfileId::from("fixture");
     let old = Profile {
         id: id.clone(),
-        instance_url: Url::parse("http://old.example/").unwrap(),
+        instance_url: Url::parse("https://old.example/").unwrap(),
         account_label: Some("old".into()),
     };
     store.save(std::slice::from_ref(&old)).unwrap();
@@ -2606,7 +2606,7 @@ fn fixture_context() -> ProfileContext {
     ProfileContext {
         profile: Profile {
             id: ProfileId::from("fixture"),
-            instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+            instance_url: Url::parse("https://127.0.0.1/").unwrap(),
             account_label: Some("fixture".into()),
         },
         session: None,

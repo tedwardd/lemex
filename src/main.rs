@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fs, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    fs,
+    fs::File,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use levim::{
     api::HttpLemmyApi,
@@ -34,7 +41,7 @@ fn init_logging(config: &AppConfig) -> Option<String> {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }
-    let file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+    let file = match open_log_file(&path) {
         Ok(file) => file,
         Err(error) => {
             eprintln!("warning: cannot open log file {}: {error}", path.display());
@@ -49,6 +56,26 @@ fn init_logging(config: &AppConfig) -> Option<String> {
         "logging enabled at level {level} — appending to {}",
         path.display()
     ))
+}
+
+/// Open the log file for appending, created with 0600 so other local users
+/// cannot read it (it carries URLs and error text). Existing files are
+/// re-chmodded: a file created by an older version may have default perms.
+fn open_log_file(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(file)
 }
 
 async fn build_app() -> Result<(App, HashMap<String, String>, String)> {

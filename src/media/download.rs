@@ -542,6 +542,12 @@ impl DownloadManager {
     }
 }
 
+/// Hard cap on a single download's body. The media host is attacker-
+/// controlled (a post links arbitrary URLs), so an endless or huge stream
+/// must not be able to fill the disk. The per-request timeout bounds
+/// duration only, not size.
+const MAX_DOWNLOAD_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+
 fn validate_request(request: &DownloadRequest) -> Result<()> {
     let url = &request.media.url;
     if !matches!(url.scheme(), "http" | "https") {
@@ -711,6 +717,16 @@ async fn run_download(
     };
 
     let total = response.content_length();
+    if total.is_some_and(|length| length > MAX_DOWNLOAD_BYTES) {
+        let message = format!(
+            "refusing download larger than {MAX_DOWNLOAD_BYTES} bytes (server declares {total:?})"
+        );
+        drop(file);
+        let _ = fs::remove_file(&temporary);
+        history.transition(id, |_| DownloadStatus::Failed(message.clone()));
+        inner.events.lock().push(DownloadEvent::Failed(id, message));
+        return;
+    }
     let mut received = 0u64;
     loop {
         if flag.load(Ordering::SeqCst) {
@@ -721,6 +737,15 @@ async fn run_download(
         }
         match response.chunk().await {
             Ok(Some(chunk)) => {
+                received = received.saturating_add(chunk.len() as u64);
+                if received > MAX_DOWNLOAD_BYTES {
+                    drop(file);
+                    let _ = fs::remove_file(&temporary);
+                    let message = format!("download exceeded the {MAX_DOWNLOAD_BYTES}-byte limit");
+                    history.transition(id, |_| DownloadStatus::Failed(message.clone()));
+                    inner.events.lock().push(DownloadEvent::Failed(id, message));
+                    return;
+                }
                 if let Err(error) = file.write_all(&chunk) {
                     drop(file);
                     let _ = fs::remove_file(&temporary);
@@ -729,7 +754,6 @@ async fn run_download(
                     inner.events.lock().push(DownloadEvent::Failed(id, message));
                     return;
                 }
-                received = received.saturating_add(chunk.len() as u64);
                 history.transition(id, |_| DownloadStatus::Downloading { received, total });
             }
             Ok(None) => break,

@@ -36,14 +36,49 @@ pub fn scratch_dir() -> PathBuf {
 
 /// Create the scratch directory and return it; failures surface as storage
 /// errors so a broken `$TMPDIR` cannot silently scatter files elsewhere.
+///
+/// The system temp directory is world-writable, so a different local user
+/// can pre-create the scratch path as a symlink to a victim directory of
+/// their choice (e.g. `~/.config/autostart`); a naive `create_dir_all`
+/// would happily follow it and downloads would plant attacker-chosen files
+/// there. Refuse symlinks outright, fail on a directory we cannot take
+/// ownership of, and tighten the mode to 0700 so only this user can create
+/// entries inside.
 pub fn ensure_scratch_dir() -> Result<PathBuf> {
     let directory = scratch_dir();
-    fs::create_dir_all(&directory).map_err(|error| {
-        AppError::Storage(format!(
-            "cannot create temp media directory {}: {error}",
-            directory.display()
-        ))
-    })?;
+    match fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(AppError::Storage(format!(
+                "temp media directory {} is a symlink; refusing to follow it",
+                directory.display()
+            )));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Err(error) = fs::create_dir(&directory) {
+                return Err(AppError::Storage(format!(
+                    "cannot create temp media directory {}: {error}",
+                    directory.display()
+                )));
+            }
+        }
+        Err(error) => {
+            return Err(AppError::Storage(format!(
+                "cannot inspect temp media directory {}: {error}",
+                directory.display()
+            )));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            AppError::Storage(format!(
+                "cannot secure temp media directory {}: {error}",
+                directory.display()
+            ))
+        })?;
+    }
     Ok(directory)
 }
 

@@ -16,6 +16,10 @@ pub enum MediaHandler {
     External { command: String },
     /// No handler applies; only metadata is available.
     MetadataOnly,
+    /// The media is executable/script content under an attacker-influenced
+    /// MIME or filename; it is refused unless an explicit handler is
+    /// configured for its exact MIME type.
+    Refused { mime: String },
 }
 
 /// Policy that turns a media reference into a handler. Explicitly configured
@@ -61,6 +65,15 @@ impl MediaPolicyConfig {
                 command: command.clone(),
             };
         }
+        // A media host fully controls the Content-Type header and the URL
+        // filename, so executable/script content must never be handed to a
+        // generic opener (xdg-open) or a wildcard mailcap entry — one
+        // keystroke on a crafted post would become code execution in the
+        // user's session. Only an explicit MIME -> command entry above is
+        // treated as consent.
+        if is_executable_media(media, &mime) {
+            return MediaHandler::Refused { mime };
+        }
         if self.mailcap_enabled && !mime.is_empty() {
             let command = find_entry(&self.mailcap_entries, &mime)
                 .map(|entry| entry.command.clone())
@@ -69,6 +82,59 @@ impl MediaPolicyConfig {
         }
         MediaHandler::MetadataOnly
     }
+}
+
+/// MIME types that can carry executable or script content.
+const EXECUTABLE_MIMES: &[&str] = &[
+    "application/x-desktop",
+    "application/x-executable",
+    "application/x-elf",
+    "application/x-sharedlib",
+    "application/x-mach-binary",
+    "application/x-csh",
+    "application/x-perl",
+    "application/x-ruby",
+    "application/x-python-code",
+    "application/x-httpd-php",
+    "application/x-shellscript",
+    "text/x-shellscript",
+    "text/x-python",
+    "application/x-msdownload",
+    "application/x-msdos-program",
+    "application/x-dosexec",
+    "application/vnd.microsoft.portable-executable",
+    "application/x-bat",
+    "application/x-java-archive",
+    "application/java-archive",
+    "application/x-apple-diskimage",
+];
+
+/// Filename extensions that signal executable/script content even when the
+/// MIME type is generic or missing (the on-disk extension is derived from
+/// the attacker-controlled URL segment or MIME).
+const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "desktop", "sh", "bash", "zsh", "csh", "tcsh", "ksh", "exe", "com", "bat", "cmd", "elf", "so",
+    "dll", "dylib", "jar", "app", "command", "run", "bin", "msi", "deb", "rpm", "py", "pyc", "pl",
+    "rb", "php", "apk", "scr", "vbs", "ps1", "reg",
+];
+
+/// True when the media reference could carry executable/script content under
+/// the MIME type or URL extension it advertises.
+fn is_executable_media(media: &MediaRef, mime: &str) -> bool {
+    let mime_executable = EXECUTABLE_MIMES
+        .iter()
+        .any(|candidate| mime == *candidate || mime.starts_with(&format!("{candidate}/")));
+    let extension_executable = media
+        .url
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .and_then(|name| name.rsplit('.').next())
+        .is_some_and(|extension| {
+            EXECUTABLE_EXTENSIONS
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        });
+    mime_executable || extension_executable
 }
 
 /// Resolve a MIME type in precedence order: server metadata on the media

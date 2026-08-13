@@ -102,7 +102,7 @@ fn binary_launches_tui_and_quits_cleanly_restoring_terminal() {
     std::fs::create_dir_all(&config_dir).expect("create config directory");
     std::fs::write(
         config_dir.join("config.toml"),
-        "[[profiles]]\nid = 'smoke'\ninstance_url = 'http://127.0.0.1/'\n",
+        "allow_insecure_http = true\n[[profiles]]\nid = 'smoke'\ninstance_url = 'http://127.0.0.1/'\n",
     )
     .expect("write smoke config");
 
@@ -373,7 +373,7 @@ fn profile_list_switch_and_whoami() {
     let profiles = vec![
         Profile {
             id: ProfileId::from("fixture"),
-            instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+            instance_url: Url::parse("https://127.0.0.1/").unwrap(),
             account_label: Some("fixture".into()),
         },
         Profile {

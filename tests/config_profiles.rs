@@ -215,6 +215,48 @@ fn profile_only_config_preserves_media_defaults() {
 }
 
 #[test]
+fn http_instance_urls_require_explicit_opt_in() {
+    // Credentials must not travel in cleartext by default: http:// instance
+    // URLs are rejected unless the user explicitly sets allow_insecure_http.
+    let rejected = "[[profiles]]\nid = 'main'\ninstance_url = 'http://example.test'\n";
+    let error = AppConfig::from_toml(rejected)
+        .expect_err("http instance URLs must be rejected without allow_insecure_http");
+    assert!(
+        error.to_string().contains("allow_insecure_http"),
+        "the error must name the opt-in key, got {error}"
+    );
+
+    let accepted = "allow_insecure_http = true\n[[profiles]]\nid = 'main'\ninstance_url = 'http://example.test'\n";
+    let config = AppConfig::from_toml(accepted).unwrap();
+    assert!(config.allow_insecure_http);
+
+    // Saving an http profile without the opt-in fails the same way; the flag
+    // round-trips through to_toml.
+    let encoded = config.to_toml().unwrap();
+    assert!(encoded.contains("allow_insecure_http"));
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap(), config);
+}
+
+#[test]
+fn cache_size_defaults_to_a_bounded_cap() {
+    // The feed cache must not grow without bound: the default config applies
+    // a byte cap (drafts are never evicted; the cap only bounds cached feeds).
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert!(
+        config.cache.max_size_bytes.is_some(),
+        "the default cache must be bounded"
+    );
+    // An explicit value is preserved, and an explicit unlimited config stays
+    // unlimited.
+    let capped = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n[cache]\nmax_size_bytes = 1024\n";
+    assert_eq!(
+        AppConfig::from_toml(capped).unwrap().cache.max_size_bytes,
+        Some(1024)
+    );
+}
+
+#[test]
 fn deprecated_kitty_enabled_key_is_accepted_and_ignored() {
     // Configs written before inline kitty rendering was removed still carry
     // `kitty_enabled`; they must keep parsing (the raw layer is strict about

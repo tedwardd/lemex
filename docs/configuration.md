@@ -18,8 +18,13 @@ no profiles is still rejected at launch.
 | Cache database | `<cache directory>/cache.sqlite3` | — |
 
 The cache holds profile-scoped feed entries and your in-progress drafts.
-Feed entries are capped by `cache.max_size_bytes` when configured (oldest
-entries are evicted first); drafts are never evicted.
+Feed entries are capped by `cache.max_size_bytes` (a 64 MiB default applies
+when the key is absent; oldest entries are evicted first); drafts are never
+evicted.
+
+Instance URLs must use `https`. An `http://` URL is rejected unless the
+config explicitly opts in with a top-level `allow_insecure_http = true`
+(credentials would otherwise travel in cleartext).
 
 ## Profiles — never store secrets here
 
@@ -116,7 +121,8 @@ max_size_bytes = 268435456
 
 `directory` relocates the cache (including drafts). `max_size_bytes` caps the
 total feed payload; a single entry larger than the cap is evicted too, and
-drafts are exempt.
+drafts are exempt. When the key is absent a 64 MiB default applies, so the
+cache is bounded out of the box.
 
 ## Logging
 

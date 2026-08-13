@@ -79,7 +79,7 @@ static HELP_ENTRIES: &[HelpEntry] = &[
     },
     HelpEntry {
         command: ":login <username> <password>",
-        description: "log in; the session is stored in the OS credential store only after success",
+        description: "log in (password is masked while typing); the session is stored in the OS credential store only after success",
         group: "profile",
     },
     HelpEntry {
