@@ -186,11 +186,17 @@ fn render_content(frame: &mut Frame, content: ratatui::layout::Rect, model: &Ren
 
 /// Center a modal box over the content pane and blank its rect so the
 /// content underneath never shows through. `width` and `height` are tenths
-/// (10 = 100% of the pane); reading modals get the full width so long text
-/// is never clipped at an arbitrary column.
+/// and are always below 10: a floating modal keeps a visible margin on
+/// every side (the feed shows around it), so it reads as an overlay above
+/// the content, never a maximized pane. The clamps also cap the box below
+/// the pane size, so a tiny terminal cannot stretch one to full size.
 fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatui::layout::Rect {
-    let width = (content.width * width / 10).max(40).min(content.width);
-    let height = (content.height * height / 10).clamp(10, content.height);
+    let width = (content.width * width / 10)
+        .max(40)
+        .min(content.width.saturating_sub(2));
+    let height = (content.height * height / 10)
+        .max(10)
+        .min(content.height.saturating_sub(2));
     let x = content.x + content.width.saturating_sub(width) / 2;
     let y = content.y + content.height.saturating_sub(height) / 2;
     ratatui::layout::Rect::new(x, y, width, height)
@@ -203,7 +209,7 @@ fn render_thread(
     thread: &ThreadModal,
     depth: &str,
 ) {
-    let area = modal_area(content, 10, 9);
+    let area = modal_area(content, 9, 9);
     frame.render_widget(Clear, area);
 
     let detail = &thread.post;
@@ -248,11 +254,11 @@ fn render_thread(
 }
 
 fn render_help(frame: &mut Frame, content: ratatui::layout::Rect, help: &HelpModal, depth: &str) {
-    // Help is one full-width column: command + description on a wrapped
-    // line each, so long descriptions never run off the edge of a cramped
-    // side pane. The group list is folded into the footer; `:help <group>`
-    // still filters by it.
-    let area = modal_area(content, 10, 9);
+    // Help is one full column: command + description on a wrapped line
+    // each, so long descriptions never run off the edge of a cramped side
+    // pane. The group list is folded into the footer; `:help <group>`
+    // still filters by it. The box floats at 90% — never full size.
+    let area = modal_area(content, 9, 9);
     frame.render_widget(Clear, area);
 
     let entries = HelpIndex::default().search(&help.query);
@@ -574,22 +580,37 @@ mod tests {
     }
 
     #[test]
-    fn help_modal_spans_the_content_width_on_wide_terminals() {
-        // Help descriptions were being clipped at a hard 72-column cap; the
-        // modal must use the full content width so text stays readable.
+    fn help_modal_floats_centered_with_margins() {
+        // Every modal must look like an overlay: centered, with the content
+        // visible on all four sides — never touching the pane's edges.
         let model = model(Some(String::new()), false);
-        let backend = TestBackend::new(140, 24);
+        let backend = TestBackend::new(140, 40);
         let mut terminal = ratatui::Terminal::new(backend).expect("test backend");
         terminal
             .draw(|frame| render(frame, &model))
             .expect("render help modal");
         let buffer = terminal.backend().buffer();
-        // The content pane spans x=0..140, y=3..18; the box's right border
-        // must sit at the far edge, not a narrow centered box.
-        let right_edge = buffer[(139, 4)].symbol();
-        assert!(
-            matches!(right_edge, "│" | "┐" | "╎" | "|"),
-            "the help box must reach the right edge of the pane, got {right_edge:?}"
+        // Content pane is x=0..140, y=3..29 (height 26). The 90% box is
+        // 126x23, centered: x=7..132, y=4..26.
+        assert_eq!(buffer[(7, 5)].symbol(), "│", "the left margin is a border");
+        assert_eq!(
+            buffer[(132, 5)].symbol(),
+            "│",
+            "the right margin is a border"
+        );
+        // Outside the box the underlying feed is still visible (not blanked,
+        // not covered).
+        assert_eq!(buffer[(2, 5)].symbol(), " ", "content shows on the left");
+        assert_eq!(buffer[(137, 5)].symbol(), " ", "content shows on the right");
+        assert_eq!(
+            buffer[(70, 3)].symbol(),
+            "─",
+            "the row above the box shows the feed's top border"
+        );
+        assert_eq!(
+            buffer[(70, 27)].symbol(),
+            " ",
+            "content shows below the box"
         );
     }
 
@@ -968,15 +989,15 @@ mod tests {
     }
 
     #[test]
-    fn help_renders_above_open_downloads_panel() {
+    fn help_floats_above_the_open_downloads_panel() {
         let text = rendered(&model(Some("profile".into()), true));
         assert!(
             text.contains("Help — \"profile\""),
             "open help must be visible while the downloads panel is open"
         );
         assert!(
-            !text.contains("Session downloads"),
-            "the downloads panel must not cover open help"
+            text.contains("Session downloads"),
+            "the panel stays visible around the floating modal (it is content, not covered)"
         );
     }
 

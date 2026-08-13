@@ -114,8 +114,10 @@ When a confirmation is pending, the status line shows
 
 ## Modals
 
-Threads, the community list, and help are **centered modals** drawn over the
-primary content (the feed stays visible around their edges). They stack
+Threads, the community list, and help are **floating centered modals** drawn
+over the primary content: none ever fills the window — margins on every
+side show the feed (or downloads panel) around the box, so they read as
+overlays above the content. They stack
 bottom-to-top (at most three deep; the depth shows in the title as
 `(N/3)` when stacked), and the focused modal — the top of the stack — takes
 `j`/`k`, `gg`/`G`, `Enter`, and `Esc`:
@@ -124,7 +126,7 @@ bottom-to-top (at most three deep; the depth shows in the title as
   `j`/`k` or `Ctrl-d`/`Ctrl-u` scroll it).
 - `C` / `:communities` opens the **community picker**; `Enter` opens the
   selected community's feed and pops the picker.
-- `:help [topic]` opens **help** as a single full-width wrapped column
+- `:help [topic]` opens **help** as a single wrapped column
   (command + description per line, `j`/`k` or `Ctrl-d`/`Ctrl-u` scrolls;
   re-help replaces the help modal instead of stacking a second one).
 - `Esc` (`:close`) pops one level. `:help` above `C` above a thread is fine:
