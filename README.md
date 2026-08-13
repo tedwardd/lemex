@@ -12,9 +12,9 @@ ratatui terminal shell.
 - **Multiple profiles** — one profile per instance/account pair; switch with
   `:profile <id>`. Non-secret profile metadata lives in your config file;
   sessions live only in the OS credential store.
-- **Authenticated interaction** — `:login`, `:logout`, `:whoami`, voting,
-  saving, subscribing, replying, editing, and deleting — each destructive
-  action requires confirmation.
+- **Authenticated interaction** — `:login` (password masked while typing),
+  `:logout`, `:whoami`, voting, saving, subscribing, replying, editing, and
+  deleting — each destructive action requires confirmation.
 - **Cache and drafts** — profile-scoped SQLite cache and drafts survive
   restarts; failed submissions keep your draft.
 - **Media** — mailcap (or a configured handler) opens media externally;
@@ -45,8 +45,8 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 2. Launch `levim`.
 3. `:feed` loads the home feed; `j`/`k` move, `n`/`p` flip pages, `Enter`
    opens a post (j/k then scroll the thread), `Esc` closes it.
-4. `:login <username> <password>` signs in; the session is stored in the OS
-   credential store.
+4. `:login <username> <password>` signs in (the password is masked while
+   typing); the session is stored in the OS credential store.
 5. `:help` (or `:help <topic>`) shows the searchable command index.
 6. `q` quits and restores the terminal.
 

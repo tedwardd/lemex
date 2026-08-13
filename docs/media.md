@@ -13,20 +13,20 @@ picks the first handler that applies:
 1. **Explicit handler** — an entry in `[media.handlers]` keyed by MIME type
    (for example `"image/png" = "feh %s"`). Explicit configuration always
    wins over mailcap.
-2. **Mailcap** — when `media.mailcap_enabled = true` (the default). The
+2. **Refused (executable/script media)** — media that could carry
+   executable or script content — MIME types such as `application/x-desktop`
+   or `text/x-shellscript`, or filenames ending in `.desktop`/`.sh`/`.jar`/
+   `.exe`/… — is **refused** rather than handed to a generic opener
+   (`xdg-open` or a wildcard mailcap entry): the media host controls both
+   the `Content-Type` and the URL name, so opening such content with one
+   keystroke would be code execution in your session. An explicit
+   `[media.handlers]` entry for the exact MIME type is treated as consent
+   and still opens (step 1 applies first).
+3. **Mailcap** — when `media.mailcap_enabled = true` (the default). The
    matching entry is used, or the mailcap default opener `xdg-open %s` when
    no entry matches.
-3. **Metadata only** — no handler applies; the client reports the MIME type
+4. **Metadata only** — no handler applies; the client reports the MIME type
    and does not open anything.
-
-Media that could carry executable or script content — MIME types such as
-`application/x-desktop` or `text/x-shellscript`, or filenames ending in
-`.desktop`/`.sh`/`.jar`/`.exe`/… — is **refused** rather than handed to a
-generic opener (`xdg-open` or a wildcard mailcap entry): the media host
-controls both the `Content-Type` and the URL name, so opening such content
-with one keystroke would be code execution in your session. An explicit
-`[media.handlers]` entry for the exact MIME type is treated as consent and
-still opens.
 
 ## Mailcap
 
@@ -122,6 +122,11 @@ never own their local path and are refused.
 
 ## Troubleshooting
 
+- **"refusing to open executable media type …"** — the media resolves to an
+  executable/script MIME or filename (`.desktop`, `.sh`, `.jar`, …) and no
+  explicit `[media.handlers]` entry covers the MIME type. Add one (for
+  example `"application/x-desktop" = "my-opener %s"`) to open such files
+  deliberately.
 - **"no media handler for …; metadata only"** — mailcap is disabled and no
   explicit handler covers the resolved MIME type. Re-enable mailcap
   (`:set media mailcap on`) or add a `[media.handlers]` entry.

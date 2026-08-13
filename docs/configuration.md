@@ -46,8 +46,10 @@ instance_url = "https://lemmy.work.example"
 ```
 
 - `id` — unique short name used by `:profile <id>`.
-- `instance_url` — http(s) URL of the instance. It must include a host and
-  must not contain embedded credentials.
+- `instance_url` — `https` URL of the instance. It must include a host and
+  must not contain embedded credentials. An `http://` URL is rejected unless
+  the top-level `allow_insecure_http = true` opt-in is set (credentials
+  would otherwise travel in cleartext).
 - `account_label` — optional display name for the status bar.
 
 Configuration is strict: unknown keys, duplicate ids, and credentials embedded
@@ -144,7 +146,7 @@ level = "debug"  # trace | debug | info | warn | error
 | --- | --- |
 | `:set keymap <name> <keys>` | configure a key mapping (next launch) |
 | `:set media mailcap on\|off` | toggle mailcap handler use |
-| `:set download-dir <path>` | set the download directory |
+| `:set download-dir <path>` (or `download-directory`) | set the download directory |
 | `:set collision-policy <prompt\|overwrite\|unique-name>` | set collision policy |
 | `:set cache-dir <path>` | set the cache directory (next launch) |
 | `:set cache-size <bytes>` | set the cache size limit (next launch) |
@@ -167,7 +169,9 @@ persisted atomically before being applied.
   then try again.
 - **Media does not open** — confirm the MIME type resolves (see
   [Media](media.md)); with mailcap disabled and no explicit handler, media is
-  reported as metadata-only by design.
+  reported as metadata-only by design, and executable/script media
+  (`.desktop`, `.sh`, `.jar`, …) is refused unless an explicit
+  `[media.handlers]` entry covers its MIME type.
 - **Downloads fail** — check the download directory is writable and the
   source URL is reachable; failures are recorded in the downloads panel and
   can be retried with `:downloads retry`.
