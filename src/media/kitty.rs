@@ -189,13 +189,18 @@ pub fn cell_pixels() -> (u32, u32) {
     (cell_w, cell_h)
 }
 
-/// Largest cell rectangle whose pixel aspect ratio equals the image's,
-/// fitting inside `area` cells and accounting for non-square terminal cells.
+/// Largest cell rectangle whose pixel aspect ratio matches the image's,
+/// fitting inside `area` cells and accounting for non-square terminal cells
+/// (the kitty protocol requires the cell pixel size for correct sizing).
+///
 /// The ratio is solved exactly as the reduced fraction
-/// `rows/cols = (cell_w * h) / (cell_h * w)`, so the displayed pixel
-/// rectangle matches the source without distortion. `cell_px == (0, 0)`
-/// assumes square cells. When even one exact unit does not fit, a 1-cell
-/// strip along the image's long dimension is used.
+/// `rows/cols = (cell_w * h) / (cell_h * w)` when the smallest integer
+/// solution fits the area. The exact solution only scales up by whole
+/// units, so when even one unit does not fit — common for 16:9/21:9
+/// images in a half-width pane — a float contain-fit is used instead:
+/// the limiting axis is floored and the other derived from the image
+/// ratio, keeping the pixel rectangle within half a cell of the source
+/// aspect. `cell_px == (0, 0)` assumes square cells.
 pub fn fit_cells(image: (u32, u32), area: (u16, u16), cell_px: (u32, u32)) -> (u16, u16) {
     let cell_w = u64::from(cell_px.0.max(1));
     let cell_h = u64::from(cell_px.1.max(1));
@@ -208,16 +213,29 @@ pub fn fit_cells(image: (u32, u32), area: (u16, u16), cell_px: (u32, u32)) -> (u
     cols_unit /= divisor;
 
     let units = (max_cols / cols_unit).min(max_rows / rows_unit);
-    if units == 0 {
-        // One exact unit does not fit; fall back to a 1-cell strip along
-        // the image's longer dimension.
-        return if width * cell_h >= height * cell_w {
-            (area.0.max(1), 1)
-        } else {
-            (1, area.1.max(1))
-        };
+    if units > 0 {
+        return ((units * cols_unit) as u16, (units * rows_unit) as u16);
     }
-    ((units * cols_unit) as u16, (units * rows_unit) as u16)
+
+    // One exact unit does not fit the area: contain-fit in cell units,
+    // floor the limiting axis and derive the other from the image ratio.
+    let (width_cells, height_cells) = (width as f64 / cell_w as f64, height as f64 / cell_h as f64);
+    let scale = (max_cols as f64 / width_cells).min(max_rows as f64 / height_cells);
+    if width_cells * scale >= height_cells * scale {
+        // Width binds: floor cols, derive rows from the image ratio.
+        let cols = (width_cells * scale).floor().max(1.0) as u16;
+        let rows = (f64::from(cols) * height_cells / width_cells)
+            .round()
+            .clamp(1.0, max_rows as f64) as u16;
+        (cols, rows)
+    } else {
+        // Height binds: floor rows, derive cols from the image ratio.
+        let rows = (height_cells * scale).floor().max(1.0) as u16;
+        let cols = (f64::from(rows) * width_cells / height_cells)
+            .round()
+            .clamp(1.0, max_cols as f64) as u16;
+        (cols, rows)
+    }
 }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
@@ -324,6 +342,33 @@ mod tests {
         let (cols, rows) = fit_cells((100, 400), (30, 10), (8, 16));
         assert!((pixel_ratio(cols, rows, (8, 16)) - 0.25).abs() < 1e-9);
         assert!(cols <= 30 && rows <= 10, "the rect stays inside the area");
+    }
+
+    #[test]
+    fn fit_cells_never_collapses_to_a_strip_when_the_exact_unit_does_not_fit() {
+        // Real Ghostty cells (10x21 px) in a 92x47 window: a 16:9 image's
+        // reduced unit is 56 cols wide, wider than the ~44-col pane, so the
+        // exact solution does not fit. It must fall back to a float
+        // contain-fit filling the pane — not a 1-row strip, which Ghostty
+        // stretches into the "squashed" image.
+        let (cols, rows) = fit_cells((1920, 1080), (44, 33), (10, 21));
+        assert_eq!((cols, rows), (44, 12));
+        assert!(rows >= 10, "must not collapse to a 1-row strip");
+        assert!(cols <= 44 && rows <= 33, "the rect stays inside the area");
+        let ratio = pixel_ratio(cols, rows, (10, 21));
+        assert!(
+            (ratio - 16.0 / 9.0).abs() < 0.1,
+            "pixel rectangle ratio {ratio} must stay close to 16:9"
+        );
+
+        // 4:3 images still hit the exact path.
+        assert_eq!(fit_cells((800, 600), (44, 33), (10, 21)), (42, 15));
+
+        // Extreme ultrawide also uses the float fallback, never a strip.
+        let (cols, rows) = fit_cells((3440, 1440), (44, 33), (10, 21));
+        assert!(rows >= 8 && cols <= 44, "ultrawide stays a wide rect");
+        let ratio = pixel_ratio(cols, rows, (10, 21));
+        assert!((ratio - 3440.0 / 1440.0).abs() < 0.15);
     }
 
     #[test]
