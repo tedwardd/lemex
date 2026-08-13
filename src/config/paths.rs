@@ -56,6 +56,14 @@ pub fn cache_path() -> PathBuf {
     cache_dir()
 }
 
+/// Log file written when diagnostic logging is enabled. Lives in the cache
+/// directory (which the client always creates at startup) so no additional
+/// state directory — XDG_STATE_HOME or a macOS equivalent — is required;
+/// the file is appended across launches.
+pub fn log_path() -> PathBuf {
+    cache_dir().join("levim.log")
+}
+
 fn xdg_home(variable: &str, fallback: &str) -> PathBuf {
     if let Ok(value) = env::var(variable) {
         let candidate = PathBuf::from(value);

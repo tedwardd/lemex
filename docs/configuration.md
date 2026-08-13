@@ -121,12 +121,15 @@ drafts are exempt.
 ## Logging
 
 Logging is off by default and redacts credentials, tokens, private content,
-and sensitive profile values.
+and sensitive profile values. When enabled, events are appended to
+`<cache directory>/levim.log` (for example `~/.cache/levim/levim.log`) —
+logs go to that file, never stdout, so the TUI screen stays intact. The
+status bar reports the file path on launch.
 
 ```toml
 [logging]
 enabled = true
-level = "info"   # trace | debug | info | warn | error
+level = "debug"  # trace | debug | info | warn | error
 ```
 
 ## Runtime configuration (`:set`)

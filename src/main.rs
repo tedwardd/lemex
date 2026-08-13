@@ -4,7 +4,7 @@ use levim::{
     api::HttpLemmyApi,
     app::{App, run_terminal},
     cache::SqliteCacheStore,
-    config::{AppConfig, cache_dir, config_path},
+    config::{AppConfig, cache_dir, config_path, log_path},
     domain::ProfileContext,
     error::{AppError, Result},
     profiles::{CredentialStore, KeyringCredentialStore},
@@ -14,9 +14,14 @@ use levim::{
 /// when enabled, the level comes from configuration and every log line still
 /// redacts credentials and private content (the application never logs
 /// secrets). Re-initialization is ignored silently.
-fn init_logging(config: &AppConfig) {
+///
+/// Events are appended to the log file (`cache_dir()/levim.log`) rather than
+/// stdout, because stdout is the TUI's terminal: writing logs there would
+/// corrupt the interface. Returns the note to show in the status bar, or
+/// `None` when logging is disabled.
+fn init_logging(config: &AppConfig) -> Option<String> {
     if !config.logging.enabled {
-        return;
+        return None;
     }
     let level = config
         .logging
@@ -25,7 +30,25 @@ fn init_logging(config: &AppConfig) {
         .and_then(|level| level.parse::<tracing::Level>().ok())
         .map(tracing_subscriber::filter::LevelFilter::from_level)
         .unwrap_or(tracing_subscriber::filter::LevelFilter::INFO);
-    let _ = tracing_subscriber::fmt().with_max_level(level).try_init();
+    let path = log_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let file = match fs::OpenOptions::new().create(true).append(true).open(&path) {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("warning: cannot open log file {}: {error}", path.display());
+            return None;
+        }
+    };
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(level)
+        .with_writer(file)
+        .try_init();
+    Some(format!(
+        "logging enabled at level {level} — appending to {}",
+        path.display()
+    ))
 }
 
 async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
@@ -53,7 +76,7 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         }
         starter
     };
-    init_logging(&config);
+    let logging_note = init_logging(&config);
     let media = config.media.clone();
     let keymaps = config.keymaps.clone();
     let profile = config.profiles.into_iter().next().ok_or_else(|| {
@@ -95,8 +118,13 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         credentials,
         media,
     );
-    if let Some(note) = first_run_note {
-        app.state.status.message = note;
+    match (first_run_note, logging_note) {
+        (Some(first), Some(logging)) => {
+            app.state.status.message = format!("{first} | {logging}");
+        }
+        (Some(first), None) => app.state.status.message = first,
+        (None, Some(logging)) => app.state.status.message = logging,
+        (None, None) => {}
     }
     Ok((app, keymaps, config.startup))
 }

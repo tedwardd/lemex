@@ -93,6 +93,20 @@ fn temporary_directory() -> PathBuf {
 }
 
 #[test]
+fn log_path_resides_in_the_cache_directory() {
+    let path = levim::config::log_path();
+    assert!(
+        path.starts_with(levim::config::cache_dir()),
+        "the log file must live in the cache directory, got {}",
+        path.display()
+    );
+    assert_eq!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("levim.log")
+    );
+}
+
+#[test]
 fn starter_config_has_one_valid_profile_and_round_trips() {
     let starter = AppConfig::starter();
     assert_eq!(starter.profiles.len(), 1);
