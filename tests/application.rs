@@ -444,7 +444,10 @@ async fn delete_is_staged_until_confirmed_and_cancelled_once() {
 
 /// P0 regression: the confirmation gate is user-reachable. Pressing `y`
 /// through the real input engine confirms a staged destructive action
-/// (dispatching the mutation), and `n` cancels it without any API call.
+/// (dispatching the mutation), and Esc cancels it without any API call.
+/// `n` is no longer the cancel key (it flips to the next feed page), but a
+/// page flip while a confirmation is pending must never dispatch the
+/// staged mutation either.
 #[tokio::test]
 async fn confirm_and_cancel_keys_drive_staged_destructive_action() {
     let (api, requests) = fixture_api_with_status_count(200);
@@ -473,24 +476,49 @@ async fn confirm_and_cancel_keys_drive_staged_destructive_action() {
     assert!(!app.state.status.confirmation_pending);
     assert!(app.state.pending.is_none());
 
-    // Cancel path: stage another delete, press `n` through the real engine.
+    // Cancel path: stage another delete, press Esc (`Back`) through the
+    // real engine; it cancels without any API call.
     app.dispatch(AppAction::DeletePost(PostId(1)))
         .await
         .unwrap();
     assert!(app.state.status.confirmation_pending);
     let mut engine = InputEngine::new();
-    let command = engine.handle(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
-    assert_eq!(command, Command::Cancel);
+    let command = engine.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+    assert_eq!(command, Command::Back);
     app.dispatch(AppAction::Input(command)).await.unwrap();
     assert!(!app.state.status.confirmation_pending);
     assert!(app.state.pending.is_none());
     assert_eq!(
         requests.load(Ordering::SeqCst),
         1,
-        "cancelling with n must never dispatch the mutation"
+        "cancelling must never dispatch the mutation"
     );
 
-    // With nothing pending, y/n are no-ops (no API call, no status churn).
+    // `n` is now the next-page key: with a confirmation pending it clears
+    // the staged action (never confirms it) and flips the feed page.
+    let mut engine = InputEngine::new();
+    assert_eq!(
+        engine.handle(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        Command::NextPage
+    );
+    app.dispatch(AppAction::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    assert!(app.state.status.confirmation_pending);
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    assert!(
+        !app.state.status.confirmation_pending,
+        "a page flip must clear the staged confirmation"
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        1,
+        "a page flip must never dispatch the staged mutation"
+    );
+
+    // With nothing pending, y is a no-op and Esc is a no-op (no API call).
     let mut engine = InputEngine::new();
     app.dispatch(AppAction::Input(
         engine.handle(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
@@ -498,7 +526,7 @@ async fn confirm_and_cancel_keys_drive_staged_destructive_action() {
     .await
     .unwrap();
     app.dispatch(AppAction::Input(
-        engine.handle(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+        engine.handle(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
     ))
     .await
     .unwrap();
@@ -1389,7 +1417,7 @@ async fn next_and_previous_page_flip_the_feed() {
     assert!(app.state.status.message.contains("previous page loaded"));
     assert_eq!(api.first_page_calls.load(Ordering::SeqCst), 1);
 
-    // At the first page, `<` is a no-op that makes no request.
+    // At the first page, `p` is a no-op that makes no request.
     app.dispatch(AppAction::Input(Command::PreviousPage))
         .await
         .unwrap();
@@ -1400,6 +1428,44 @@ async fn next_and_previous_page_flip_the_feed() {
             .message
             .contains("already on the first page")
     );
+}
+
+#[tokio::test]
+async fn page_flips_are_inert_while_the_thread_pane_is_focused() {
+    let api = Arc::new(PagedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "first page post")];
+    app.state.view.next_page = Some("2".to_owned());
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    assert!(app.state.view.detail_open);
+
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    assert_eq!(
+        app.state.view.feed_query.page, None,
+        "n is inert while the thread pane is focused"
+    );
+    assert_eq!(api.second_page_calls.load(Ordering::SeqCst), 0);
+    app.dispatch(AppAction::Input(Command::PreviousPage))
+        .await
+        .unwrap();
+    assert_eq!(api.first_page_calls.load(Ordering::SeqCst), 0);
+
+    // Closing the pane returns n/p to feed pagination.
+    app.dispatch(AppAction::Input(Command::ClosePane))
+        .await
+        .unwrap();
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    assert_eq!(api.second_page_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

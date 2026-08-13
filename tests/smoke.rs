@@ -179,9 +179,9 @@ fn feed_loads_through_fixture_and_vim_keys_navigate() {
     assert_eq!(engine.mode(), lemmy::input::Mode::Normal);
 }
 
-/// Pagination: the first page carries an opaque `next_page` cursor, `>`
+/// Pagination: the first page carries an opaque `next_page` cursor, `n`
 /// sends it back as `page_cursor` to replace the list with the following
-/// page, and `<` restores the previous page (the Lemmy 0.19+ cursor
+/// page, and `p` restores the previous page (the Lemmy 0.19+ cursor
 /// protocol).
 #[test]
 fn page_flips_replace_the_list_and_go_back() {
@@ -208,7 +208,7 @@ fn page_flips_replace_the_list_and_go_back() {
         "the opaque next_page cursor must survive normalization"
     );
 
-    app.press(&mut engine, key('>')).expect("flip forward");
+    app.press(&mut engine, key('n')).expect("flip forward");
     assert_eq!(
         app.app.state.view.posts.len(),
         1,
@@ -221,7 +221,7 @@ fn page_flips_replace_the_list_and_go_back() {
     );
     assert!(app.app.state.status.message.contains("next page loaded"));
 
-    app.press(&mut engine, key('<')).expect("flip backward");
+    app.press(&mut engine, key('p')).expect("flip backward");
     assert_eq!(
         app.app.state.view.posts.len(),
         1,

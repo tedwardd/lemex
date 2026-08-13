@@ -29,11 +29,12 @@ impl InputEngine {
         mappings.insert('r', Command::Refresh);
         // Vim-style open: `o` opens the selected post's media externally.
         mappings.insert('o', Command::OpenMedia);
-        mappings.insert('>', Command::NextPage);
-        mappings.insert('<', Command::PreviousPage);
+        // Feed pagination: n/p flip to the next/previous page (active only
+        // while the feed pane is focused).
+        mappings.insert('n', Command::NextPage);
+        mappings.insert('p', Command::PreviousPage);
         mappings.insert('q', Command::Quit);
         mappings.insert('y', Command::Confirm);
-        mappings.insert('n', Command::Cancel);
         mappings.insert('i', Command::EnterInsert);
         mappings.insert('v', Command::EnterVisual);
         mappings.insert(':', Command::EnterCommand);

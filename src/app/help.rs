@@ -139,8 +139,8 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "navigation",
     },
     HelpEntry {
-        command: "> / <",
-        description: "flip to the next / previous feed page",
+        command: "n / p",
+        description: "flip to the next / previous feed page (feed pane focused)",
         group: "navigation",
     },
     HelpEntry {
@@ -232,7 +232,7 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         group: "mutation",
     },
     HelpEntry {
-        command: "n / :cancel",
+        command: "Esc / :cancel",
         description: "cancel the pending destructive action",
         group: "mutation",
     },
@@ -328,8 +328,12 @@ pub fn contextual_help(mode: Mode) -> &'static [HelpItem] {
                 action: "compose",
             },
             HelpItem {
-                key: "y/n",
-                action: "confirm/cancel",
+                key: "n/p",
+                action: "next/prev page",
+            },
+            HelpItem {
+                key: "y / Esc",
+                action: "confirm / cancel",
             },
             HelpItem {
                 key: "q",

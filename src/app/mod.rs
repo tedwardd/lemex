@@ -507,13 +507,15 @@ impl App {
                 self.refresh_feed().await
             }
             Command::NextPage => {
-                if self.state.view.downloads_active() {
+                // Feed pagination belongs to the feed pane: inert while the
+                // downloads panel is open or the thread pane has focus.
+                if self.state.view.downloads_active() || self.state.view.detail_open {
                     return Ok(());
                 }
                 self.next_page().await
             }
             Command::PreviousPage => {
-                if self.state.view.downloads_active() {
+                if self.state.view.downloads_active() || self.state.view.detail_open {
                     return Ok(());
                 }
                 self.previous_page().await

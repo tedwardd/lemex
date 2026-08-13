@@ -23,16 +23,19 @@ fn o_opens_the_selected_media() {
 }
 
 #[test]
-fn greater_than_loads_the_next_feed_page() {
-    assert_eq!(InputEngine::default().handle(key('>')), Command::NextPage);
+fn n_loads_the_next_feed_page_and_p_the_previous() {
+    assert_eq!(InputEngine::default().handle(key('n')), Command::NextPage);
+    assert_eq!(
+        InputEngine::default().handle(key('p')),
+        Command::PreviousPage
+    );
 }
 
 #[test]
-fn less_than_loads_the_previous_feed_page() {
-    assert_eq!(
-        InputEngine::default().handle(key('<')),
-        Command::PreviousPage
-    );
+fn angle_brackets_no_longer_flip_pages() {
+    let mut engine = InputEngine::default();
+    assert_eq!(engine.handle(key('>')), Command::Noop);
+    assert_eq!(engine.handle(key('<')), Command::Noop);
 }
 
 #[test]
