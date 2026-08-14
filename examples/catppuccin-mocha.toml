@@ -1,0 +1,19 @@
+# Catppuccin Mocha for levim
+#
+# Copy the [colors] block into ~/.config/levim/config.toml (merge with your
+# existing section). The values match the Catppuccin Mocha palette with a
+# blue accent, the setup used by the omarchy desktop theme — the same blue
+# as the Hyprland active border.
+#
+#   background:  #1e1e2e  (base — your terminal background)
+#   foreground:  #cdd6f4  (text)
+#   accent:      #89b4fa  (blue)
+#   selection:   #f5e0dc  (rosewater — cursor/selection in Ghostty)
+
+[colors]
+accent = "#89b4fa"   # blue — modal borders/titles; matches the Hyprland active border
+surface = "#313244"  # surface0 — modal interior, one step above the base background
+text = "#cdd6f4"     # text
+error = "#f38ba8"    # red
+pending = "#f9e2af"  # yellow
+ready = "#a6e3a1"    # green

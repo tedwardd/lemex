@@ -153,6 +153,9 @@ The palette is part of the interface, so the client always renders it: the
 `NO_COLOR` environment variable (no-color.org) is deliberately overridden
 at startup. To run without colors, set every key to `"reset"`.
 
+A ready-made palette matching the Catppuccin Mocha desktop theme (blue
+accent) ships in `examples/catppuccin-mocha.toml`.
+
 ## Logging
 
 Logging is off by default and redacts credentials, tokens, private content,
