@@ -1,0 +1,111 @@
+# Build release binaries for every merge to main and publish them as a
+# GitHub release. Tags are versioned per commit (`v0.1.0-<short-sha>`) so
+# each merge gets its own release; the crate version stays the Cargo.toml
+# one.
+#
+# Targets:
+#   - Linux x86_64 (glibc)       — ubuntu-latest (native)
+#   - Linux arm64 (glibc)        — ubuntu-24.04-arm (native arm64 runner)
+#   - macOS arm64 (Apple Silicon)— macos-14 (native)
+#
+# The build needs no system libraries: keyring's dbus is vendored, SQLite is
+# bundled, TLS is rustls — only a C compiler is required, which every runner
+# ships. The Linux binaries link against glibc, so they need a reasonably
+# recent glibc on the target machine (musl builds can be added later if
+# portability demands).
+
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build levim (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+          - os: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        run: |
+          cp "target/${{ matrix.target }}/release/levim" "levim-${{ matrix.target }}"
+          chmod +x "levim-${{ matrix.target }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: levim-${{ matrix.target }}
+          path: levim-${{ matrix.target }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all binaries
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Compute version and tag
+        id: version
+        run: |
+          VERSION="$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v${VERSION}-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Write checksums
+        run: |
+          cd dist
+          sha256sum levim-* > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.version.outputs.tag }}" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "levim ${{ steps.version.outputs.tag }}" \
+            --notes "Automated build from \`${{ github.sha }}\`.
+
+            Targets: \`x86_64-unknown-linux-gnu\`, \`aarch64-unknown-linux-gnu\`, \`aarch64-apple-darwin\`.
+
+            Linux binaries link against glibc; macOS requires Apple Silicon. Checksums in \`SHA256SUMS\`."
