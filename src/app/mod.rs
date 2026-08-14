@@ -148,10 +148,14 @@ async fn run_terminal_async(
                         let (finished, result) = completed.map_err(|error| crate::error::AppError::Terminal(format!("application task failed: {error}")))?;
                         app = Some(finished);
                         result?;
-                        model = app.as_ref().expect("application is present").render_model();
-                        redraw = true;
+                        // Redraw only when the finished action actually
+                        // changed the view (idle ticks change nothing).
+                        let fresh = app.as_ref().expect("application is present").render_model();
+                        if fresh != model {
+                            model = fresh;
+                            redraw = true;
+                        }
                     }
-                    _ = ticks.tick() => redraw = true,
                     event = input_rx.recv() => match event {
                         Some(Ok(event)) => {
                             if queue_terminal_event(event, &mut input, &mut queued_actions, &mut redraw) {
@@ -230,8 +234,12 @@ fn start_action(
 ) {
     let mut owned = app.take().expect("application is present");
     owned.prepare_action(&action);
+    // Only redraw when the pre-action snapshot differs from what is on
+    // screen. The idle Tick fires ten times a second just to poll for
+    // completed work; forcing a full render each time would burn ~30% CPU.
+    let before = model.clone();
     *model = owned.render_model();
-    *redraw = true;
+    *redraw = *model != before;
     *action_task = Some(tokio::spawn(async move {
         let mut app = owned;
         let result = app.dispatch(action).await;
