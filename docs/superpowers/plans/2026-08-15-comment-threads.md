@@ -1138,7 +1138,6 @@ fn keep_thread_cursor_visible(
     }
 }
 ```
-```
 
 Add the three new arms to `dispatch_command`, directly after the `Command::ScrollDetailUp` arm:
 
