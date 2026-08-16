@@ -226,9 +226,22 @@ impl FixtureApp {
     }
 
     /// Dispatch an action on the harness runtime, mirroring the terminal
-    /// event loop's dispatch boundary.
+    /// event loop's dispatch boundary, then drain detached reads: reads now
+    /// return before their loads land, so assertions observe the settled
+    /// state. Fixture APIs answer instantly, so the drain is quick; the
+    /// bound guards against a hung pipeline.
     pub fn dispatch(&mut self, action: AppAction) -> Result<()> {
-        self.runtime.block_on(self.app.dispatch(action))
+        let result = self.runtime.block_on(self.app.dispatch(action));
+        for _ in 0..1000 {
+            if !self.app.has_pending_work() {
+                break;
+            }
+            self.runtime
+                .block_on(self.app.dispatch(AppAction::Tick))
+                .expect("tick dispatch");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        result
     }
 
     pub fn model(&self) -> RenderModel {

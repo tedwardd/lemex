@@ -155,6 +155,15 @@ fn render_content(frame: &mut Frame, content: ratatui::layout::Rect, model: &Ren
             Cell::from(""),
             Cell::from("more posts available (> next page)"),
         ]));
+    } else if model.loading {
+        // A read load is in flight and nothing is on screen yet: show the
+        // load instead of a blank pane (the [PENDING] status line covers
+        // refreshes that keep the existing list visible).
+        post_rows.push(Row::new(vec![
+            Cell::from("…"),
+            Cell::from(""),
+            Cell::from("Loading…"),
+        ]));
     }
     let table = Table::new(
         post_rows,
@@ -586,6 +595,7 @@ mod tests {
             compose: String::new(),
             search: String::new(),
             has_more: false,
+            loading: false,
             status: Status::ready(&context),
             downloads: downloads.then(|| DownloadsRender {
                 query: String::new(),

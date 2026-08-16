@@ -343,6 +343,30 @@ pub fn timeout_fixture_api() -> HttpLemmyApi {
     api_for(server, base, Duration::from_millis(50))
 }
 
+/// A fixture server that delays every answer by `delay` (the request is
+/// counted before the delay, so retry loops observe a per-attempt stall on
+/// an otherwise healthy server). Lets tests prove the whole-read budget
+/// cuts across retries: with a delay longer than the per-attempt deadline,
+/// the natural exhaustion of three attempts would take ~3 × delay, and a
+/// tight total budget must fail much sooner.
+pub fn fixture_api_with_delay(delay: Duration) -> HttpLemmyApi {
+    let (base, server) = start_server(FixtureRoute {
+        path: None,
+        status: 200,
+        body: None,
+        delay: Some(delay),
+        malformed_body: false,
+        requests: None,
+        require_auth: false,
+        transient_failures: None,
+        user_agent: None,
+        cursor_body: None,
+        extra_paths: Vec::new(),
+    })
+    .expect("fixture server starts");
+    api_for(server, base, Duration::from_secs(2))
+}
+
 /// A fixture server that answers every request with `body` once the request
 /// carries an `Authorization` header; unauthenticated requests get 401. The
 /// request counter lets smoke tests prove exactly one authenticated call was

@@ -47,6 +47,21 @@ fn fixture_app() -> App {
         Arc::new(MemoryCredentialStore::default()),
     )
 }
+/// Drain the detached-read pipeline: dispatch Ticks (which apply mailbox
+/// results and background-refresh completions) until no load is pending or
+/// in flight. The fixture APIs answer instantly, so a few iterations
+/// suffice; the bound guards against a hung pipeline.
+async fn pump(app: &mut App) {
+    for _ in 0..1000 {
+        if !app.has_pending_work() {
+            return;
+        }
+        app.dispatch(AppAction::Tick).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    panic!("pump: pending load did not settle");
+}
+
 fn configured_fixture_app() -> App {
     let path = std::env::temp_dir().join(format!(
         "levim-application-switch-{}.toml",
@@ -224,19 +239,19 @@ async fn successful_post_submission_removes_draft_only_after_confirmation() {
     let mut app = fixture_app();
     app.state.view.posts = vec![post_view(1, "target")];
     app.state.select(PostId(1));
-    let draft = app.state.begin_post_draft();
+    let draft = app.state.begin_post_draft().await;
     app.dispatch(AppAction::SubmitDraft(draft.id.clone()))
         .await
         .unwrap();
-    assert!(app.state.draft(draft.id.clone()).is_some());
+    assert!(app.state.draft(draft.id.clone()).await.is_some());
     app.dispatch(AppAction::Confirm).await.unwrap();
-    assert!(app.state.draft(draft.id).is_none());
+    assert!(app.state.draft(draft.id).await.is_none());
 }
 
 #[tokio::test]
 async fn untouched_edit_drafts_fail_local_validation() {
     let mut app = fixture_app();
-    let post_draft = app.state.begin_edit_post_draft(PostId(5));
+    let post_draft = app.state.begin_edit_post_draft(PostId(5)).await;
     app.dispatch(AppAction::SubmitDraft(post_draft.id.clone()))
         .await
         .unwrap();
@@ -244,8 +259,11 @@ async fn untouched_edit_drafts_fail_local_validation() {
         app.state.status.error.as_deref(),
         Some("invalid command: post title is required")
     );
-    assert!(app.state.draft(post_draft.id).is_some());
-    let comment_draft = app.state.begin_edit_comment_draft(levim::CommentId(6));
+    assert!(app.state.draft(post_draft.id).await.is_some());
+    let comment_draft = app
+        .state
+        .begin_edit_comment_draft(levim::CommentId(6))
+        .await;
     app.dispatch(AppAction::SubmitDraft(comment_draft.id.clone()))
         .await
         .unwrap();
@@ -253,7 +271,7 @@ async fn untouched_edit_drafts_fail_local_validation() {
         app.state.status.error.as_deref(),
         Some("invalid command: comment content is required")
     );
-    assert!(app.state.draft(comment_draft.id).is_some());
+    assert!(app.state.draft(comment_draft.id).await.is_some());
 }
 
 #[tokio::test]
@@ -265,9 +283,10 @@ async fn valid_edit_post_draft_strips_id_line_and_submits() {
         fixture_context(),
         Arc::new(MemoryCredentialStore::default()),
     );
-    let draft = app.state.begin_edit_post_draft(PostId(5));
+    let draft = app.state.begin_edit_post_draft(PostId(5)).await;
     app.state
         .update_draft(&draft.id, "5\nEdited title\nEdited body")
+        .await
         .unwrap();
     app.dispatch(AppAction::SubmitDraft(draft.id))
         .await
@@ -339,12 +358,13 @@ async fn create_post_draft_wires_title_link_and_body() {
     post.community_id = levim::CommunityId(3);
     app.state.view.posts = vec![post];
     app.state.select(PostId(7));
-    let draft = app.state.begin_post_draft();
+    let draft = app.state.begin_post_draft().await;
     app.state
         .update_draft(
             &draft.id,
             "A post title\nhttps://example.com/article\nSome body",
         )
+        .await
         .unwrap();
     app.dispatch(AppAction::SubmitDraft(draft.id.clone()))
         .await
@@ -379,7 +399,7 @@ async fn create_post_without_community_target_fails_before_request() {
         fixture_context(),
         Arc::new(MemoryCredentialStore::default()),
     );
-    let draft = app.state.begin_post_draft();
+    let draft = app.state.begin_post_draft().await;
     app.dispatch(AppAction::SubmitDraft(draft.id))
         .await
         .unwrap();
@@ -406,11 +426,11 @@ async fn profile_switch_changes_request_context_and_clears_selection() {
 #[tokio::test]
 async fn failed_mutation_keeps_draft_and_sets_retryable_status() {
     let mut app = failing_mutation_app();
-    let draft = app.state.begin_comment_draft();
+    let draft = app.state.begin_comment_draft().await;
     app.dispatch(AppAction::SubmitDraft(draft.id.clone()))
         .await
         .unwrap();
-    assert!(app.state.draft(draft.id).is_some());
+    assert!(app.state.draft(draft.id).await.is_some());
     assert!(app.state.status.is_retryable());
 }
 
@@ -606,6 +626,7 @@ async fn failed_search_resets_stale_cursor_so_load_more_is_refused() {
     let enter = engine.handle(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
     assert_eq!(enter, Command::SubmitLine("rust".into()));
     app.dispatch(AppAction::Input(enter)).await.unwrap();
+    pump(&mut app).await;
 
     // The search itself failed (500); the stale cursor must be gone and
     // LoadMore must be refused without touching the network.
@@ -688,6 +709,7 @@ async fn stale_same_profile_post_result_is_rejected_by_request_token() {
         profile: ProfileId::from("fixture"),
         request: current,
         result: Ok(detail("current".into())),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -695,6 +717,7 @@ async fn stale_same_profile_post_result_is_rejected_by_request_token() {
         profile: ProfileId::from("fixture"),
         request: old,
         result: Ok(detail("old".into())),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -741,6 +764,7 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_thread() {
         request: old,
         post: PostId(1),
         result: Ok(vec![comment]),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -760,6 +784,7 @@ async fn back_invalidates_inflight_post_result() {
         profile: ProfileId::from("fixture"),
         request,
         result: Ok(detail),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -783,6 +808,7 @@ async fn post_result_requires_current_selected_post_context() {
             post: post_view(1, "stale"),
             comments: Vec::new(),
         }),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -834,6 +860,7 @@ async fn back_invalidates_inflight_comments_result() {
         request,
         post: PostId(1),
         result: Ok(vec![comment]),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -1006,7 +1033,7 @@ async fn comment_submission_without_selected_post_fails_before_request() {
         fixture_context(),
         Arc::new(MemoryCredentialStore::default()),
     );
-    let draft = app.state.begin_comment_draft();
+    let draft = app.state.begin_comment_draft().await;
     app.dispatch(AppAction::SubmitDraft(draft.id))
         .await
         .unwrap();
@@ -1227,6 +1254,7 @@ async fn opening_post_fetches_detail_and_thread_comments() {
     app.state.view.posts = vec![post_view(1, "Threaded post")];
     app.state.view.selected = Some(0);
     app.dispatch(AppAction::OpenSelected).await.unwrap();
+    pump(&mut app).await;
     let levim::app::Modal::Thread(thread) = app
         .state
         .view
@@ -1380,6 +1408,7 @@ async fn feed_page_size_scales_with_the_terminal_height() {
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
         .unwrap();
+    pump(&mut app).await;
     let limits = api.limits.lock().unwrap();
     assert_eq!(
         limits.last().copied().flatten(),
@@ -1428,6 +1457,7 @@ async fn next_and_previous_page_flip_the_feed() {
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
         .unwrap();
+    pump(&mut app).await;
     assert_eq!(
         app.state.view.posts.len(),
         1,
@@ -1442,6 +1472,7 @@ async fn next_and_previous_page_flip_the_feed() {
     app.dispatch(AppAction::Input(Command::PreviousPage))
         .await
         .unwrap();
+    pump(&mut app).await;
     assert_eq!(
         app.state.view.posts.len(),
         1,
@@ -1505,6 +1536,7 @@ async fn page_flips_are_inert_while_the_thread_pane_is_focused() {
     app.dispatch(AppAction::Input(Command::NextPage))
         .await
         .unwrap();
+    pump(&mut app).await;
     assert_eq!(api.second_page_calls.load(Ordering::SeqCst), 1);
 }
 
@@ -1522,6 +1554,7 @@ async fn startup_feed_command_loads_the_home_feed() {
     app.dispatch(AppAction::Input(Command::SubmitLine("feed".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
     assert_eq!(
         app.state.view.posts.len(),
         2,
@@ -1855,6 +1888,7 @@ async fn stale_comments_error_for_inactive_post_does_not_change_status() {
         request: old,
         post: PostId(1),
         result: Err(AppError::Network("stale comments".into())),
+        stale: false,
     })))
     .await
     .unwrap();
@@ -2169,6 +2203,7 @@ async fn subscribed_command_loads_the_subscribed_listing() {
     app.dispatch(AppAction::Input(Command::SubmitLine("subscribed".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     let queries = api.queries.lock();
     assert_eq!(queries.len(), 1, "the subscribed feed must be fetched");
@@ -2226,6 +2261,7 @@ async fn sort_command_sets_the_feed_sort_and_reloads() {
     app.dispatch(AppAction::Input(Command::SubmitLine("sort New".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     let queries = api.queries.lock();
     assert_eq!(queries.len(), 1, "the re-sorted feed must be fetched");
@@ -2235,8 +2271,8 @@ async fn sort_command_sets_the_feed_sort_and_reloads() {
         queries[0].sort
     );
     assert!(
-        app.state.status.message.contains("sorted by New"),
-        "the status must confirm the sort, got {:?}",
+        app.state.status.message.contains("feed loaded"),
+        "the reloaded feed must confirm the load, got {:?}",
         app.state.status.message
     );
 }
@@ -2262,6 +2298,7 @@ async fn sort_choice_sticks_across_feed_commands() {
     app.dispatch(AppAction::Input(Command::SubmitLine("subscribed".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     let queries = api.queries.lock();
     assert_eq!(queries.len(), 2, "sort then subscribed = two fetches");
@@ -2315,6 +2352,7 @@ async fn communities_modal_defaults_to_local_when_anonymous() {
     app.dispatch(AppAction::Input(Command::Communities))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     assert!(
         matches!(
@@ -2363,6 +2401,7 @@ async fn communities_modal_defaults_to_subscribed_when_logged_in() {
     app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     let queries = api.community_queries.lock();
     assert_eq!(
@@ -2384,10 +2423,12 @@ async fn sort_switches_the_communities_listing() {
     app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     app.dispatch(AppAction::Input(Command::SubmitLine("sort all".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     {
         let queries = api.community_queries.lock();
@@ -2429,8 +2470,10 @@ async fn enter_in_communities_modal_opens_the_community_feed() {
     app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
 
     app.dispatch(AppAction::Input(Command::Open)).await.unwrap();
+    pump(&mut app).await;
 
     assert!(
         !matches!(
@@ -2504,11 +2547,13 @@ async fn switching_community_dismisses_the_open_thread() {
     app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
         .await
         .unwrap();
+    pump(&mut app).await;
     assert!(matches!(
         app.state.view.top_modal(),
         Some(levim::app::Modal::Communities(_))
     ));
     app.dispatch(AppAction::Input(Command::Open)).await.unwrap();
+    pump(&mut app).await;
 
     assert_eq!(
         app.state.view.feed_query.community,
@@ -2779,12 +2824,30 @@ async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
         cache.clone(),
         Arc::new(MemoryCredentialStore::default()),
     );
-    let first = repository.feed_with_generation(&context, FeedQuery::home(), 10);
+    // Register and spawn the older-generation refresh first, and wait until
+    // its API call is actually in flight, so the call-to-generation mapping
+    // is pinned (the older refresh is call 0 -> "older"; the newer is call
+    // 1 -> "newer") regardless of scheduler interleaving.
+    let first = {
+        let repository = repository.clone();
+        let context = context.clone();
+        tokio::spawn(async move {
+            repository
+                .feed_with_generation(&context, FeedQuery::home(), 10)
+                .await
+        })
+    };
+    while api.calls.load(Ordering::SeqCst) < 1 {
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
     let second = repository.feed_with_generation(&context, FeedQuery::home(), 20);
     let (_first, _second) = tokio::join!(first, second);
     while api.calls.load(Ordering::SeqCst) < 2 {
         tokio::time::sleep(Duration::from_millis(1)).await;
     }
+    // The newer refresh (call 1) completes first and writes "newer"; the
+    // older refresh (call 0) completes second and its write must be refused
+    // by the generation guard.
     api.second_release.notify_one();
     tokio::time::sleep(Duration::from_millis(5)).await;
     api.first_release.notify_one();
@@ -2797,6 +2860,7 @@ async fn older_concurrent_feed_refresh_cannot_replace_newer_generation() {
     assert_eq!(
         repository
             .take_completed_feed(&context, &FeedQuery::home())
+            .await
             .unwrap()
             .unwrap()
             .0,
@@ -2834,11 +2898,11 @@ async fn successful_draft_stays_completed_after_switching_profiles() {
     );
     app.state.view.posts = vec![post_view(1, "selected")];
     app.state.select(PostId(1));
-    let draft = app.state.begin_comment_draft();
+    let draft = app.state.begin_comment_draft().await;
     app.dispatch(AppAction::SubmitDraft(draft.id.clone()))
         .await
         .unwrap();
-    assert!(app.state.draft(draft.id.clone()).is_none());
+    assert!(app.state.draft(draft.id.clone()).await.is_none());
     app.dispatch(AppAction::Profile(ProfileCommand::Switch(ProfileId::from(
         "other",
     ))))
@@ -2849,7 +2913,7 @@ async fn successful_draft_stays_completed_after_switching_profiles() {
     ))))
     .await
     .unwrap();
-    assert!(app.state.draft(draft.id).is_none());
+    assert!(app.state.draft(draft.id).await.is_none());
     let _ = std::fs::remove_file(path);
 }
 
@@ -3370,5 +3434,471 @@ impl LemmyApi for UnconfirmedApi {
             comment: None,
             message: Some("not confirmed".into()),
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Detached-read contracts (performance work)
+// ---------------------------------------------------------------------------
+
+/// A feed API whose refresh is gated on a release, so tests can prove
+/// dispatch returns while the fetch is still in flight (the UI stays
+/// interactive) and that supersession/cancel make stragglers inert.
+#[derive(Default)]
+struct GatedFeedApi {
+    started: Arc<Notify>,
+    release: Arc<Notify>,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LemmyApi for GatedFeedApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.notify_one();
+        self.release.notified().await;
+        let title = if call == 0 {
+            "first refresh"
+        } else {
+            "second refresh"
+        };
+        Ok(Page {
+            items: vec![post_view(1, title)],
+            next_page: None,
+        })
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn read_loads_do_not_block_dispatch() {
+    let api = Arc::new(GatedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+
+    // A cache miss: dispatch must return while the fetch is still gated.
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    api.started.notified().await;
+    assert!(app.state.view.loading, "a miss shows the loading state");
+    assert!(app.state.status.pending, "the pending badge is visible");
+    assert!(
+        app.has_pending_work(),
+        "the load is still in flight after dispatch returns"
+    );
+
+    // Local actions still apply while the load is in flight.
+    app.dispatch(AppAction::ShowDownloads).await.unwrap();
+    assert!(
+        app.state.view.downloads_active(),
+        "local actions apply while a load is in flight"
+    );
+    app.dispatch(AppAction::Back).await.unwrap();
+
+    api.release.notify_one();
+    pump(&mut app).await;
+    assert_eq!(
+        app.state.view.posts.len(),
+        1,
+        "the feed lands once released"
+    );
+    assert!(app.state.status.message.contains("feed loaded"));
+}
+
+#[tokio::test]
+async fn superseded_feed_never_lands_after_second_request() {
+    let api = Arc::new(GatedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    api.started.notified().await;
+    // A second refresh supersedes the first: only its result may land.
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    api.started.notified().await;
+    api.release.notify_waiters();
+    pump(&mut app).await;
+    assert_eq!(
+        app.state.view.posts[0].title, "second refresh",
+        "only the newest generation's result lands"
+    );
+}
+
+#[tokio::test]
+async fn escape_cancels_inflight_feed_and_clears_pending() {
+    let api = Arc::new(GatedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::Refresh))
+        .await
+        .unwrap();
+    api.started.notified().await;
+
+    app.dispatch(AppAction::Back).await.unwrap();
+    assert!(!app.state.view.loading, "cancel clears the loading state");
+    assert!(!app.state.status.pending, "cancel clears the pending badge");
+
+    // A straggler completion (token already invalidated) must not land.
+    api.release.notify_one();
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    app.dispatch(AppAction::Tick).await.unwrap();
+    assert!(
+        app.state.view.posts.is_empty(),
+        "a cancelled load never lands"
+    );
+}
+
+#[tokio::test]
+async fn page_flip_failure_restores_cursor_and_history() {
+    let (api, _requests) = fixture_api_with_status_count(500);
+    let mut app = App::new(
+        Arc::new(api),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "page one")];
+    app.state.view.next_page = Some("2".to_owned());
+    app.dispatch(AppAction::Input(Command::NextPage))
+        .await
+        .unwrap();
+    pump(&mut app).await;
+    assert!(app.state.status.error.is_some(), "the failed flip surfaces");
+    assert_eq!(
+        app.state.view.posts[0].id,
+        PostId(1),
+        "the old list survives a failed flip"
+    );
+    assert_eq!(
+        app.state.view.feed_query.page, None,
+        "the cursor rolls back after a failed flip"
+    );
+    assert!(
+        app.state.view.page_history.is_empty(),
+        "the history rolls back after a failed flip"
+    );
+    assert!(app.state.status.retryable, "the failure is retryable");
+}
+
+/// A thread API with two independent gates so the test can prove the post
+/// and comments fetches run concurrently, and can release them in either
+/// order.
+#[derive(Default)]
+struct TwoGateThreadApi {
+    post_started: Arc<Notify>,
+    comments_started: Arc<Notify>,
+    post_release: Arc<Notify>,
+    comments_release: Arc<Notify>,
+    post_calls: Arc<AtomicUsize>,
+    comments_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl LemmyApi for TwoGateThreadApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        self.post_calls.fetch_add(1, Ordering::SeqCst);
+        self.post_started.notify_one();
+        self.post_release.notified().await;
+        Ok(PostDetail {
+            post: post_view(1, "gated post detail"),
+            comments: Vec::new(),
+        })
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        self.comments_calls.fetch_add(1, Ordering::SeqCst);
+        self.comments_started.notify_one();
+        self.comments_release.notified().await;
+        Ok(vec![CommentView {
+            id: levim::CommentId(1),
+            post_id: PostId(1),
+            content: "early comment".into(),
+            creator_name: "alice".into(),
+            creator_id: levim::UserId(1),
+            score: 0,
+        }])
+    }
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Err(AppError::Network("unused".into()))
+    }
+}
+
+#[tokio::test]
+async fn open_selected_fetches_post_and_comments_concurrently() {
+    let api = Arc::new(TwoGateThreadApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    // Both fetches must be in flight before either gate is released; with
+    // sequential fetching the comments call could not start until the post
+    // returned, so this wait would time out.
+    api.post_started.notified().await;
+    api.comments_started.notified().await;
+    assert_eq!(api.post_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(api.comments_calls.load(Ordering::SeqCst), 1);
+    api.post_release.notify_one();
+    api.comments_release.notify_one();
+    pump(&mut app).await;
+    let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+        panic!("expected a thread modal");
+    };
+    assert_eq!(thread.post.post.title, "gated post detail");
+    assert_eq!(thread.post.comments.len(), 1);
+    assert_eq!(thread.post.comments[0].content, "early comment");
+}
+
+#[tokio::test]
+async fn comments_landing_before_post_fills_placeholder_thread() {
+    let api = Arc::new(TwoGateThreadApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.state.view.posts = vec![post_view(1, "Threaded post")];
+    app.state.view.selected = Some(0);
+    app.dispatch(AppAction::OpenSelected).await.unwrap();
+    api.post_started.notified().await;
+    api.comments_started.notified().await;
+
+    // Comments land first: they must fill the placeholder thread (which
+    // carries the real post id) even though the post detail is still gated.
+    api.comments_release.notify_one();
+    for _ in 0..500 {
+        if !app.state.view.loading {
+            break;
+        }
+        app.dispatch(AppAction::Tick).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+        panic!("expected a thread modal");
+    };
+    assert_eq!(
+        thread.post.post.title, "",
+        "the placeholder has no detail yet"
+    );
+    assert_eq!(
+        thread.post.comments.len(),
+        1,
+        "comments fill the placeholder thread"
+    );
+    assert_eq!(thread.post.comments[0].content, "early comment");
+
+    // The post landing must keep the already-landed comments.
+    api.post_release.notify_one();
+    pump(&mut app).await;
+    let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+        panic!("expected a thread modal");
+    };
+    assert_eq!(thread.post.post.title, "gated post detail");
+    assert_eq!(
+        thread.post.comments.len(),
+        1,
+        "the post landing keeps the landed comments"
+    );
+}
+
+#[tokio::test]
+async fn community_list_is_cached_per_listing() {
+    let api = Arc::new(SubscribedFeedApi::default());
+    let mut app = App::new(
+        api.clone(),
+        Arc::new(MemoryCache::default()),
+        fixture_context(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    app.dispatch(AppAction::Input(Command::SubmitLine("communities".into())))
+        .await
+        .unwrap();
+    pump(&mut app).await;
+    assert_eq!(
+        api.community_queries.lock().len(),
+        1,
+        "the first open fetches the list"
+    );
+
+    // Close and reopen: the cached list paints immediately (background
+    // refresh revalidates) — the picker is never empty on reopen.
+    app.dispatch(AppAction::Input(Command::Back)).await.unwrap();
+    app.dispatch(AppAction::Input(Command::Communities))
+        .await
+        .unwrap();
+    pump(&mut app).await;
+    assert_eq!(
+        api.community_queries.lock().len(),
+        2,
+        "reopening revalidates in the background"
+    );
+    let levim::app::Modal::Communities(modal) = app.state.view.top_modal().unwrap() else {
+        panic!("expected the communities picker");
+    };
+    assert_eq!(modal.communities.len(), 2, "the picker shows the list");
+    assert_eq!(modal.selected, Some(0));
+}
+
+/// An API that confirms every mutation without returning an object.
+#[derive(Default)]
+struct ConfirmingApi;
+
+#[async_trait]
+impl LemmyApi for ConfirmingApi {
+    async fn site(&self, _: &ProfileContext) -> Result<SiteInfo> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> Result<Page<PostView>> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn post(&self, _: &ProfileContext, _: PostId) -> Result<PostDetail> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> Result<Vec<CommentView>> {
+        Ok(Vec::new())
+    }
+    async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
+        Err(AppError::Network("unused".into()))
+    }
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> Result<MutationResult> {
+        Ok(MutationResult {
+            success: true,
+            post: None,
+            comment: None,
+            message: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn deleted_post_absent_from_cache_served_paginated_page() {
+    let api = Arc::new(ConfirmingApi);
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    let mut query = FeedQuery::home();
+    query.page = Some("2".to_owned());
+    let repository = Repository::new(
+        api.clone(),
+        cache.clone(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    repository
+        .record_fresh_feed_page(
+            &context,
+            query.clone(),
+            &Page {
+                items: vec![post_view(1, "doomed"), post_view(2, "kept")],
+                next_page: None,
+            },
+        )
+        .await
+        .unwrap();
+    repository
+        .mutate(&context, Mutation::DeletePost(PostId(1)))
+        .await
+        .unwrap();
+    let read = repository
+        .cached_feed(&context, &query)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(read.value.items.len(), 1);
+    assert_eq!(
+        read.value.items[0].id,
+        PostId(2),
+        "a deleted post never surfaces from a cached page"
+    );
+}
+
+#[tokio::test]
+async fn subscribe_success_marks_community_rows_stale() {
+    let api = Arc::new(ConfirmingApi);
+    let cache = Arc::new(MemoryCache::default());
+    let context = fixture_context();
+    for listing in [
+        levim::api::FeedListing::All,
+        levim::api::FeedListing::Subscribed,
+    ] {
+        cache
+            .write_feed(
+                &context.profile.id,
+                &FeedKey::from(format!("communities:{listing:?}")),
+                &CachedFeed::new(json!({ "items": [], "next_page": null }), 1, false),
+            )
+            .unwrap();
+    }
+    let repository = Repository::new(
+        api,
+        cache.clone(),
+        Arc::new(MemoryCredentialStore::default()),
+    );
+    repository
+        .mutate(
+            &context,
+            Mutation::Subscribe {
+                community: levim::CommunityId(1),
+                subscribed: true,
+            },
+        )
+        .await
+        .unwrap();
+    for listing in [
+        levim::api::FeedListing::All,
+        levim::api::FeedListing::Subscribed,
+    ] {
+        let cached = cache
+            .read_feed(
+                &context.profile.id,
+                &FeedKey::from(format!("communities:{listing:?}")),
+            )
+            .unwrap()
+            .unwrap();
+        assert!(
+            cached.stale,
+            "a subscription marks community rows stale so the picker refetches"
+        );
     }
 }

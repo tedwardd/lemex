@@ -1,7 +1,7 @@
 pub mod fixtures;
 mod http;
 
-pub use http::HttpLemmyApi;
+pub use http::{HttpLemmyApi, Timeouts};
 
 use crate::domain::{CommunityId, Mutation, PostId, ProfileContext, ProfileId, Session, UserId};
 use crate::error::Result;

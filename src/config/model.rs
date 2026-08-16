@@ -2,6 +2,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,39 @@ impl Default for CacheConfig {
         Self {
             directory: None,
             max_size_bytes: Some(DEFAULT_CACHE_SIZE_BYTES),
+        }
+    }
+}
+
+/// Default whole-read (connect + request + retries) deadline applied when the
+/// config does not set one. A dead instance fails at the 5 s connect bound
+/// per attempt; a slow-but-alive server still gets its 10 s per-attempt
+/// budget; retries can never multiply the worst case beyond this total.
+pub const DEFAULT_HTTP_CONNECT_TIMEOUT_SECS: u64 = 5;
+pub const DEFAULT_HTTP_REQUEST_TIMEOUT_SECS: u64 = 10;
+pub const DEFAULT_HTTP_TOTAL_TIMEOUT_SECS: u64 = 15;
+
+/// HTTP client timeout budget. Values parse from `[http]`, with the
+/// invariant `connect <= request <= total` enforced by clamping each value
+/// downward; a `0` value is a configuration error. Takes effect on the next
+/// launch (the HTTP client is built at startup).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HttpConfig {
+    /// TCP/TLS connect deadline per attempt (was unbounded beyond the
+    /// request deadline, so a blackholed instance burned the full budget).
+    pub connect_timeout: Duration,
+    /// Per-attempt deadline covering connect, response, and body.
+    pub request_timeout: Duration,
+    /// Whole-read deadline including retries; not applied to mutations.
+    pub total_timeout: Duration,
+}
+
+impl Default for HttpConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout: Duration::from_secs(DEFAULT_HTTP_CONNECT_TIMEOUT_SECS),
+            request_timeout: Duration::from_secs(DEFAULT_HTTP_REQUEST_TIMEOUT_SECS),
+            total_timeout: Duration::from_secs(DEFAULT_HTTP_TOTAL_TIMEOUT_SECS),
         }
     }
 }
@@ -139,6 +173,9 @@ pub struct AppConfig {
     pub startup: String,
     /// UI palette; absent keys fall back to the standard colors.
     pub colors: ColorsConfig,
+    /// HTTP client timeout budget; absent keys fall back to
+    /// connect 5 s / request 10 s / total 15 s.
+    pub http: HttpConfig,
     /// Permit `http://` instance URLs. Off by default: credentials (login
     /// password, session JWT) must not travel in cleartext unless the user
     /// explicitly opts in.
@@ -214,6 +251,7 @@ impl AppConfig {
 
         let startup = validate_startup(&raw.startup)?;
         let colors = raw.colors.into_config()?;
+        let http = raw.http.into_config()?;
         Ok(Self {
             profiles,
             keymaps: raw.keymaps,
@@ -222,6 +260,7 @@ impl AppConfig {
             logging: raw.logging.into_config(),
             startup,
             colors,
+            http,
             allow_insecure_http: raw.allow_insecure_http,
         })
     }
@@ -276,6 +315,7 @@ impl AppConfig {
             logging: RawLogConfig::from_config(&self.logging),
             startup: self.startup.clone(),
             colors: RawColorsConfig::from_config(&self.colors),
+            http: RawHttpConfig::from_config(&self.http),
             allow_insecure_http: self.allow_insecure_http,
         };
         toml::to_string_pretty(&raw)
@@ -312,6 +352,9 @@ struct RawConfig {
     startup: String,
     #[serde(default)]
     colors: RawColorsConfig,
+    /// HTTP client timeout budget.
+    #[serde(default)]
+    http: RawHttpConfig,
     /// Opt-in to `http://` instance URLs (credentials travel in cleartext).
     #[serde(default)]
     allow_insecure_http: bool,
@@ -450,6 +493,71 @@ impl RawCacheConfig {
         Self {
             directory: config.directory.clone(),
             max_size_bytes: config.max_size_bytes,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct RawHttpConfig {
+    #[serde(default = "default_http_connect_timeout")]
+    connect_timeout_secs: u64,
+    #[serde(default = "default_http_request_timeout")]
+    request_timeout_secs: u64,
+    #[serde(default = "default_http_total_timeout")]
+    total_timeout_secs: u64,
+}
+
+impl Default for RawHttpConfig {
+    fn default() -> Self {
+        Self {
+            connect_timeout_secs: default_http_connect_timeout(),
+            request_timeout_secs: default_http_request_timeout(),
+            total_timeout_secs: default_http_total_timeout(),
+        }
+    }
+}
+
+fn default_http_connect_timeout() -> u64 {
+    DEFAULT_HTTP_CONNECT_TIMEOUT_SECS
+}
+fn default_http_request_timeout() -> u64 {
+    DEFAULT_HTTP_REQUEST_TIMEOUT_SECS
+}
+fn default_http_total_timeout() -> u64 {
+    DEFAULT_HTTP_TOTAL_TIMEOUT_SECS
+}
+
+impl RawHttpConfig {
+    fn into_config(self) -> Result<HttpConfig> {
+        // A zero deadline would make every request fail instantly, so it is
+        // rejected loudly instead of tolerated; inverted orderings are
+        // clamped into the invariant connect <= request <= total (each value
+        // can only shrink, never grow beyond a smaller one).
+        fn checked(name: &str, secs: u64) -> Result<u64> {
+            if secs == 0 {
+                Err(AppError::Configuration(format!(
+                    "[http] {name} must be at least 1"
+                )))
+            } else {
+                Ok(secs)
+            }
+        }
+        let connect = checked("connect_timeout_secs", self.connect_timeout_secs)?;
+        let request = checked("request_timeout_secs", self.request_timeout_secs)?;
+        let total = checked("total_timeout_secs", self.total_timeout_secs)?;
+        Ok(HttpConfig {
+            connect_timeout: Duration::from_secs(connect.min(request).min(total)),
+            request_timeout: Duration::from_secs(request.min(total)),
+            total_timeout: Duration::from_secs(total),
+        })
+    }
+
+    fn from_config(config: &HttpConfig) -> Self {
+        Self {
+            connect_timeout_secs: config.connect_timeout.as_secs(),
+            request_timeout_secs: config.request_timeout.as_secs(),
+            total_timeout_secs: config.total_timeout.as_secs(),
         }
     }
 }

@@ -313,19 +313,19 @@ fn drafts_persist_across_restart_and_validation_failure_keeps_draft() {
         MediaConfig::default(),
         &[],
     );
-    let draft = first.app.state.begin_post_draft();
+    let draft = first.runtime.block_on(first.app.state.begin_post_draft());
     first
-        .app
-        .state
-        .update_draft(&draft.id, "My title\nMy body")
+        .runtime
+        .block_on(first.app.state.update_draft(&draft.id, "My title\nMy body"))
         .expect("update draft");
 
     // A validation failure must not destroy the draft.
-    let edit = first.app.state.begin_edit_post_draft(PostId(5));
+    let edit = first
+        .runtime
+        .block_on(first.app.state.begin_edit_post_draft(PostId(5)));
     first
-        .app
-        .state
-        .update_draft(&edit.id, "5\n")
+        .runtime
+        .block_on(first.app.state.update_draft(&edit.id, "5\n"))
         .expect("update edit draft");
     first
         .dispatch(AppAction::SubmitDraft(edit.id.clone()))
@@ -335,7 +335,10 @@ fn drafts_persist_across_restart_and_validation_failure_keeps_draft() {
         Some("invalid command: post title is required")
     );
     assert!(
-        first.app.state.draft(edit.id).is_some(),
+        first
+            .runtime
+            .block_on(first.app.state.draft(edit.id))
+            .is_some(),
         "a failed submission keeps the draft"
     );
     assert!(
@@ -354,7 +357,7 @@ fn drafts_persist_across_restart_and_validation_failure_keeps_draft() {
         MediaConfig::default(),
         &[],
     );
-    let restored = second.app.state.drafts.all();
+    let restored = second.runtime.block_on(second.app.state.drafts.all());
     assert!(
         restored
             .iter()

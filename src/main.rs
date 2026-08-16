@@ -8,7 +8,7 @@ use std::{
 };
 
 use levim::{
-    api::HttpLemmyApi,
+    api::{HttpLemmyApi, Timeouts},
     app::{App, run_terminal},
     cache::SqliteCacheStore,
     config::{AppConfig, cache_dir, config_path, log_path},
@@ -124,7 +124,11 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         cache_root.join(PathBuf::from("cache.sqlite3")),
         config.cache.max_size_bytes,
     )?;
-    let api = HttpLemmyApi::new()?;
+    let api = HttpLemmyApi::with_timeouts(Timeouts {
+        connect: config.http.connect_timeout,
+        request: config.http.request_timeout,
+        total: config.http.total_timeout,
+    })?;
     // Restore a previously stored session from the OS credential store when
     // one is available. Secrets never touch the config file. A missing or
     // unavailable keyring (headless session, unsupported target, no secret

@@ -170,6 +170,33 @@ enabled = true
 level = "debug"  # trace | debug | info | warn | error
 ```
 
+## HTTP
+
+The HTTP client's timeout budget is configurable. Three levels split the
+single request deadline so a dead instance (a connect that never answers)
+fails in seconds per attempt instead of burning the full request budget,
+while a slow-but-alive server still gets a full per-attempt deadline, and
+read retries can never multiply the worst case beyond the total.
+
+```toml
+[http]
+connect_timeout_secs = 5     # TCP/TLS connect per attempt (default 5)
+request_timeout_secs = 10    # per-attempt deadline covering connect, response, body (default 10)
+total_timeout_secs = 15      # whole read including retries (default 15)
+```
+
+- Values are seconds; each key defaults when absent. A `0` value is a
+  configuration error, never a silently instant timeout.
+- Inverted orderings are clamped into the invariant
+  `connect_timeout_secs <= request_timeout_secs <= total_timeout_secs`;
+  a value can only shrink toward a smaller one, so a config that gets the
+  ordering wrong fails safe instead of misbehaving silently.
+- The total deadline applies to reads (feeds, posts, comments, site);
+  mutations are a single attempt bounded by `request_timeout_secs`, so a
+  cancelled write is never misreported as confirmed.
+- Timeouts take effect on the next launch: the HTTP client is built at
+  startup.
+
 ## Runtime configuration (`:set`)
 
 | Command | Effect |

@@ -1,10 +1,16 @@
+use std::time::Duration;
+
 use levim::api::fixtures::{
     anonymous_context, authenticated_context, fixture_api, fixture_api_recording_user_agent,
-    fixture_api_with_body, fixture_api_with_status, fixture_api_with_status_count,
-    login_fixture_api, timeout_fixture_api, truncated_body_fixture_api,
+    fixture_api_with_body, fixture_api_with_delay, fixture_api_with_status,
+    fixture_api_with_status_count, login_fixture_api, timeout_fixture_api,
+    truncated_body_fixture_api,
 };
-use levim::api::{FeedQuery, LemmyApi, LoginRequest};
-use levim::{AppError, CommentId, Mutation, PostId, SecretString, UserId};
+use levim::api::{FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, Timeouts};
+use levim::{
+    AppError, CommentId, Mutation, PostId, Profile, ProfileContext, ProfileId, SecretString, UserId,
+};
+use url::Url;
 
 #[tokio::test]
 async fn feed_response_carries_the_opaque_next_page_cursor() {
@@ -206,5 +212,83 @@ async fn non_transient_501_is_not_retried() {
     let (api, requests) = fixture_api_with_status_count(501);
     let result = api.feed(&anonymous_context(), FeedQuery::home()).await;
     assert!(result.is_err());
+    assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+async fn read_honors_total_deadline_across_retries() {
+    // The server delays every answer by 1 s while the per-attempt deadline
+    // is 200 ms, so each attempt times out and the retry loop would
+    // naturally exhaust after ~660 ms (200 + 20 + 200 + 40 + 200). The total
+    // budget must cut the whole read — retries included — well short of
+    // that, proving retries cannot multiply the worst case.
+    let api = fixture_api_with_delay(Duration::from_secs(1))
+        .with_timeout_budget(Timeouts {
+            connect: Duration::from_millis(100),
+            request: Duration::from_millis(200),
+            total: Duration::from_millis(300),
+        })
+        .expect("fixture client with tight budget");
+    let started = std::time::Instant::now();
+    let result = api.feed(&anonymous_context(), FeedQuery::home()).await;
+    let elapsed = started.elapsed();
+    let message = result
+        .expect_err("the delayed fixture must exhaust the total budget")
+        .to_string();
+    assert!(
+        message.contains("budget exhausted"),
+        "the read must report the total budget, got: {message}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "three delayed attempts would take ~660 ms; the 300 ms total must cut them short, took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn blackholed_connect_fails_fast() {
+    // 192.0.2.1 is TEST-NET-1 (RFC 5737): unroutable, so the TCP connect
+    // never completes. The connect deadline must bound each attempt instead
+    // of the per-attempt request deadline burning 5 s per attempt.
+    let api = HttpLemmyApi::with_timeouts(Timeouts {
+        connect: Duration::from_millis(150),
+        request: Duration::from_secs(5),
+        total: Duration::from_secs(5),
+    })
+    .expect("blackhole client");
+    let ctx = ProfileContext {
+        profile: Profile {
+            id: ProfileId::from("blackhole"),
+            instance_url: Url::parse("https://192.0.2.1/").expect("TEST-NET-1 URL"),
+            account_label: None,
+        },
+        session: None,
+    };
+    let started = std::time::Instant::now();
+    let result = api.feed(&ctx, FeedQuery::home()).await;
+    let elapsed = started.elapsed();
+    assert!(
+        result.is_err(),
+        "a blackholed instance must fail instead of hanging"
+    );
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "each connect must fail at the 150 ms deadline (plus retries), took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn mutation_never_retries_on_transient_status() {
+    // 503 is transient for reads, but a mutation is a single attempt: retrying
+    // it could double-apply the write, so the client must report the outcome
+    // as uncertain and never hit the server twice.
+    let (api, requests) = fixture_api_with_status_count(503);
+    let result = api
+        .mutate(&authenticated_context(), Mutation::DeletePost(PostId(1)))
+        .await;
+    assert!(
+        matches!(result, Err(AppError::Network(message)) if message.contains("uncertain")),
+        "a transient status on a mutation must report an uncertain outcome"
+    );
     assert_eq!(requests.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

@@ -103,34 +103,53 @@ impl Default for KeyringCredentialStore {
 #[async_trait]
 impl CredentialStore for KeyringCredentialStore {
     async fn get_session(&self, profile: &ProfileId) -> Result<Option<Session>> {
-        let entry = self.entry(profile)?;
-        let encoded = match entry.get_password() {
-            Ok(value) => value,
-            Err(keyring::Error::NoEntry) => return Ok(None),
-            Err(error) => return Err(storage_error(profile, "read", error)),
-        };
+        let store = self.clone();
+        let profile = profile.clone();
+        tokio::task::spawn_blocking(move || {
+            let entry = store.entry(&profile)?;
+            let encoded = match entry.get_password() {
+                Ok(value) => value,
+                Err(keyring::Error::NoEntry) => return Ok(None),
+                Err(error) => return Err(storage_error(&profile, "read", error)),
+            };
 
-        decode_session(&encoded).map(Some).ok_or_else(|| {
-            AppError::Storage(format!(
-                "keyring credential for profile {profile} is malformed; sign in again"
-            ))
+            decode_session(&encoded).map(Some).ok_or_else(|| {
+                AppError::Storage(format!(
+                    "keyring credential for profile {profile} is malformed; sign in again"
+                ))
+            })
         })
+        .await
+        .map_err(|error| AppError::Storage(format!("keyring task failed: {error}")))?
     }
 
     async fn put_session(&self, profile: &ProfileId, session: &Session) -> Result<()> {
-        let entry = self.entry(profile)?;
-        let encoded = format!("{}:{}", session.user_id.0, session.token.expose_secret());
-        entry
-            .set_password(&encoded)
-            .map_err(|error| storage_error(profile, "write", error))
+        let store = self.clone();
+        let profile = profile.clone();
+        let session = session.clone();
+        tokio::task::spawn_blocking(move || {
+            let entry = store.entry(&profile)?;
+            let encoded = format!("{}:{}", session.user_id.0, session.token.expose_secret());
+            entry
+                .set_password(&encoded)
+                .map_err(|error| storage_error(&profile, "write", error))
+        })
+        .await
+        .map_err(|error| AppError::Storage(format!("keyring task failed: {error}")))?
     }
 
     async fn delete_session(&self, profile: &ProfileId) -> Result<()> {
-        let entry = self.entry(profile)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(error) => Err(storage_error(profile, "delete", error)),
-        }
+        let store = self.clone();
+        let profile = profile.clone();
+        tokio::task::spawn_blocking(move || {
+            let entry = store.entry(&profile)?;
+            match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(error) => Err(storage_error(&profile, "delete", error)),
+            }
+        })
+        .await
+        .map_err(|error| AppError::Storage(format!("keyring task failed: {error}")))?
     }
 }
 

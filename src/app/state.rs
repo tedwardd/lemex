@@ -72,6 +72,10 @@ pub struct View {
     pub selected: Option<usize>,
     pub compose: String,
     pub stale: bool,
+    /// A read load is in flight and no cached content has landed yet. When
+    /// the feed pane is empty it renders a loading row instead of a blank
+    /// list; the flag clears when the load lands (or is cancelled).
+    pub loading: bool,
     pub next_page: Option<String>,
     /// Cursors of the pages behind the current one, oldest first; `None`
     /// marks the first page. `<` pops the most recent entry to go back.
@@ -119,12 +123,13 @@ impl ThreadModal {
         Self { post, scroll: 0 }
     }
 
-    /// Placeholder shown while the post fetch is in flight; the result
-    /// replaces it.
-    pub fn empty() -> Self {
+    /// Placeholder for the post being opened, carrying the REAL post id so
+    /// the comments result (which may land before the post detail, since the
+    /// two fetches are concurrent) can match and fill this thread.
+    pub fn for_post(id: crate::PostId) -> Self {
         Self::new(crate::api::PostDetail {
             post: crate::api::PostView {
-                id: crate::PostId(0),
+                id,
                 title: String::new(),
                 body: None,
                 url: None,
@@ -223,6 +228,7 @@ impl Default for View {
             selected: None,
             compose: String::new(),
             stale: false,
+            loading: false,
             next_page: None,
             page_history: Vec::new(),
             feed_query: crate::api::FeedQuery::home(),
@@ -246,6 +252,7 @@ impl View {
         self.selected = None;
         self.compose.clear();
         self.stale = false;
+        self.loading = false;
         self.next_page = None;
         self.page_history.clear();
         self.feed_query = crate::api::FeedQuery::home();
@@ -417,30 +424,32 @@ impl DraftStore {
     pub fn set_profile(&mut self, profile: ProfileId) {
         self.profile = profile;
     }
-    pub fn begin_comment_draft(&self) -> Draft {
-        self.begin_draft("create_comment", "comment".into())
+    pub async fn begin_comment_draft(&self) -> Draft {
+        self.begin_draft("create_comment", "comment".into()).await
     }
 
-    pub fn begin_post_draft(&self) -> Draft {
-        self.begin_draft("create_post", "Untitled".into())
+    pub async fn begin_post_draft(&self) -> Draft {
+        self.begin_draft("create_post", "Untitled".into()).await
     }
 
-    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft {
-        self.begin_draft("edit_post", id.0.to_string())
+    pub async fn begin_edit_post_draft(&self, id: PostId) -> Draft {
+        self.begin_draft("edit_post", id.0.to_string()).await
     }
 
-    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
-        self.begin_draft("edit_comment", id.0.to_string())
+    pub async fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
+        self.begin_draft("edit_comment", id.0.to_string()).await
     }
 
-    fn begin_draft(&self, operation: &str, content: String) -> Draft {
+    async fn begin_draft(&self, operation: &str, content: String) -> Draft {
         let id = DraftId::new(format!(
             "{}-{}",
             operation,
             self.sequence.fetch_add(1, Ordering::Relaxed)
         ));
         let draft = Draft::new(id, self.profile.clone(), operation, content);
-        let _ = self.backend.save_draft(draft.clone());
+        // Best-effort persistence: a failed draft save must not break the
+        // editing session (the draft stays in memory).
+        let _ = crate::cache::ops::save_draft(&self.backend, draft.clone()).await;
         draft
     }
 
@@ -506,19 +515,20 @@ impl DraftStore {
         }
     }
 
-    pub fn save(&self, draft: Draft) -> Result<()> {
-        self.backend.save_draft(draft)
+    pub async fn save(&self, draft: Draft) -> Result<()> {
+        crate::cache::ops::save_draft(&self.backend, draft).await
     }
 
-    pub fn update(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
+    pub async fn update(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
         let mut draft = self
             .draft(id)
+            .await
             .ok_or_else(|| crate::error::AppError::Storage("draft not found".into()))?;
         draft.content = content.into();
-        self.save(draft)
+        self.save(draft).await
     }
 
-    pub fn draft(&self, id: &DraftId) -> Option<Draft> {
+    pub async fn draft(&self, id: &DraftId) -> Option<Draft> {
         if self.completed.lock().ok().is_some_and(|completed| {
             completed
                 .get(&self.profile)
@@ -526,16 +536,16 @@ impl DraftStore {
         }) {
             return None;
         }
-        self.backend
-            .load_drafts(&self.profile)
+        crate::cache::ops::load_drafts(&self.backend, &self.profile)
+            .await
             .ok()?
             .into_iter()
             .find(|draft| &draft.id == id)
     }
 
-    pub fn all(&self) -> Vec<Draft> {
-        self.backend
-            .load_drafts(&self.profile)
+    pub async fn all(&self) -> Vec<Draft> {
+        crate::cache::ops::load_drafts(&self.backend, &self.profile)
+            .await
             .unwrap_or_default()
             .into_iter()
             .filter(|draft| {
@@ -603,24 +613,24 @@ impl AppState {
     pub fn selected_comments(&self) -> &[CommentView] {
         self.view.selected_comments()
     }
-    pub fn begin_comment_draft(&self) -> Draft {
-        self.drafts.begin_comment_draft()
+    pub async fn begin_comment_draft(&self) -> Draft {
+        self.drafts.begin_comment_draft().await
     }
-    pub fn begin_post_draft(&self) -> Draft {
-        self.drafts.begin_post_draft()
+    pub async fn begin_post_draft(&self) -> Draft {
+        self.drafts.begin_post_draft().await
     }
-    pub fn begin_edit_post_draft(&self, id: PostId) -> Draft {
-        self.drafts.begin_edit_post_draft(id)
+    pub async fn begin_edit_post_draft(&self, id: PostId) -> Draft {
+        self.drafts.begin_edit_post_draft(id).await
     }
-    pub fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
-        self.drafts.begin_edit_comment_draft(id)
+    pub async fn begin_edit_comment_draft(&self, id: crate::domain::CommentId) -> Draft {
+        self.drafts.begin_edit_comment_draft(id).await
     }
-    pub fn draft(&self, id: DraftId) -> Option<Draft> {
-        self.drafts.draft(&id)
+    pub async fn draft(&self, id: DraftId) -> Option<Draft> {
+        self.drafts.draft(&id).await
     }
 
-    pub fn update_draft(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
-        self.drafts.update(id, content)
+    pub async fn update_draft(&self, id: &DraftId, content: impl Into<String>) -> Result<()> {
+        self.drafts.update(id, content).await
     }
 
     pub fn switch_context(&mut self, context: ProfileContext) {
@@ -640,6 +650,7 @@ pub struct RenderModel {
     pub compose: String,
     pub search: String,
     pub has_more: bool,
+    pub loading: bool,
     pub status: Status,
     pub downloads: Option<DownloadsRender>,
     /// Open modals, bottom to top; the last is focused.
@@ -665,6 +676,7 @@ impl AppState {
             compose: self.view.compose.clone(),
             search: self.view.search.clone(),
             has_more: self.view.next_page.is_some(),
+            loading: self.view.loading,
             status: self.status.clone(),
             downloads: None,
             modals: self.view.modals.clone(),

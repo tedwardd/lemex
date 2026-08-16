@@ -12,9 +12,9 @@ pub use app::{App, AppAction, AppColors, AppState, ProfileCommand, RenderModel};
 
 pub use api::{
     CommentView, CommunityQuery, CommunityView, FeedListing, FeedQuery, HttpLemmyApi, LemmyApi,
-    LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo,
+    LoginRequest, MutationResult, Page, PostDetail, PostView, SiteInfo, Timeouts,
 };
-pub use config::{AppConfig, CacheConfig, ColorsConfig, MediaConfig};
+pub use config::{AppConfig, CacheConfig, ColorsConfig, HttpConfig, MediaConfig};
 pub use domain::{
     ActiveProfile, CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, DownloadId,
     DownloadRecord, DownloadStatus, EditCommentRequest, EditPostRequest, MediaRef, Mutation,

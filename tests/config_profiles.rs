@@ -2,13 +2,13 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicBool, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
 use levim::profiles::KeyringCredentialStore;
 use levim::{
-    AppConfig, AppError, ColorsConfig, ProfileId, SecretString, Session, UserId,
+    AppConfig, AppError, ColorsConfig, HttpConfig, ProfileId, SecretString, Session, UserId,
     api::{
         CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
         SiteInfo,
@@ -434,4 +434,71 @@ fn colors_section_parses_round_trips_and_rejects_bad_values() {
             "color {bad:?} must be rejected"
         );
     }
+}
+
+#[test]
+fn http_section_parses_clamps_and_round_trips() {
+    // Absent [http]: the 5/10/15 second defaults apply.
+    let source = "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert_eq!(config.http, HttpConfig::default());
+    assert_eq!(config.http.connect_timeout, Duration::from_secs(5));
+    assert_eq!(config.http.request_timeout, Duration::from_secs(10));
+    assert_eq!(config.http.total_timeout, Duration::from_secs(15));
+
+    // Explicit values parse and survive a save/load round trip (equality now
+    // includes AppConfig.http).
+    let custom = "[http]\nconnect_timeout_secs = 3\nrequest_timeout_secs = 8\ntotal_timeout_secs = 20\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(custom).unwrap();
+    assert_eq!(config.http.connect_timeout, Duration::from_secs(3));
+    assert_eq!(config.http.request_timeout, Duration::from_secs(8));
+    assert_eq!(config.http.total_timeout, Duration::from_secs(20));
+    let encoded = config.to_toml().unwrap();
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap(), config);
+
+    // Inverted orderings clamp into the invariant
+    // connect <= request <= total; a value can only shrink.
+    let inverted = "[http]\nconnect_timeout_secs = 99\nrequest_timeout_secs = 5\ntotal_timeout_secs = 15\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(inverted).unwrap();
+    assert_eq!(config.http.connect_timeout, Duration::from_secs(5));
+    assert_eq!(config.http.request_timeout, Duration::from_secs(5));
+    assert_eq!(config.http.total_timeout, Duration::from_secs(15));
+
+    // A request deadline above the total clamps down to the total.
+    let inverted_total = "[http]\nconnect_timeout_secs = 5\nrequest_timeout_secs = 99\ntotal_timeout_secs = 5\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(inverted_total).unwrap();
+    assert_eq!(config.http.connect_timeout, Duration::from_secs(5));
+    assert_eq!(config.http.request_timeout, Duration::from_secs(5));
+    assert_eq!(config.http.total_timeout, Duration::from_secs(5));
+}
+
+#[test]
+fn http_zero_timeout_is_rejected() {
+    // A zero deadline would make every request fail instantly; reject it
+    // loudly instead of tolerating it.
+    for key in [
+        "connect_timeout_secs",
+        "request_timeout_secs",
+        "total_timeout_secs",
+    ] {
+        let source = format!(
+            "[http]\n{key} = 0\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n"
+        );
+        assert!(
+            matches!(
+                AppConfig::from_toml(&source),
+                Err(AppError::Configuration(_))
+            ),
+            "[http] {key} = 0 must be rejected"
+        );
+    }
+    // Unknown keys are rejected (the raw layer is strict about unknown fields).
+    let unknown = "[http]\nconnect_timeout_secs = 5\nconnect_timeout = 3\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    assert!(
+        matches!(
+            AppConfig::from_toml(unknown),
+            Err(AppError::Configuration(_))
+        ),
+        "an unknown [http] key must be rejected"
+    );
 }

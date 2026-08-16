@@ -1,3 +1,4 @@
+pub mod ops;
 mod store;
 
 use serde::{Deserialize, Serialize};
@@ -6,6 +7,7 @@ use serde_json::Value;
 use crate::ProfileId;
 use crate::Result;
 
+pub use ops::{load_drafts, read_feed, save_draft, write_feed};
 pub use store::{MemoryCache, MemoryDraftStore, SqliteCacheStore};
 
 /// Stable key for a feed within one profile's cache namespace.

@@ -13,7 +13,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::Duration,
 };
@@ -40,8 +40,8 @@ use crate::{
     profiles::{CredentialStore, ProfileStore, default_store},
 };
 pub use actions::{
-    ApiResult, AppAction, DownloadsAction, ProfileCommand, ProfileDraft, RequestIdentity,
-    RequestToken,
+    ApiResult, AppAction, DownloadsAction, PageDirection, ProfileCommand, ProfileDraft,
+    RequestIdentity, RequestToken,
 };
 pub use repository::{CachedRead, Repository};
 pub use state::{
@@ -113,20 +113,19 @@ async fn run_terminal_async(
                 height: initial_height,
             })
             .await?;
-        // Run the configured startup action (for example `feed`) before the
-        // first draw, so the launch view is the one the user asked for.
-        if !startup.is_empty() {
-            let action = AppAction::Input(Command::SubmitLine(startup.to_owned()));
-            app.as_mut()
-                .expect("application is present")
-                .dispatch(action)
-                .await?;
-        }
         let mut model = app.as_ref().expect("application is present").render_model();
         let mut action_task: Option<tokio::task::JoinHandle<(App, Result<()>)>> = None;
         let mut queued_actions = VecDeque::new();
         let mut redraw = true;
         let mut quit = false;
+        // Run the configured startup action (for example `feed`) through the
+        // normal queue instead of awaiting it: the first frame draws
+        // immediately (with the pending/loading state) and the feed lands
+        // asynchronously, so a slow instance never shows a blank terminal
+        // for the whole load.
+        if !startup.is_empty() {
+            queued_actions.push_back(AppAction::Input(Command::SubmitLine(startup.to_owned())));
+        }
 
         while !quit {
             if redraw {
@@ -253,6 +252,13 @@ pub struct App {
     profile_store: ProfileStore,
     requests: HashMap<RequestIdentity, RequestToken>,
     next_generation: u64,
+    /// Completed detached reads awaiting application on the next Tick.
+    /// Spawned read tasks push here; the Tick arm drains into
+    /// `apply_api_result` (generation-guarded).
+    completed: Arc<Mutex<VecDeque<ApiResult>>>,
+    /// Handles of detached reads in flight, keyed by identity so
+    /// supersession and Esc-cancel can abort them.
+    in_flight: HashMap<RequestIdentity, tokio::task::JoinHandle<()>>,
     downloads: DownloadManager,
     /// Download ids created to serve external media handlers; their files
     /// live in the temp directory and are removed when the client exits.
@@ -327,6 +333,8 @@ impl App {
             profile_store,
             requests: HashMap::new(),
             next_generation: 0,
+            completed: Arc::new(Mutex::new(VecDeque::new())),
+            in_flight: HashMap::new(),
             downloads: DownloadManager::new(downloads_directory),
             scratch_downloads: HashSet::new(),
             media_policy,
@@ -363,9 +371,11 @@ impl App {
         }
     }
 
-    /// Quit the client: remove scratch media files, shut down the download
-    /// manager, and set the quit flag. Every quit path funnels through here.
+    /// Quit the client: abort in-flight reads, remove scratch media files,
+    /// shut down the download manager, and set the quit flag. Every quit
+    /// path funnels through here.
     fn quit(&mut self) {
+        self.cancel_in_flight();
         self.remove_scratch_files();
         self.downloads.shutdown();
         self.quit = true;
@@ -389,6 +399,11 @@ impl App {
     }
 
     pub fn begin_request(&mut self, identity: RequestIdentity) -> RequestToken {
+        // A newer request for the same identity supersedes the in-flight
+        // one: abort its task so its result cannot land late.
+        if let Some(handle) = self.in_flight.remove(&identity) {
+            handle.abort();
+        }
         self.next_generation = self.next_generation.wrapping_add(1);
         let token = RequestToken {
             generation: self.next_generation,
@@ -412,6 +427,60 @@ impl App {
                 records: self.downloads.history().filtered(&panel.query),
             });
         model
+    }
+
+    /// Abort every detached read in flight and invalidate every request
+    /// token, so no straggler result can land afterwards (aborted tasks
+    /// never push; late mailbox items fail the token guard).
+    fn cancel_in_flight(&mut self) {
+        for (_, handle) in self.in_flight.drain() {
+            handle.abort();
+        }
+        self.requests.clear();
+    }
+
+    /// Spawn a detached read whose `ApiResult` is applied on the next Tick.
+    /// `begin_request` must already have registered the token; the task
+    /// owns only clones and never touches `App` itself.
+    fn detach<F>(&mut self, identity: RequestIdentity, future: F)
+    where
+        F: std::future::Future<Output = ApiResult> + Send + 'static,
+    {
+        let completed = self.completed.clone();
+        let handle = tokio::spawn(async move {
+            let result = future.await;
+            if let Ok(mut queue) = completed.lock() {
+                queue.push_back(result);
+            }
+        });
+        self.in_flight.insert(identity, handle);
+    }
+
+    /// Apply every completed detached read, retiring its in-flight handle.
+    fn poll_completed(&mut self) {
+        let drained = {
+            let mut queue = self.completed.lock().expect("completed mailbox poisoned");
+            queue.drain(..).collect::<Vec<_>>()
+        };
+        for result in drained {
+            self.in_flight.remove(&result.identity());
+            self.apply_api_result(result);
+        }
+    }
+
+    /// Whether any detached read is still in flight or awaiting
+    /// application. Tests use this to drain the pipeline deterministically;
+    /// the event loop itself is driven by the Tick action. Production code
+    /// does not call it.
+    pub fn has_pending_work(&self) -> bool {
+        !self.in_flight.is_empty()
+            || !self
+                .completed
+                .lock()
+                .expect("completed mailbox poisoned")
+                .is_empty()
+            || self.state.status.pending
+            || self.state.view.loading
     }
     pub fn is_quit(&self) -> bool {
         self.quit
@@ -490,7 +559,8 @@ impl App {
             }
             AppAction::Downloads(action) => self.downloads_action(action).await,
             AppAction::Tick => {
-                self.poll_feed_refresh();
+                self.poll_feed_refresh().await;
+                self.poll_completed();
                 self.poll_downloads();
                 Ok(())
             }
@@ -815,7 +885,7 @@ impl App {
     }
 
     async fn create_profile(&mut self, draft: ProfileDraft) -> Result<()> {
-        self.requests.clear();
+        self.cancel_in_flight();
         let profile = Profile {
             id: draft.id,
             instance_url: draft.instance_url,
@@ -838,7 +908,9 @@ impl App {
                 .iter()
                 .any(|existing| existing.id == profile.id);
         if replacing {
-            self.repository.invalidate_profile_context(&profile.id);
+            self.repository
+                .invalidate_profile_context(&profile.id)
+                .await;
             if let Err(error) = self
                 .repository
                 .credentials
@@ -933,16 +1005,36 @@ impl App {
             return Ok(());
         };
         let context = self.state.active.clone();
+        let profile = context.profile.id.clone();
         let query = crate::api::CommunityQuery {
             listing: modal.listing,
             limit: Some(crate::api::CommunityQuery::DEFAULT_LIMIT),
         };
         let request = self.begin_request(RequestIdentity::Communities);
-        let result = self.repository.api.communities(&context, query).await;
-        self.apply_api_result(ApiResult::Communities {
-            profile: context.profile.id,
-            request,
-            result,
+        if let Some(read) = self.repository.cached_communities(&context, &query).await? {
+            self.apply_api_result(ApiResult::Communities {
+                profile: profile.clone(),
+                request: request.clone(),
+                result: Ok(read.value),
+                stale: read.stale,
+            });
+        } else {
+            self.state.view.loading = true;
+        }
+        let repository = self.repository.clone();
+        self.detach(RequestIdentity::Communities, async move {
+            let result = repository.api.communities(&context, query.clone()).await;
+            if let Ok(page) = &result {
+                let _ = repository
+                    .record_fresh_communities(&context, &query, page)
+                    .await;
+            }
+            ApiResult::Communities {
+                profile,
+                request,
+                result,
+                stale: false,
+            }
         });
         Ok(())
     }
@@ -983,13 +1075,32 @@ impl App {
     /// Re-fetch the comments of the focused thread modal.
     async fn refresh_thread_comments(&mut self, id: crate::PostId) -> Result<()> {
         let context = self.state.active.clone();
+        let profile = context.profile.id.clone();
         let request = self.begin_request(RequestIdentity::Comments(id));
-        let result = self.repository.comments(&context, id).await;
-        self.apply_api_result(ApiResult::Comments {
-            profile: context.profile.id,
-            request,
-            post: id,
-            result,
+        if let Some(read) = self.repository.cached_comments(&context, id).await? {
+            self.apply_api_result(ApiResult::Comments {
+                profile: profile.clone(),
+                request: request.clone(),
+                post: id,
+                result: Ok(read.value),
+                stale: read.stale,
+            });
+        }
+        let repository = self.repository.clone();
+        self.detach(RequestIdentity::Comments(id), async move {
+            let result = repository.api.comments(&context, id).await;
+            if let Ok(comments) = &result {
+                let _ = repository
+                    .record_fresh_comments(&context, id, comments)
+                    .await;
+            }
+            ApiResult::Comments {
+                profile,
+                request,
+                post: id,
+                result,
+                stale: false,
+            }
         });
         Ok(())
     }
@@ -1003,7 +1114,7 @@ impl App {
         }
     }
 
-    /// Pop the focused modal. Closing a thread also drops its in-flight
+    /// Pop the focused modal. Closing a thread also aborts its in-flight
     /// post/comment requests, so a stale result can never land in a later
     /// thread for the same post.
     fn close_top_modal(&mut self) -> Option<Modal> {
@@ -1019,6 +1130,19 @@ impl App {
                     RequestIdentity::Post(id) | RequestIdentity::Comments(id) if *id == post
                 )
             });
+            for identity in [RequestIdentity::Post(post), RequestIdentity::Comments(post)] {
+                if let Some(handle) = self.in_flight.remove(&identity) {
+                    handle.abort();
+                }
+            }
+        }
+        // Closing the community picker retires its in-flight load too.
+        if matches!(popped, Some(Modal::Communities(_))) {
+            if let Some(handle) = self.in_flight.remove(&RequestIdentity::Communities) {
+                handle.abort();
+            }
+            self.requests
+                .retain(|identity, _| *identity != RequestIdentity::Communities);
         }
         popped
     }
@@ -1054,7 +1178,7 @@ impl App {
     }
 
     async fn perform_login(&mut self, request: LoginRequest) -> Result<()> {
-        self.requests.clear();
+        self.cancel_in_flight();
         // The password arrived through the on-screen compose buffer; it must
         // not persist on screen or in state after the attempt, whether the
         // login succeeds or fails.
@@ -1089,7 +1213,7 @@ impl App {
     }
 
     async fn logout(&mut self) -> Result<()> {
-        self.requests.clear();
+        self.cancel_in_flight();
         let id = self.state.active.profile.id.clone();
         if let Err(error) = crate::profiles::logout(
             &self.profile_store,
@@ -1100,7 +1224,7 @@ impl App {
         {
             self.state.status.failure(error.to_string());
         } else {
-            self.repository.invalidate_profile_context(&id);
+            self.repository.invalidate_profile_context(&id).await;
             let mut context = self.state.active.clone();
             context.session = None;
             self.state.switch_context(context);
@@ -1129,7 +1253,7 @@ impl App {
                 .failure(format!("profile {id} is not configured"));
             return Ok(());
         }
-        self.repository.invalidate_profile_context(&id);
+        self.repository.invalidate_profile_context(&id).await;
         if let Err(error) = self.repository.credentials.delete_session(&id).await {
             self.state.status.failure(error.to_string());
             return Ok(());
@@ -1144,7 +1268,7 @@ impl App {
     }
 
     async fn switch_profile(&mut self, id: ProfileId) -> Result<()> {
-        self.requests.clear();
+        self.cancel_in_flight();
         // A profile-store read failure must never terminate the TUI: surface
         // it in the status line and stay in the current profile.
         let profiles = match self.profile_store.load() {
@@ -1170,12 +1294,14 @@ impl App {
                 return Ok(());
             }
         };
-        self.requests.clear();
+        self.cancel_in_flight();
         self.state
             .switch_context(ProfileContext { profile, session });
+        let context = self.state.active.clone();
         if let Ok(Some(read)) = self
             .repository
-            .cached_feed(&self.state.active, &FeedQuery::home())
+            .cached_feed(&context, &FeedQuery::home())
+            .await
         {
             self.state.view.posts = read.value.items;
             self.state.view.stale = read.stale;
@@ -1197,6 +1323,23 @@ impl App {
         self.state.view.feed_query.limit = Some(self.feed_limit());
         let query = self.state.view.feed_query.clone();
         let request = self.begin_request(RequestIdentity::Feed);
+        // A true miss has nothing to paint: spawn the fetch detached and
+        // show the loading state; the fresh page lands through
+        // `poll_feed_refresh` once the background refresh completes.
+        // (The cache-hit path returns instantly with the stale page and
+        // spawns its own background refresh, as before.)
+        if self
+            .repository
+            .cached_feed(&context, &query)
+            .await?
+            .is_none()
+        {
+            self.state.view.loading = true;
+            self.repository
+                .spawn_feed_miss(&context, query, request.generation)
+                .await?;
+            return Ok(());
+        }
         match self
             .repository
             .feed_with_generation(&context, query, request.generation)
@@ -1753,6 +1896,9 @@ impl App {
             self.state.status.success("no more posts to load");
             return Ok(());
         };
+        let context = self.state.active.clone();
+        let profile = context.profile.id.clone();
+        let previous = self.state.view.feed_query.page.clone();
         self.state
             .view
             .page_history
@@ -1760,19 +1906,40 @@ impl App {
         let mut query = self.state.view.feed_query.clone();
         query.page = Some(cursor.clone());
         query.limit = Some(self.feed_limit());
-        let result = self.repository.api.feed(&self.state.active, query).await;
-        match result {
-            Ok(page) => {
-                self.state.view.feed_query.page = Some(cursor);
-                self.apply_page(page);
-                self.state.status.success("next page loaded");
-            }
-            Err(error) => {
-                // The failed flip never happened; keep history intact.
-                self.state.view.page_history.pop();
-                self.state.status.failure(error.to_string());
-            }
+        let request = self.begin_request(RequestIdentity::Feed);
+        // A cached page paints instantly (with its staleness); the detached
+        // fetch below then refreshes it and lands the fresh page.
+        if let Some(read) = self.repository.cached_feed(&context, &query).await? {
+            self.apply_api_result(ApiResult::FeedPage {
+                profile: profile.clone(),
+                request: request.clone(),
+                result: Ok(read.value),
+                stale: read.stale,
+                cursor: Some(cursor.clone()),
+                previous: previous.clone(),
+                direction: PageDirection::Next,
+            });
+        } else {
+            self.state.view.loading = true;
         }
+        let repository = self.repository.clone();
+        self.detach(RequestIdentity::Feed, async move {
+            let result = repository.api.feed(&context, query.clone()).await;
+            if let Ok(page) = &result {
+                let _ = repository
+                    .record_fresh_feed_page(&context, query.clone(), page)
+                    .await;
+            }
+            ApiResult::FeedPage {
+                profile,
+                request,
+                result,
+                stale: false,
+                cursor: Some(cursor),
+                previous,
+                direction: PageDirection::Next,
+            }
+        });
         Ok(())
     }
 
@@ -1782,21 +1949,43 @@ impl App {
             self.state.status.success("already on the first page");
             return Ok(());
         };
+        let context = self.state.active.clone();
+        let profile = context.profile.id.clone();
         let mut query = self.state.view.feed_query.clone();
         query.page = previous.clone();
         query.limit = Some(self.feed_limit());
-        let result = self.repository.api.feed(&self.state.active, query).await;
-        match result {
-            Ok(page) => {
-                self.state.view.feed_query.page = previous;
-                self.apply_page(page);
-                self.state.status.success("previous page loaded");
-            }
-            Err(error) => {
-                self.state.view.page_history.push(previous);
-                self.state.status.failure(error.to_string());
-            }
+        let request = self.begin_request(RequestIdentity::Feed);
+        if let Some(read) = self.repository.cached_feed(&context, &query).await? {
+            self.apply_api_result(ApiResult::FeedPage {
+                profile: profile.clone(),
+                request: request.clone(),
+                result: Ok(read.value),
+                stale: read.stale,
+                cursor: previous.clone(),
+                previous: previous.clone(),
+                direction: PageDirection::Previous,
+            });
+        } else {
+            self.state.view.loading = true;
         }
+        let repository = self.repository.clone();
+        self.detach(RequestIdentity::Feed, async move {
+            let result = repository.api.feed(&context, query.clone()).await;
+            if let Ok(page) = &result {
+                let _ = repository
+                    .record_fresh_feed_page(&context, query.clone(), page)
+                    .await;
+            }
+            ApiResult::FeedPage {
+                profile,
+                request,
+                result,
+                stale: false,
+                cursor: previous.clone(),
+                previous,
+                direction: PageDirection::Previous,
+            }
+        });
         Ok(())
     }
 
@@ -1831,25 +2020,70 @@ impl App {
         // at any point.
         self.state
             .view
-            .push_modal(Modal::Thread(state::ThreadModal::empty()));
-        let profile = self.state.active.profile.id.clone();
+            .push_modal(Modal::Thread(state::ThreadModal::for_post(id)));
+        let context = self.state.active.clone();
+        let profile = context.profile.id.clone();
+        // The post detail and its thread fetch independently and
+        // concurrently; either may land first into the placeholder thread.
+        // The post arm keeps any comments that already landed.
         let request = self.begin_request(RequestIdentity::Post(id));
-        let result = self.repository.post(&self.state.active, id).await;
-        self.apply_api_result(ApiResult::Post {
-            profile: profile.clone(),
-            request,
-            result,
+        if let Some(read) = self.repository.cached_post(&context, id).await? {
+            self.apply_api_result(ApiResult::Post {
+                profile: profile.clone(),
+                request: request.clone(),
+                result: Ok(read.value),
+                stale: read.stale,
+            });
+        } else {
+            self.state.view.loading = true;
+        }
+        let repository = self.repository.clone();
+        let post_context = context.clone();
+        let post_profile = profile.clone();
+        self.detach(RequestIdentity::Post(id), async move {
+            let result = repository.api.post(&post_context, id).await;
+            if let Ok(detail) = &result {
+                let _ = repository
+                    .record_fresh_post(&post_context, id, detail)
+                    .await;
+            }
+            ApiResult::Post {
+                profile: post_profile,
+                request,
+                result,
+                stale: false,
+            }
         });
         // The thread lives on `comment/list`, not the post detail response;
         // fetch it so the thread modal can render the full thread.
         if self.state.selected_post() == Some(id) {
             let request = self.begin_request(RequestIdentity::Comments(id));
-            let result = self.repository.comments(&self.state.active, id).await;
-            self.apply_api_result(ApiResult::Comments {
-                profile,
-                request,
-                post: id,
-                result,
+            if let Some(read) = self.repository.cached_comments(&context, id).await? {
+                self.apply_api_result(ApiResult::Comments {
+                    profile: profile.clone(),
+                    request: request.clone(),
+                    post: id,
+                    result: Ok(read.value),
+                    stale: read.stale,
+                });
+            } else {
+                self.state.view.loading = true;
+            }
+            let repository = self.repository.clone();
+            self.detach(RequestIdentity::Comments(id), async move {
+                let result = repository.api.comments(&context, id).await;
+                if let Ok(comments) = &result {
+                    let _ = repository
+                        .record_fresh_comments(&context, id, comments)
+                        .await;
+                }
+                ApiResult::Comments {
+                    profile,
+                    request,
+                    post: id,
+                    result,
+                    stale: false,
+                }
             });
         }
         Ok(())
@@ -2409,18 +2643,22 @@ impl App {
             self.state.pending.is_some() || self.state.status.confirmation_pending;
         self.state.pending = None;
         self.state.status.confirmation_pending = false;
+        // Esc during a detached load really cancels it: abort the task and
+        // invalidate its token so a straggler result cannot land.
+        self.cancel_in_flight();
+        self.state.view.loading = false;
         if self.state.status.pending || had_confirmation {
             self.state.status.success("cancelled");
         }
     }
-    fn poll_feed_refresh(&mut self) {
+    async fn poll_feed_refresh(&mut self) {
         let Some(request) = self.requests.get(&RequestIdentity::Feed).cloned() else {
             return;
         };
         let context = self.state.active.clone();
         let query = self.state.view.feed_query.clone();
         if let Ok(Some((generation, result))) =
-            self.repository.take_completed_feed(&context, &query)
+            self.repository.take_completed_feed(&context, &query).await
             && generation == request.generation
         {
             self.apply_api_result(ApiResult::Feed {
@@ -2433,7 +2671,7 @@ impl App {
     }
 
     async fn submit_draft(&mut self, id: crate::cache::DraftId) -> Result<()> {
-        let Some(draft) = self.state.draft(id.clone()) else {
+        let Some(draft) = self.state.draft(id.clone()).await else {
             return Ok(());
         };
         let selected_post = self
@@ -2498,6 +2736,9 @@ impl App {
             ApiResult::Feed {
                 profile, request, ..
             }
+            | ApiResult::FeedPage {
+                profile, request, ..
+            }
             | ApiResult::Post {
                 profile, request, ..
             }
@@ -2517,62 +2758,143 @@ impl App {
             return;
         }
         match result {
-            ApiResult::Feed { result, stale, .. } => match result {
-                Ok(page) => {
-                    let selected_id = self.state.selected_post();
-                    let selected_index = self.state.view.selected.unwrap_or_default();
-                    self.state.view.posts = page.items;
-                    self.state.view.next_page = page.next_page;
-                    self.state.view.selected = selected_id
-                        .and_then(|id| self.state.view.posts.iter().position(|post| post.id == id))
-                        .or_else(|| {
-                            (!self.state.view.posts.is_empty()).then_some(
-                                selected_index.min(self.state.view.posts.len().saturating_sub(1)),
-                            )
-                        });
-                    self.state.view.stale = stale;
-                    self.state.status.stale = stale;
-                    if stale {
-                        self.state.status.message = "stale feed loaded; refreshing".into();
-                        self.state.status.error = None;
-                        self.state.status.retryable = false;
-                        self.state.status.pending = true;
-                    } else {
-                        self.state.status.success("feed loaded");
+            ApiResult::Feed { result, stale, .. } => {
+                self.state.view.loading = false;
+                match result {
+                    Ok(page) => {
+                        let selected_id = self.state.selected_post();
+                        let selected_index = self.state.view.selected.unwrap_or_default();
+                        self.state.view.posts = page.items;
+                        self.state.view.next_page = page.next_page;
+                        self.state.view.selected = selected_id
+                            .and_then(|id| {
+                                self.state.view.posts.iter().position(|post| post.id == id)
+                            })
+                            .or_else(|| {
+                                (!self.state.view.posts.is_empty()).then_some(
+                                    selected_index
+                                        .min(self.state.view.posts.len().saturating_sub(1)),
+                                )
+                            });
+                        self.state.view.stale = stale;
+                        self.state.status.stale = stale;
+                        if stale {
+                            self.state.status.message = "stale feed loaded; refreshing".into();
+                            self.state.status.error = None;
+                            self.state.status.retryable = false;
+                            self.state.status.pending = true;
+                        } else {
+                            self.state.status.success("feed loaded");
+                        }
+                    }
+                    Err(error) => self.state.status.failure(error.to_string()),
+                }
+            }
+            ApiResult::FeedPage {
+                result,
+                stale,
+                cursor,
+                previous,
+                direction,
+                ..
+            } => {
+                self.state.view.loading = false;
+                match result {
+                    Ok(page) => {
+                        // The flip landed: the view's cursor moves to the
+                        // fetched page (for a Next flip it was already set
+                        // at dispatch; for a Previous flip this is the
+                        // older page that was popped off the history).
+                        self.state.view.feed_query.page = cursor;
+                        self.apply_page(page);
+                        self.state.view.stale = stale;
+                        self.state.status.stale = stale;
+                        if stale {
+                            self.state.status.message = "stale feed loaded; refreshing".into();
+                            self.state.status.error = None;
+                            self.state.status.retryable = false;
+                            self.state.status.pending = true;
+                        } else {
+                            let message = match direction {
+                                PageDirection::Next => "next page loaded",
+                                PageDirection::Previous => "previous page loaded",
+                            };
+                            self.state.status.success(message);
+                        }
+                    }
+                    Err(error) => {
+                        // The failed flip never happened: restore the cursor
+                        // and history state from before the flip.
+                        match direction {
+                            PageDirection::Next => {
+                                self.state.view.page_history.pop();
+                                self.state.view.feed_query.page = previous;
+                            }
+                            PageDirection::Previous => {
+                                self.state.view.page_history.push(previous);
+                            }
+                        }
+                        self.state.status.failure(error.to_string());
                     }
                 }
-                Err(error) => self.state.status.failure(error.to_string()),
-            },
+            }
             ApiResult::Post {
-                request, result, ..
-            } => match result {
-                Ok(detail)
-                    if matches!(request.identity, RequestIdentity::Post(id) if id == detail.post.id)
-                        && self.state.selected_post() == Some(detail.post.id) =>
-                {
-                    // The post result fills the thread modal: it replaces the
-                    // placeholder pushed by `open_selected` (or an older
-                    // thread when a new post was opened on top of it).
-                    match self.state.view.top_modal_mut() {
-                        Some(Modal::Thread(thread)) => {
-                            thread.post = detail;
-                            thread.scroll = 0;
+                request,
+                result,
+                stale,
+                ..
+            } => {
+                self.state.view.loading = false;
+                match result {
+                    Ok(detail)
+                        if matches!(request.identity, RequestIdentity::Post(id) if id == detail.post.id)
+                            && self.state.selected_post() == Some(detail.post.id) =>
+                    {
+                        // The post result fills the thread modal: it replaces
+                        // the placeholder pushed by `open_selected` (or an
+                        // older thread when a new post was opened on top of
+                        // it). Comments may have landed first (the two
+                        // fetches are concurrent): keep them instead of
+                        // replacing the thread with the post response's
+                        // usually-empty comment list.
+                        let post_id = detail.post.id;
+                        match self.state.view.top_modal_mut() {
+                            Some(Modal::Thread(thread)) => {
+                                let existing_comments = thread.post.comments.clone();
+                                thread.post = detail;
+                                if !existing_comments.is_empty() {
+                                    thread.post.comments = existing_comments;
+                                }
+                                thread.scroll = 0;
+                            }
+                            _ => {
+                                self.state
+                                    .view
+                                    .push_modal(Modal::Thread(state::ThreadModal::new(detail)));
+                            }
                         }
-                        _ => {
-                            self.state
-                                .view
-                                .push_modal(Modal::Thread(state::ThreadModal::new(detail)));
+                        self.state.mode = Mode::Normal;
+                        self.state.status.stale = stale;
+                        // The post and comments fetches are concurrent. When
+                        // the comments landed first, their "comments loaded"
+                        // message is the thread's completion message; keep it
+                        // instead of letting the (second-arriving) post
+                        // overwrite it. When comments are still in flight,
+                        // report the post load and let comments finish.
+                        let comments_still_in_flight = self
+                            .in_flight
+                            .contains_key(&RequestIdentity::Comments(post_id));
+                        if comments_still_in_flight {
+                            self.state.status.success("post loaded");
                         }
                     }
-                    self.state.mode = Mode::Normal;
-                    self.state.status.success("post loaded");
+                    Ok(_) => {}
+                    Err(error) if matches!(request.identity, RequestIdentity::Post(id) if self.state.selected_post() == Some(id)) => {
+                        self.state.status.failure(error.to_string())
+                    }
+                    Err(_) => {}
                 }
-                Ok(_) => {}
-                Err(error) if matches!(request.identity, RequestIdentity::Post(id) if self.state.selected_post() == Some(id)) => {
-                    self.state.status.failure(error.to_string())
-                }
-                Err(_) => {}
-            },
+            }
             ApiResult::Mutation {
                 request,
                 mutation,
@@ -2671,8 +2993,10 @@ impl App {
                 request,
                 post,
                 result,
+                stale,
                 ..
             } => {
+                self.state.view.loading = false;
                 if request.identity == RequestIdentity::Comments(post)
                     && matches!(
                         self.state.view.top_modal(),
@@ -2684,13 +3008,15 @@ impl App {
                             if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
                                 thread.post.comments = comments;
                             }
+                            self.state.status.stale = stale;
                             self.state.status.success("comments loaded");
                         }
                         Err(error) => self.state.status.failure(error.to_string()),
                     }
                 }
             }
-            ApiResult::Communities { result, .. } => {
+            ApiResult::Communities { result, stale, .. } => {
+                self.state.view.loading = false;
                 if !matches!(self.state.view.top_modal(), Some(Modal::Communities(_))) {
                     // The picker was closed while the fetch was in flight;
                     // keep the status clean.
@@ -2710,6 +3036,7 @@ impl App {
                         modal.communities = page.items;
                         modal.selected = (!modal.communities.is_empty()).then_some(0);
                         let (count, listing) = (modal.communities.len(), modal.listing);
+                        self.state.status.stale = stale;
                         self.state.status.success(format!(
                             "{} communities ({count})",
                             Self::listing_label(listing)

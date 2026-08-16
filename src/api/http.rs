@@ -25,6 +25,34 @@ const MAX_ARRAY_ITEMS: usize = 1024;
 /// Cap on server-derived text embedded in user-visible error messages.
 const MAX_ERROR_DETAIL_CHARS: usize = 200;
 
+/// Timeout budget for the API client, split into three levels so a dead
+/// instance (blackholed connect) fails in seconds per attempt instead of
+/// burning the whole request deadline, a slow-but-alive server still gets
+/// its full per-attempt budget, and retries can never multiply the worst
+/// case beyond `total`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Timeouts {
+    /// TCP/TLS connect deadline per attempt; bounds blackholed instances.
+    /// Does not bound DNS (the request deadline covers a stalled lookup).
+    pub connect: Duration,
+    /// Per-attempt deadline covering connect, response, and body.
+    pub request: Duration,
+    /// Whole-read deadline including retries. NOT applied to mutations:
+    /// they are a single attempt already bounded by `request`, and
+    /// cancelling one mid-flight would leave an uncertain outcome.
+    pub total: Duration,
+}
+
+impl Default for Timeouts {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(5),
+            request: Duration::from_secs(10),
+            total: Duration::from_secs(15),
+        }
+    }
+}
+
 /// Redirect policy for the authenticated API client. Credentials ride in the
 /// `Authorization` header and the JSON body, so a redirect off the configured
 /// origin must never be followed (reqwest would replay a 307/308 body to the
@@ -56,21 +84,22 @@ fn api_redirect_policy() -> reqwest::redirect::Policy {
 #[derive(Clone)]
 pub struct HttpLemmyApi {
     client: Client,
-    timeout: Duration,
+    timeouts: Timeouts,
     base_url: Option<Url>,
     fixture_server: Option<Arc<dyn Send + Sync>>,
 }
 
 impl HttpLemmyApi {
     pub fn new() -> Result<Self> {
-        Self::with_timeout(Duration::from_secs(10))
+        Self::with_timeouts(Timeouts::default())
     }
 
-    pub fn with_timeout(timeout: Duration) -> Result<Self> {
+    pub fn with_timeouts(timeouts: Timeouts) -> Result<Self> {
         let client = Client::builder()
             .use_rustls_tls()
             .redirect(api_redirect_policy())
-            .timeout(timeout)
+            .connect_timeout(timeouts.connect)
+            .timeout(timeouts.request)
             // reqwest sends no User-Agent with these features, and at least
             // one public Lemmy edge resets connections that carry none.
             // Identify the client explicitly instead of relying on the
@@ -80,10 +109,40 @@ impl HttpLemmyApi {
             .map_err(|error| AppError::Network(format!("could not build HTTP client: {error}")))?;
         Ok(Self {
             client,
-            timeout,
+            timeouts,
             base_url: None,
             fixture_server: None,
         })
+    }
+
+    /// Fixture-compatible constructor: a single duration maps to a budget
+    /// whose connect deadline never exceeds 5 s (fixtures are local, so the
+    /// connect bound is irrelevant) and whose request and total deadlines
+    /// both equal `timeout`, keeping the existing fixture timing tests
+    /// unchanged (reads bounded by the single knob, mutations single-attempt).
+    pub fn with_timeout(timeout: Duration) -> Result<Self> {
+        Self::with_timeouts(Timeouts {
+            connect: timeout.min(Duration::from_secs(5)),
+            request: timeout,
+            total: timeout,
+        })
+    }
+
+    /// Rebuild this client with a new timeout budget, preserving the base
+    /// URL and fixture server wiring. Exists so tests can exercise tight
+    /// budgets against fixture servers created with the standard fixture
+    /// timeouts.
+    pub fn with_timeout_budget(mut self, timeouts: Timeouts) -> Result<Self> {
+        let base_url = self.base_url.take();
+        let fixture_server = self.fixture_server.take();
+        let mut rebuilt = Self::with_timeouts(timeouts)?;
+        if let Some(base_url) = base_url {
+            rebuilt = rebuilt.with_base_url(base_url);
+        }
+        if let Some(server) = fixture_server {
+            rebuilt = rebuilt.with_fixture_server(server);
+        }
+        Ok(rebuilt)
     }
 
     pub(crate) fn with_fixture_server(mut self, server: Arc<dyn Send + Sync>) -> Self {
@@ -138,42 +197,62 @@ impl HttpLemmyApi {
         operation: &str,
         retry_read: bool,
     ) -> Result<Value> {
-        for attempt in 0..MAX_READ_ATTEMPTS {
-            let request = request.try_clone().ok_or_else(|| {
-                AppError::Network(format!("{operation}: request could not be cloned"))
-            })?;
-            match request.send().await {
-                Ok(response) => {
-                    if retry_read
-                        && is_transient(response.status())
-                        && attempt + 1 < MAX_READ_ATTEMPTS
-                    {
-                        // Drop the response without buffering it: reading the
-                        // body here would let a hostile server send an
-                        // unbounded stream on every transient status.
-                        drop(response);
-                        tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1))).await;
-                        continue;
+        // The whole read — every attempt, the backoff sleeps, and the final
+        // response/body parse — runs under the total deadline when retries
+        // are allowed, so retries can never multiply the worst case beyond
+        // `total` (mutations are a single attempt already bounded by
+        // `request`, so they skip the wrapper: an "outcome uncertain" error
+        // is more honest than cancelling mid-flight).
+        let attempts = async {
+            for attempt in 0..MAX_READ_ATTEMPTS {
+                let request = request.try_clone().ok_or_else(|| {
+                    AppError::Network(format!("{operation}: request could not be cloned"))
+                })?;
+                match request.send().await {
+                    Ok(response) => {
+                        if retry_read
+                            && is_transient(response.status())
+                            && attempt + 1 < MAX_READ_ATTEMPTS
+                        {
+                            // Drop the response without buffering it: reading
+                            // the body here would let a hostile server send
+                            // an unbounded stream on every transient status.
+                            drop(response);
+                            tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1)))
+                                .await;
+                            continue;
+                        }
+                        return parse_response(response, operation, !retry_read).await;
                     }
-                    return parse_response(response, operation, !retry_read).await;
-                }
-                Err(error) => {
-                    if retry_read && error.is_timeout() && attempt + 1 < MAX_READ_ATTEMPTS {
-                        tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1))).await;
-                        continue;
+                    Err(error) => {
+                        if retry_read && error.is_timeout() && attempt + 1 < MAX_READ_ATTEMPTS {
+                            tokio::time::sleep(Duration::from_millis(20 * (attempt as u64 + 1)))
+                                .await;
+                            continue;
+                        }
+                        let detail = error.to_string();
+                        return Err(if retry_read {
+                            AppError::Network(format!("{operation}: {detail}"))
+                        } else {
+                            AppError::Network(format!("{operation} outcome uncertain: {detail}"))
+                        });
                     }
-                    let detail = error.to_string();
-                    return Err(if retry_read {
-                        AppError::Network(format!("{operation}: {detail}"))
-                    } else {
-                        AppError::Network(format!("{operation} outcome uncertain: {detail}"))
-                    });
                 }
             }
+            Err(AppError::Network(format!(
+                "{operation}: request attempts exhausted"
+            )))
+        };
+        if retry_read {
+            match tokio::time::timeout(self.timeouts.total, attempts).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(AppError::Network(format!(
+                    "{operation}: request budget exhausted"
+                ))),
+            }
+        } else {
+            attempts.await
         }
-        Err(AppError::Network(format!(
-            "{operation}: request attempts exhausted"
-        )))
     }
 
     async fn mutation_request(
@@ -185,7 +264,7 @@ impl HttpLemmyApi {
     }
 
     pub fn request_timeout(&self) -> Duration {
-        self.timeout
+        self.timeouts.request
     }
 }
 
