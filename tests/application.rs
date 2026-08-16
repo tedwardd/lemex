@@ -758,6 +758,7 @@ async fn stale_comments_for_old_post_do_not_overwrite_active_thread() {
         creator_name: "alice".into(),
         creator_id: levim::UserId(1),
         score: 0,
+        path: None,
     };
     app.dispatch(AppAction::ApiResult(Box::new(ApiResult::Comments {
         profile: ProfileId::from("fixture"),
@@ -854,6 +855,7 @@ async fn back_invalidates_inflight_comments_result() {
         creator_name: "alice".into(),
         creator_id: levim::UserId(1),
         score: 0,
+        path: None,
     };
     app.dispatch(AppAction::ApiResult(Box::new(ApiResult::Comments {
         profile: ProfileId::from("fixture"),
@@ -1232,6 +1234,7 @@ impl LemmyApi for ThreadApi {
             creator_name: "alice".into(),
             creator_id: levim::UserId(2),
             score: 3,
+            path: None,
         }])
     }
     async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {
@@ -3651,6 +3654,7 @@ impl LemmyApi for TwoGateThreadApi {
             creator_name: "alice".into(),
             creator_id: levim::UserId(1),
             score: 0,
+            path: None,
         }])
     }
     async fn login(&self, _: levim::api::LoginRequest) -> Result<levim::Session> {

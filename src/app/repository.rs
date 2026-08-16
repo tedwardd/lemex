@@ -934,6 +934,7 @@ fn comment_from_value(value: &Value) -> Result<CommentView> {
             .get("score")
             .and_then(Value::as_i64)
             .unwrap_or_default(),
+        path: None,
     })
 }
 
@@ -1091,6 +1092,7 @@ mod tests {
                 creator_id: crate::UserId(3),
                 creator_name: "alice".into(),
                 score: 1,
+                path: None,
             }],
         };
         let mut value = post_detail_to_value(&detail);

@@ -1099,6 +1099,7 @@ mod tests {
                         creator_id: crate::UserId(2),
                         creator_name: "alice".into(),
                         score: 3,
+                        path: None,
                     },
                     crate::api::CommentView {
                         id: crate::CommentId(11),
@@ -1107,6 +1108,7 @@ mod tests {
                         creator_id: crate::UserId(2),
                         creator_name: "bob".into(),
                         score: -1,
+                        path: None,
                     },
                 ],
             })));
@@ -1142,6 +1144,7 @@ mod tests {
                 creator_id: crate::UserId(2),
                 creator_name: "alice".into(),
                 score: index,
+                path: None,
             })
             .collect();
         let mut thread = ThreadModal::new(crate::api::PostDetail {

@@ -128,6 +128,11 @@ pub struct CommentView {
     pub creator_id: crate::domain::UserId,
     /// Display name of the comment author, for thread rendering.
     pub creator_name: String,
+    /// The comment's tree position, as returned by the server (ltree
+    /// string like "0.12.34.56", always ending with the comment's own id).
+    /// `None` when the server omitted it; such comments render as
+    /// top-level.
+    pub path: Option<String>,
     pub score: i64,
 }
 

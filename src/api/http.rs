@@ -460,6 +460,7 @@ fn normalize_comment(value: &Value, post_id: PostId) -> CommentView {
             comment,
             "score",
         ),
+        path: string(comment, "path"),
     }
 }
 
