@@ -1,6 +1,6 @@
-# Catppuccin Mocha for levim
+# Catppuccin Mocha for lemex
 #
-# Copy the [colors] block into ~/.config/levim/config.toml (merge with your
+# Copy the [colors] block into ~/.config/lemex/config.toml (merge with your
 # existing section). The values match the Catppuccin Mocha palette with a
 # blue accent, the setup used by the omarchy desktop theme — the same blue
 # as the Hyprland active border.

@@ -19,7 +19,7 @@ use std::{
     time::Duration,
 };
 
-use levim::{
+use lemex::{
     api::fixtures::{
         anonymous_context, authenticated_context, fixture_api_requiring_auth,
         fixture_api_with_body, fixture_api_with_pages, fixture_api_with_status,
@@ -60,35 +60,35 @@ const MUTATION_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Voted post",
 fn feed_fixture_body() -> String {
     std::fs::read_to_string(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/fixtures/levim/feed.json"
+        "/fixtures/lemex/feed.json"
     ))
     .expect("feed fixture exists")
 }
 
-/// Launch path: `levim --help` reports commands and exits 0 without touching
+/// Launch path: `lemex --help` reports commands and exits 0 without touching
 /// the TUI (no config, no runtime, no alternate screen).
 #[test]
 fn help_flag_reports_commands_and_exits_without_entering_tui() {
-    let binary = env!("CARGO_BIN_EXE_levim");
+    let binary = env!("CARGO_BIN_EXE_lemex");
     for flag in ["--help", "-h"] {
         let output = ProcessCommand::new(binary)
             .arg(flag)
             .output()
-            .expect("run levim --help");
+            .expect("run lemex --help");
         assert!(
             output.status.success(),
-            "`levim {flag}` must exit successfully, got {:?}",
+            "`lemex {flag}` must exit successfully, got {:?}",
             output.status
         );
         let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("Usage"), "`levim {flag}` must print usage");
+        assert!(stdout.contains("Usage"), "`lemex {flag}` must print usage");
         assert!(
             stdout.contains(":help"),
-            "`levim {flag}` must report commands"
+            "`lemex {flag}` must report commands"
         );
         assert!(
             stdout.contains(":profile"),
-            "`levim {flag}` must report profile commands"
+            "`lemex {flag}` must report profile commands"
         );
     }
 }
@@ -99,11 +99,11 @@ fn help_flag_reports_commands_and_exits_without_entering_tui() {
 #[cfg(target_os = "linux")]
 #[test]
 fn binary_launches_tui_and_quits_cleanly_restoring_terminal() {
-    let binary = env!("CARGO_BIN_EXE_levim");
+    let binary = env!("CARGO_BIN_EXE_lemex");
     let scratch = ScratchDir::new("tui");
     let config_home = scratch.path.join("config");
     let cache_home = scratch.path.join("cache");
-    let config_dir = config_home.join("levim");
+    let config_dir = config_home.join("lemex");
     std::fs::create_dir_all(&config_dir).expect("create config directory");
     std::fs::write(
         config_dir.join("config.toml"),
@@ -181,7 +181,7 @@ fn feed_loads_through_fixture_and_vim_keys_navigate() {
     assert_eq!(app.app.state.selected_index(), 1);
 
     // The engine returns to normal mode after commands.
-    assert_eq!(engine.mode(), levim::input::Mode::Normal);
+    assert_eq!(engine.mode(), lemex::input::Mode::Normal);
 }
 
 /// Pagination: the first page carries an opaque `next_page` cursor, `n`
@@ -270,7 +270,7 @@ fn opening_post_shows_thread_and_back_preserves_feed_position() {
 
     app.dispatch(AppAction::OpenSelected)
         .expect("open selected post");
-    let levim::app::Modal::Thread(thread) =
+    let lemex::app::Modal::Thread(thread) =
         app.app.state.view.top_modal().expect("thread modal opens")
     else {
         panic!("opening a post must push a thread modal");
@@ -320,7 +320,7 @@ fn nested_thread_arrives_and_collapses_with_z() {
 
     app.dispatch(AppAction::OpenSelected)
         .expect("open selected post");
-    let levim::app::Modal::Thread(thread) =
+    let lemex::app::Modal::Thread(thread) =
         app.app.state.view.top_modal().expect("thread modal opens")
     else {
         panic!("opening a post must push a thread modal");
@@ -336,22 +336,22 @@ fn nested_thread_arrives_and_collapses_with_z() {
         .expect("focus the top comment");
     app.dispatch(AppAction::Input(Command::ToggleCommentThread))
         .expect("toggle the focused thread");
-    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+    let lemex::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
         panic!("thread modal still open");
     };
     assert!(
-        thread.collapsed.contains(&levim::CommentId(1)),
+        thread.collapsed.contains(&lemex::CommentId(1)),
         "z collapses the focused comment's thread"
     );
     assert_eq!(
         thread.selected,
-        Some(levim::CommentId(1)),
+        Some(lemex::CommentId(1)),
         "the cursor stays on the collapsed root"
     );
 
     app.dispatch(AppAction::Input(Command::ToggleCommentThread))
         .expect("expand again");
-    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+    let lemex::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
         panic!("thread modal still open");
     };
     assert!(thread.collapsed.is_empty(), "z expands the thread again");
@@ -729,7 +729,7 @@ fn media_handlers_receive_a_local_file() {
     let port = spawn_http_server(b"fixture media bytes".to_vec(), "image/png");
     let media_url = Url::parse(&format!("http://127.0.0.1:{port}/pic.png")).unwrap();
     let destination =
-        std::env::temp_dir().join(format!("levim-handler-copy-{}.png", std::process::id()));
+        std::env::temp_dir().join(format!("lemex-handler-copy-{}.png", std::process::id()));
     let _ = std::fs::remove_file(&destination);
     let media = MediaConfig {
         handlers: HashMap::from([(
@@ -844,23 +844,23 @@ fn reopening_the_same_media_reuses_the_cached_file() {
 }
 
 /// `--clean-temp` sweeps the client's temp media subtree, resolving $TMPDIR
-/// per POSIX: a leftover file under $TMPDIR/levim-client is removed by the
+/// per POSIX: a leftover file under $TMPDIR/lemex-client is removed by the
 /// one-shot flag, which exits without entering the TUI.
 #[test]
 fn clean_temp_flag_removes_the_scratch_subtree_under_tmpdir() {
-    let binary = env!("CARGO_BIN_EXE_levim");
-    let tmp = std::env::temp_dir().join(format!("levim-tmpdir-test-{}", std::process::id()));
-    let scratch = tmp.join("levim-client");
+    let binary = env!("CARGO_BIN_EXE_lemex");
+    let tmp = std::env::temp_dir().join(format!("lemex-tmpdir-test-{}", std::process::id()));
+    let scratch = tmp.join("lemex-client");
     std::fs::create_dir_all(&scratch).unwrap();
     std::fs::write(scratch.join("leftover.bin"), b"stale").unwrap();
     let output = ProcessCommand::new(binary)
         .env("TMPDIR", &tmp)
         .arg("--clean-temp")
         .output()
-        .expect("run levim --clean-temp");
+        .expect("run lemex --clean-temp");
     assert!(
         output.status.success(),
-        "`levim --clean-temp` must exit successfully, got {:?}",
+        "`lemex --clean-temp` must exit successfully, got {:?}",
         output.status
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -960,7 +960,7 @@ fn media_download_completes_and_history_is_inspectable() {
     );
 
     // Confirmed delete removes the local file.
-    app.dispatch(AppAction::Downloads(levim::app::DownloadsAction::Delete))
+    app.dispatch(AppAction::Downloads(lemex::app::DownloadsAction::Delete))
         .expect("stage download deletion");
     assert!(
         app.app.state.status.confirmation_pending,
@@ -1035,7 +1035,7 @@ fn transient_network_failure_is_retryable_and_recovers() {
 /// and every test target rely on.
 #[test]
 fn library_exposes_error_result_alias() {
-    let result: levim::Result<()> = Ok(());
+    let result: lemex::Result<()> = Ok(());
     assert!(result.is_ok());
 }
 

@@ -104,7 +104,7 @@ impl HttpLemmyApi {
             // one public Lemmy edge resets connections that carry none.
             // Identify the client explicitly instead of relying on the
             // header being absent.
-            .user_agent(concat!("levim-client/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("lemex-client/", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|error| AppError::Network(format!("could not build HTTP client: {error}")))?;
         Ok(Self {

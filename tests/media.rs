@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use levim::{
+use lemex::{
     domain::{DownloadStatus, MediaRef, ProfileId},
     media::{
         CollisionPolicy, DownloadManager, DownloadRequest, MediaHandler, MediaPolicyConfig,
@@ -22,7 +22,7 @@ fn image_media() -> MediaRef {
 
 fn test_dir() -> PathBuf {
     std::env::temp_dir().join(format!(
-        "levim-media-test-{}-{:?}",
+        "lemex-media-test-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ))
@@ -105,19 +105,19 @@ fn spawn_http_server_with_length(
 fn macos_has_a_display_even_without_display_variables() {
     // macOS never sets DISPLAY/WAYLAND_DISPLAY; `open` needs no display
     // variable, so the guard must pass or media handlers are refused.
-    assert!(levim::media::environment_has_display(None, None));
+    assert!(lemex::media::environment_has_display(None, None));
 }
 
 #[test]
 #[cfg(not(target_os = "macos"))]
 fn headless_hosts_without_a_display_variable_are_detected() {
-    assert!(!levim::media::environment_has_display(None, None));
-    assert!(levim::media::environment_has_display(Some(":0"), None));
-    assert!(levim::media::environment_has_display(
+    assert!(!lemex::media::environment_has_display(None, None));
+    assert!(lemex::media::environment_has_display(Some(":0"), None));
+    assert!(lemex::media::environment_has_display(
         None,
         Some("wayland-1")
     ));
-    assert!(!levim::media::environment_has_display(Some(""), Some("")));
+    assert!(!lemex::media::environment_has_display(Some(""), Some("")));
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn mailcap_is_the_default_handler() {
     assert!(matches!(handler, MediaHandler::Mailcap { .. }));
 }
 
-/// Tests that create or remove the real scratch directory (`$TMPDIR/levim-client`)
+/// Tests that create or remove the real scratch directory (`$TMPDIR/lemex-client`)
 /// must not race with each other, so they share one mutex.
 static SCRATCH_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
@@ -136,7 +136,7 @@ fn scratch_dir_is_nested_under_the_system_temp_dir() {
     let _guard = SCRATCH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let directory = levim::media::scratch_dir();
+    let directory = lemex::media::scratch_dir();
     assert!(
         directory.starts_with(std::env::temp_dir()),
         "the scratch dir must live under the system temp dir, got {}",
@@ -144,7 +144,7 @@ fn scratch_dir_is_nested_under_the_system_temp_dir() {
     );
     assert_eq!(
         directory.file_name().and_then(|name| name.to_str()),
-        Some("levim-client"),
+        Some("lemex-client"),
         "the scratch dir is an exclusively-owned subdirectory"
     );
 }
@@ -154,17 +154,17 @@ fn clean_scratch_dir_removes_the_whole_subtree() {
     let _guard = SCRATCH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let directory = levim::media::scratch_dir();
+    let directory = lemex::media::scratch_dir();
     std::fs::create_dir_all(directory.join("nested")).unwrap();
     std::fs::write(directory.join("stale.bin"), b"stale").unwrap();
     std::fs::write(directory.join("nested/other.bin"), b"stale").unwrap();
-    levim::media::clean_scratch_dir().unwrap();
+    lemex::media::clean_scratch_dir().unwrap();
     assert!(
         !directory.exists(),
         "the whole scratch subtree must be removed"
     );
     // A missing directory is not an error (idempotent sweep).
-    levim::media::clean_scratch_dir().unwrap();
+    lemex::media::clean_scratch_dir().unwrap();
 }
 
 #[test]
@@ -176,15 +176,15 @@ fn ensure_scratch_dir_refuses_a_symlinked_scratch_dir() {
     let _guard = SCRATCH_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let directory = levim::media::scratch_dir();
-    // A different local user can pre-create $TMPDIR/levim-client as a symlink
+    let directory = lemex::media::scratch_dir();
+    // A different local user can pre-create $TMPDIR/lemex-client as a symlink
     // to a victim directory; the client must refuse to follow it.
-    let victim = std::env::temp_dir().join(format!("levim-scratch-victim-{}", std::process::id()));
+    let victim = std::env::temp_dir().join(format!("lemex-scratch-victim-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&victim);
     let _ = std::fs::remove_file(&directory);
     std::fs::create_dir_all(&victim).unwrap();
     symlink(&victim, &directory).unwrap();
-    let error = levim::media::ensure_scratch_dir()
+    let error = lemex::media::ensure_scratch_dir()
         .expect_err("a symlinked scratch dir must be refused, not followed");
     assert!(
         error.to_string().contains("symlink"),
@@ -197,10 +197,10 @@ fn ensure_scratch_dir_refuses_a_symlinked_scratch_dir() {
     // restrictive mode the real call applies.
     std::fs::remove_file(&directory).unwrap();
     let _ = std::fs::remove_dir_all(&victim);
-    levim::media::ensure_scratch_dir().unwrap();
+    lemex::media::ensure_scratch_dir().unwrap();
     let mode = std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o700, "the scratch dir must be private to the user");
-    levim::media::clean_scratch_dir().unwrap();
+    lemex::media::clean_scratch_dir().unwrap();
 }
 
 #[tokio::test]

@@ -87,7 +87,7 @@ impl KeyringCredentialStore {
         // at exit without warning.
         if entry.get_credential().is::<MockCredential>() {
             return Err(AppError::Storage(format!(
-                "the OS credential store is unavailable for profile {profile}: keyring fell back to its in-memory mock store, which levim refuses. On Linux start a Secret Service provider (gnome-keyring or keepassxc); on macOS unlock the Keychain."
+                "the OS credential store is unavailable for profile {profile}: keyring fell back to its in-memory mock store, which lemex refuses. On Linux start a Secret Service provider (gnome-keyring or keepassxc); on macOS unlock the Keychain."
             )));
         }
         Ok(entry)
@@ -96,7 +96,7 @@ impl KeyringCredentialStore {
 
 impl Default for KeyringCredentialStore {
     fn default() -> Self {
-        Self::new("levim-client")
+        Self::new("lemex-client")
     }
 }
 

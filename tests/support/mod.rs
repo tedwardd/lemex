@@ -18,7 +18,7 @@ use std::{
 };
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use levim::{
+use lemex::{
     api::{
         LemmyApi,
         fixtures::{anonymous_context, fixture_api},
@@ -46,7 +46,7 @@ impl ScratchDir {
             .unwrap()
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "levim-smoke-{label}-{}-{unique}",
+            "lemex-smoke-{label}-{}-{unique}",
             std::process::id()
         ));
         std::fs::create_dir_all(&path).expect("create smoke scratch directory");
@@ -81,7 +81,7 @@ pub struct FixtureApp {
 /// `std::env::set_var` is not thread-safe, and parallel smoke runs (the
 /// all-targets CI step) would otherwise race each other's redirects: a
 /// clobbered restore could make `App` resolve its profile store against the
-/// real `~/.config/levim` and write scenario config there.
+/// real `~/.config/lemex` and write scenario config there.
 static XDG_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 impl FixtureApp {
@@ -108,7 +108,7 @@ impl FixtureApp {
         runtime: tokio::runtime::Runtime,
         label: &str,
         api: impl LemmyApi + 'static,
-        context: levim::domain::ProfileContext,
+        context: lemex::domain::ProfileContext,
         media: MediaConfig,
         profiles: &[Profile],
     ) -> Self {
@@ -131,7 +131,7 @@ impl FixtureApp {
         runtime: tokio::runtime::Runtime,
         scratch: &ScratchDir,
         api: impl LemmyApi + 'static,
-        context: levim::domain::ProfileContext,
+        context: lemex::domain::ProfileContext,
         media: MediaConfig,
         profiles: &[Profile],
     ) -> Self {
@@ -151,16 +151,16 @@ impl FixtureApp {
         root: PathBuf,
         scratch: Option<ScratchDir>,
         api: impl LemmyApi + 'static,
-        context: levim::domain::ProfileContext,
+        context: lemex::domain::ProfileContext,
         media: MediaConfig,
         profiles: &[Profile],
     ) -> Self {
         let config_home = root.join("config");
         let cache_home = root.join("cache");
-        let config_path = config_home.join("levim").join("config.toml");
-        let cache_dir = cache_home.join("levim");
+        let config_path = config_home.join("lemex").join("config.toml");
+        let cache_dir = cache_home.join("lemex");
         let download_dir = root.join("downloads");
-        std::fs::create_dir_all(config_home.join("levim")).expect("create config directory");
+        std::fs::create_dir_all(config_home.join("lemex")).expect("create config directory");
         std::fs::create_dir_all(&cache_dir).expect("create cache directory");
         let profile_store = ProfileStore::new(&config_path);
         profile_store.save(profiles).expect("seed profiles");
@@ -310,14 +310,14 @@ pub fn api<T>(runtime: &tokio::runtime::Runtime, make: impl FnOnce() -> T) -> T 
 }
 
 /// A `PostView` for seeding a feed without a network call.
-pub fn post_view(id: i64, title: &str, url: Option<Url>) -> levim::PostView {
-    levim::PostView {
+pub fn post_view(id: i64, title: &str, url: Option<Url>) -> lemex::PostView {
+    lemex::PostView {
         id: PostId(id),
         title: title.to_owned(),
         body: None,
         url,
         community_id: CommunityId(1),
-        creator_id: levim::domain::UserId(1),
+        creator_id: lemex::domain::UserId(1),
         score: 0,
         comments: 0,
         published: None,

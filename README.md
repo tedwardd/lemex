@@ -1,4 +1,4 @@
-# levim — a Vim-like terminal client for Lemmy
+# lemex — a Vim-like terminal client for Lemmy
 
 A Linux-first, Vim-like terminal client for [Lemmy](https://join-lemmy.org/).
 Browse feeds, open posts and threads, manage multiple instance/account
@@ -34,20 +34,20 @@ Requires a stable Rust toolchain (see `rust-toolchain.toml`).
 
 ```sh
 cargo build --release
-./target/release/levim
+./target/release/lemex
 ```
 
-`levim --help` prints usage and the command index and exits without starting
-the TUI. `levim --clean-temp` sweeps downloaded temp media files.
+`lemex --help` prints usage and the command index and exits without starting
+the TUI. `lemex --clean-temp` sweeps downloaded temp media files.
 
 ## Quick start
 
 1. On the first run the client creates a starter config at
-   `~/.config/levim/config.toml` with one profile (a general instance);
+   `~/.config/lemex/config.toml` with one profile (a general instance);
    edit it to point at your instance, or add profiles once running with
    `:profile-new <id> <instance-url>`. See
    [Configuration](docs/configuration.md) for details.
-2. Launch `levim`.
+2. Launch `lemex`.
 3. `:feed` loads the home feed; `j`/`k` move, `n`/`p` flip pages, `Enter`
    opens a post (j/k then scroll the thread), `Esc` closes it. `C` (or
    `:communities`) opens the community list; `Tab` completes commands.
@@ -77,7 +77,7 @@ the TUI. `levim --clean-temp` sweeps downloaded temp media files.
 | `o`, `:media`, `:download-media`, `:downloads` | view and download media |
 | `:close`, `:set ...`, `:help`, `:quit` | modals, configuration, help, exit |
 
-Run `levim --help` or `:help` inside the client for the complete list.
+Run `lemex --help` or `:help` inside the client for the complete list.
 
 ## Development
 

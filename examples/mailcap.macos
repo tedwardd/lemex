@@ -1,4 +1,4 @@
-# examples/mailcap.macos — media handlers for levim on macOS
+# examples/mailcap.macos — media handlers for lemex on macOS
 #
 # Every handler is the `open` command: macOS's built-in opener, which
 # launches the default application registered for the file's type
@@ -8,7 +8,7 @@
 # If a type has no default app (e.g. webm/mkv without VLC/IINA), `open`
 # reports an error instead of opening nothing.
 #
-# Install: copy to ~/.mailcap (levim reads it before /etc/mailcap).
+# Install: copy to ~/.mailcap (lemex reads it before /etc/mailcap).
 
 # --- Images ---
 image/png;         open %s

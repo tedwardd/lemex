@@ -57,7 +57,7 @@ impl Drop for FixtureServer {
 fn fixture_body(name: &str) -> Result<String> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("fixtures")
-        .join("levim")
+        .join("lemex")
         .join(name);
     std::fs::read_to_string(&path)
         .map_err(|error| AppError::Network(format!("fixture {}: {error}", path.display())))

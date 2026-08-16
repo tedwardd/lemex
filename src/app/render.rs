@@ -745,7 +745,7 @@ mod tests {
         // The full chain: a config file on disk -> AppConfig::load ->
         // AppColors -> App::with_colors -> render model -> painted cells.
         let directory =
-            std::env::temp_dir().join(format!("levim-render-colors-{}", std::process::id()));
+            std::env::temp_dir().join(format!("lemex-render-colors-{}", std::process::id()));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("config.toml");
         std::fs::write(

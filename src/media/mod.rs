@@ -21,7 +21,7 @@ pub use mime::{
 /// directory. Everything the client downloads for external media handlers
 /// lives inside it, so a `--clean-temp` sweep can remove the whole subtree
 /// without tracking individual files.
-const SCRATCH_SUBDIR: &str = "levim-client";
+const SCRATCH_SUBDIR: &str = "lemex-client";
 
 /// Scratch directory for media files downloaded for external handlers.
 ///

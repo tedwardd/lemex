@@ -36,7 +36,7 @@ pub async fn probe_content_type(url: &url::Url) -> Result<Option<String>> {
     let client = reqwest::Client::builder()
         .use_rustls_tls()
         .timeout(Duration::from_secs(5))
-        .user_agent(concat!("levim-client/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("lemex-client/", env!("CARGO_PKG_VERSION")))
         .build()
         .map_err(|error| AppError::Media(format!("could not build media probe client: {error}")))?;
     let response = client

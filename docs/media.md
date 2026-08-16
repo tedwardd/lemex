@@ -49,17 +49,17 @@ TUI, and media downloads never send authorization headers.
 
 Handlers open local files, not URLs (imv/feh/zathura cannot fetch remote
 URLs), so before invoking a handler the client downloads the media to a
-scratch file under `${TMPDIR}/levim-client/` (honoring `$TMPDIR` per POSIX,
+scratch file under `${TMPDIR}/lemex-client/` (honoring `$TMPDIR` per POSIX,
 falling back to `/tmp`). Within a session, opening the same media again
 reuses the already-downloaded file instead of re-fetching it (the status
 line notes `(reused cached file)`). Scratch files are removed when the
-client exits; `levim --clean-temp` sweeps the whole directory — crash
+client exits; `lemex --clean-temp` sweeps the whole directory — crash
 leftovers, stale files — without any per-file tracking. The scratch
 downloads also appear in the downloads panel, where they can be deleted
 individually.
 
 The scratch directory is protected against other local users: a pre-planted
-symlink at `${TMPDIR}/levim-client` is refused (never followed), and the
+symlink at `${TMPDIR}/lemex-client` is refused (never followed), and the
 directory is created 0700. Downloads are capped at 2 GiB per file, so a
 malicious media host cannot fill the disk with one endless stream.
 
@@ -78,7 +78,7 @@ your local machine:
     locally` instead of silently doing nothing.
   - When the client detects an SSH session (any of `$SSH_CONNECTION`,
     `$SSH_CLIENT`, or `$SSH_TTY` set), the success status adds a note that
-    the handler runs on the host running levim, not on your local terminal.
+    the handler runs on the host running lemex, not on your local terminal.
 - **The reliable tmux/SSH path is `:download-media`** to the remote disk,
   then view the file locally (scp/sftp, a synced directory, or
   `:downloads copy` to grab the path). `:downloads reopen` still needs a
@@ -133,7 +133,7 @@ never own their local path and are refused.
 - **The handler opens but shows nothing** — handlers receive a local file,
   not the URL; if the media download failed the handler is not spawned and
   the status shows the download error. Check the scratch directory
-  (`${TMPDIR}/levim-client/`) is writable.
+  (`${TMPDIR}/lemex-client/`) is writable.
 - **Downloads fail** — check the download directory is writable and the
   source is reachable; the failure reason is shown in the panel and the
   record can be retried. Collision prompts require an explicit

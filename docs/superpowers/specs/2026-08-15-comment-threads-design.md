@@ -4,7 +4,7 @@
 
 **Status:** Approved
 **Date:** 2026-08-15
-**Baseline:** levim, Rust + ratatui (see `docs/superpowers/specs/2026-08-11-lemmy-client-design.md`)
+**Baseline:** lemex, Rust + ratatui (see `docs/superpowers/specs/2026-08-11-lemmy-client-design.md`)
 
 ## 1. Problem
 

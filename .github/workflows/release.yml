@@ -28,7 +28,7 @@ env:
 
 jobs:
   build:
-    name: Build levim (${{ matrix.target }})
+    name: Build lemex (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -62,14 +62,14 @@ jobs:
 
       - name: Stage artifact
         run: |
-          cp "target/${{ matrix.target }}/release/levim" "levim-${{ matrix.target }}"
-          chmod +x "levim-${{ matrix.target }}"
+          cp "target/${{ matrix.target }}/release/lemex" "lemex-${{ matrix.target }}"
+          chmod +x "lemex-${{ matrix.target }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: levim-${{ matrix.target }}
-          path: levim-${{ matrix.target }}
+          name: lemex-${{ matrix.target }}
+          path: lemex-${{ matrix.target }}
           if-no-files-found: error
 
   publish:
@@ -95,7 +95,7 @@ jobs:
       - name: Write checksums
         run: |
           cd dist
-          sha256sum levim-* > SHA256SUMS
+          sha256sum lemex-* > SHA256SUMS
 
       - name: Create release
         env:
@@ -103,7 +103,7 @@ jobs:
         run: |
           gh release create "${{ steps.version.outputs.tag }}" dist/* \
             --repo "$GITHUB_REPOSITORY" \
-            --title "levim ${{ steps.version.outputs.tag }}" \
+            --title "lemex ${{ steps.version.outputs.tag }}" \
             --notes "Automated build from \`${{ github.sha }}\`.
 
             Targets: \`x86_64-unknown-linux-gnu\`, \`aarch64-unknown-linux-gnu\`, \`aarch64-apple-darwin\`.

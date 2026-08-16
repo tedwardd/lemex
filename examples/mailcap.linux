@@ -1,15 +1,15 @@
-# examples/mailcap.linux — media handlers for levim on Linux
+# examples/mailcap.linux — media handlers for lemex on Linux
 #
 # Uses common Linux viewers; install them with your package manager:
 #   imv (images), mpv (video/audio), zathura (pdf/epub),
 #   libreoffice (office documents)
 # Everything else falls through to xdg-open, the desktop default opener.
 # Commands run without a shell; %s is the downloaded local file.
-# The test= predicates are ignored by levim (which never runs shell
+# The test= predicates are ignored by lemex (which never runs shell
 # logic) and only help other mailcap consumers skip GUI handlers on
 # headless hosts.
 #
-# Install: copy to ~/.mailcap (levim reads it before /etc/mailcap).
+# Install: copy to ~/.mailcap (lemex reads it before /etc/mailcap).
 
 # --- Images ---
 image/png;         imv %s; test=test -n "$DISPLAY"

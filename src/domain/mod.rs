@@ -1,8 +1,8 @@
-mod levim;
+mod lemex;
 mod media;
 mod profile;
 
-pub use levim::{
+pub use lemex::{
     CommentId, CommunityId, CreateCommentRequest, CreatePostRequest, EditCommentRequest,
     EditPostRequest, Mutation, PostId, UserId,
 };

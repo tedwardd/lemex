@@ -7,7 +7,7 @@ use std::{
     sync::Arc,
 };
 
-use levim::{
+use lemex::{
     api::{HttpLemmyApi, Timeouts},
     app::{App, run_terminal},
     cache::SqliteCacheStore,
@@ -22,7 +22,7 @@ use levim::{
 /// redacts credentials and private content (the application never logs
 /// secrets). Re-initialization is ignored silently.
 ///
-/// Events are appended to the log file (`cache_dir()/levim.log`) rather than
+/// Events are appended to the log file (`cache_dir()/lemex.log`) rather than
 /// stdout, because stdout is the TUI's terminal: writing logs there would
 /// corrupt the interface. Returns the note to show in the status bar, or
 /// `None` when logging is disabled.
@@ -149,7 +149,7 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         credentials,
         media,
     )
-    .with_colors(levim::AppColors::from_config(&config.colors))
+    .with_colors(lemex::AppColors::from_config(&config.colors))
     .with_default_threads_collapsed(config.default_collapsed_threads);
     match (first_run_note, logging_note) {
         (Some(first), Some(logging)) => {
@@ -162,15 +162,15 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
     Ok((app, keymaps, config.startup))
 }
 
-/// Non-interactive usage text printed for `levim --help`. The interactive
+/// Non-interactive usage text printed for `lemex --help`. The interactive
 /// default (no arguments) starts the terminal client unchanged.
 const USAGE: &str = "\
-levim — a Vim-like terminal client for Lemmy
+lemex — a Vim-like terminal client for Lemmy
 
 Usage:
-  levim            start the interactive terminal client
-  levim --help     show this help and exit
-  levim --clean-temp   remove downloaded temp media files and exit
+  lemex            start the interactive terminal client
+  lemex --help     show this help and exit
+  lemex --clean-temp   remove downloaded temp media files and exit
 
 The interactive client is a Vim-like modal TUI. Run :help inside the client
 for the full command index; a summary follows.";
@@ -179,7 +179,7 @@ fn print_help() {
     println!("{USAGE}");
     println!();
     println!("Commands:");
-    for entry in levim::app::help::HelpIndex::default().search("") {
+    for entry in lemex::app::help::HelpIndex::default().search("") {
         println!("  {:<30} {}", entry.command, entry.description);
     }
 }
@@ -199,8 +199,8 @@ fn main() -> Result<()> {
     // stale handler files, anything under our exclusively-owned directory.
     // Honors $TMPDIR via std::env::temp_dir.
     if arguments.iter().any(|argument| argument == "--clean-temp") {
-        let directory = levim::media::scratch_dir();
-        match levim::media::clean_scratch_dir() {
+        let directory = lemex::media::scratch_dir();
+        match lemex::media::clean_scratch_dir() {
             Ok(()) => println!("removed temp media files under {}", directory.display()),
             Err(error) => {
                 eprintln!("{error}");

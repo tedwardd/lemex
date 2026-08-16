@@ -6,8 +6,8 @@ use std::{
 };
 
 use async_trait::async_trait;
-use levim::profiles::KeyringCredentialStore;
-use levim::{
+use lemex::profiles::KeyringCredentialStore;
+use lemex::{
     AppConfig, AppError, ColorsConfig, HttpConfig, ProfileId, SecretString, Session, UserId,
     api::{
         CommentView, FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostDetail, PostView,
@@ -110,22 +110,22 @@ fn temporary_directory() -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!("levim-config-profiles-{unique}"));
+    let path = std::env::temp_dir().join(format!("lemex-config-profiles-{unique}"));
     fs::create_dir(&path).unwrap();
     path
 }
 
 #[test]
 fn log_path_resides_in_the_cache_directory() {
-    let path = levim::config::log_path();
+    let path = lemex::config::log_path();
     assert!(
-        path.starts_with(levim::config::cache_dir()),
+        path.starts_with(lemex::config::cache_dir()),
         "the log file must live in the cache directory, got {}",
         path.display()
     );
     assert_eq!(
         path.file_name().and_then(|name| name.to_str()),
-        Some("levim.log")
+        Some("lemex.log")
     );
 }
 
@@ -347,26 +347,26 @@ impl FailOnceLoginApi {
 
 #[async_trait]
 impl LemmyApi for FailOnceLoginApi {
-    async fn site(&self, _: &ProfileContext) -> levim::Result<SiteInfo> {
+    async fn site(&self, _: &ProfileContext) -> lemex::Result<SiteInfo> {
         Err(AppError::Network("unused".into()))
     }
-    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> levim::Result<Page<PostView>> {
+    async fn feed(&self, _: &ProfileContext, _: FeedQuery) -> lemex::Result<Page<PostView>> {
         Err(AppError::Network("unused".into()))
     }
-    async fn post(&self, _: &ProfileContext, _: PostId) -> levim::Result<PostDetail> {
+    async fn post(&self, _: &ProfileContext, _: PostId) -> lemex::Result<PostDetail> {
         Err(AppError::Network("unused".into()))
     }
-    async fn comments(&self, _: &ProfileContext, _: PostId) -> levim::Result<Vec<CommentView>> {
+    async fn comments(&self, _: &ProfileContext, _: PostId) -> lemex::Result<Vec<CommentView>> {
         Ok(Vec::new())
     }
-    async fn login(&self, _: LoginRequest) -> levim::Result<Session> {
+    async fn login(&self, _: LoginRequest) -> lemex::Result<Session> {
         if self.failed.swap(false, Ordering::SeqCst) {
             Err(AppError::Authentication("invalid credentials".into()))
         } else {
             Ok(session("ok"))
         }
     }
-    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> levim::Result<MutationResult> {
+    async fn mutate(&self, _: &ProfileContext, _: Mutation) -> lemex::Result<MutationResult> {
         Err(AppError::Network("unused".into()))
     }
 }
@@ -388,7 +388,7 @@ async fn login_stores_session_only_after_api_success() {
 }
 
 fn profile_test_dependencies() -> (ProfileStore, MemoryCredentialStore) {
-    let path = std::env::temp_dir().join(format!("levim-logout-{}.toml", std::process::id()));
+    let path = std::env::temp_dir().join(format!("lemex-logout-{}.toml", std::process::id()));
     let _ = std::fs::remove_file(&path);
     (ProfileStore::new(path), MemoryCredentialStore::default())
 }
@@ -433,7 +433,7 @@ fn colors_section_parses_round_trips_and_rejects_bad_values() {
     );
 
     // Resolving the palette yields the ratatui colors.
-    let app_colors = levim::AppColors::from_config(&config.colors);
+    let app_colors = lemex::AppColors::from_config(&config.colors);
     assert_eq!(app_colors.accent, ratatui::style::Color::LightBlue);
     assert_eq!(
         app_colors.surface,

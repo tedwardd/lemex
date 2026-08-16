@@ -1,13 +1,13 @@
 use std::time::Duration;
 
-use levim::api::fixtures::{
+use lemex::api::fixtures::{
     anonymous_context, authenticated_context, fixture_api, fixture_api_recording_user_agent,
     fixture_api_with_body, fixture_api_with_delay, fixture_api_with_status,
     fixture_api_with_status_count, login_fixture_api, timeout_fixture_api,
     truncated_body_fixture_api,
 };
-use levim::api::{FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, Timeouts};
-use levim::{
+use lemex::api::{FeedQuery, HttpLemmyApi, LemmyApi, LoginRequest, Timeouts};
+use lemex::{
     AppError, CommentId, Mutation, PostId, Profile, ProfileContext, ProfileId, SecretString, UserId,
 };
 use url::Url;
@@ -49,7 +49,7 @@ async fn client_sends_descriptive_user_agent() {
         .clone()
         .expect("fixture must have recorded a User-Agent header");
     assert!(
-        captured.starts_with("levim-client/"),
+        captured.starts_with("lemex-client/"),
         "client must send a descriptive User-Agent identifying the app, got {captured:?}"
     );
 }
@@ -170,7 +170,7 @@ async fn mutation_comment_uses_response_post_id_and_negative_score() {
         .mutate(
             &authenticated_context(),
             Mutation::VoteComment {
-                id: levim::CommentId(2),
+                id: lemex::CommentId(2),
                 score: -1,
             },
         )
@@ -183,10 +183,10 @@ async fn mutation_comment_uses_response_post_id_and_negative_score() {
 
 #[tokio::test]
 async fn login_preserves_instance_base_path() {
-    let (api, instance_url) = login_fixture_api("/levim/");
+    let (api, instance_url) = login_fixture_api("/lemex/");
     let session = api
         .login(LoginRequest {
-            profile: levim::ProfileId::from("fixture"),
+            profile: lemex::ProfileId::from("fixture"),
             instance_url,
             username: "fixture-user".into(),
             password: SecretString::from("fixture-password"),

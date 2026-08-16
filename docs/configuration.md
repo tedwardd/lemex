@@ -12,8 +12,8 @@ no profiles is still rejected at launch.
 
 | Item | Default | Override |
 | --- | --- | --- |
-| Config file | `~/.config/levim/config.toml` | `$XDG_CONFIG_HOME/levim/config.toml` |
-| Cache directory | `~/.cache/levim/` | `$XDG_CACHE_HOME/levim/` (or `cache.directory`) |
+| Config file | `~/.config/lemex/config.toml` | `$XDG_CONFIG_HOME/lemex/config.toml` |
+| Cache directory | `~/.cache/lemex/` | `$XDG_CACHE_HOME/lemex/` (or `cache.directory`) |
 | Download directory | `<cache directory>/downloads` | `media.download_directory` |
 | Cache database | `<cache directory>/cache.sqlite3` | — |
 
@@ -107,7 +107,7 @@ with a warning. Keymaps take effect on the next launch. See
 ```toml
 [media]
 mailcap_enabled = true       # mailcap is the default media handler
-download_directory = "/data/levim-downloads"
+download_directory = "/data/lemex-downloads"
 collision_policy = "prompt"  # prompt | overwrite | unique-name
 
 [media.handlers]
@@ -127,7 +127,7 @@ directory, and the cache size take effect on the next launch.
 
 ```toml
 [cache]
-directory = "/var/cache/levim"
+directory = "/var/cache/lemex"
 max_size_bytes = 268435456
 ```
 
@@ -173,7 +173,7 @@ accent) ships in `examples/catppuccin-mocha.toml`.
 
 Logging is off by default and redacts credentials, tokens, private content,
 and sensitive profile values. When enabled, events are appended to
-`<cache directory>/levim.log` (for example `~/.cache/levim/levim.log`) —
+`<cache directory>/lemex.log` (for example `~/.cache/lemex/lemex.log`) —
 logs go to that file, never stdout, so the TUI screen stays intact. The
 status bar reports the file path on launch.
 

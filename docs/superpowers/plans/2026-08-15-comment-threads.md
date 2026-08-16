@@ -6,7 +6,7 @@
 
 **Architecture:** The Lemmy `comment/list` response already contains the whole tree flattened in path order with each comment's ltree `path` (`"0.<ancestor ids>.<own id>"`). The client currently drops `path` at parse time. This plan adds `path` to `CommentView` (plus cache round-trip), builds a pure pre-order `CommentTree` (new `src/app/thread.rs`) from the flat list, and adds cursor + collapsed-set state to `ThreadModal`. Rendering walks visible rows (descendants of collapsed comments skipped), indents by depth, and marks threads with `▸`/`▾ N replies`. The flat `Vec<CommentView>` remains the source of truth; all existing mutation arms keep working unchanged.
 
-**Tech Stack:** Rust, ratatui, tokio (existing levim stack). No new dependencies.
+**Tech Stack:** Rust, ratatui, tokio (existing lemex stack). No new dependencies.
 
 ## Global Constraints
 
@@ -1536,7 +1536,7 @@ fn nested_thread_arrives_and_collapses_with_z() {
 
     app.dispatch(AppAction::OpenSelected)
         .expect("open selected post");
-    let levim::app::Modal::Thread(thread) =
+    let lemex::app::Modal::Thread(thread) =
         app.app.state.view.top_modal().expect("thread modal opens")
     else {
         panic!("opening a post must push a thread modal");
@@ -1552,22 +1552,22 @@ fn nested_thread_arrives_and_collapses_with_z() {
         .expect("focus the top comment");
     app.dispatch(AppAction::Input(Command::ToggleCommentThread))
         .expect("toggle the focused thread");
-    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+    let lemex::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
         panic!("thread modal still open");
     };
     assert!(
-        thread.collapsed.contains(&levim::CommentId(1)),
+        thread.collapsed.contains(&lemex::CommentId(1)),
         "z collapses the focused comment's thread"
     );
     assert_eq!(
         thread.selected,
-        Some(levim::CommentId(1)),
+        Some(lemex::CommentId(1)),
         "the cursor stays on the collapsed root"
     );
 
     app.dispatch(AppAction::Input(Command::ToggleCommentThread))
         .expect("expand again");
-    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+    let lemex::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
         panic!("thread modal still open");
     };
     assert!(thread.collapsed.is_empty(), "z expands the thread again");

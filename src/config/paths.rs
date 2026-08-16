@@ -22,8 +22,8 @@ impl XdgPaths {
     pub fn from_env() -> Self {
         let config_home = xdg_home("XDG_CONFIG_HOME", ".config");
         let cache_home = xdg_home("XDG_CACHE_HOME", ".cache");
-        let config_dir = config_home.join("levim");
-        let cache_dir = cache_home.join("levim");
+        let config_dir = config_home.join("lemex");
+        let cache_dir = cache_home.join("lemex");
         let config_file = config_dir.join("config.toml");
         Self {
             config_dir,
@@ -61,7 +61,7 @@ pub fn cache_path() -> PathBuf {
 /// state directory — XDG_STATE_HOME or a macOS equivalent — is required;
 /// the file is appended across launches.
 pub fn log_path() -> PathBuf {
-    cache_dir().join("levim.log")
+    cache_dir().join("lemex.log")
 }
 
 fn xdg_home(variable: &str, fallback: &str) -> PathBuf {
