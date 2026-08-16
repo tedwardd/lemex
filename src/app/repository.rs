@@ -883,7 +883,7 @@ fn post_detail_from_value(value: &Value) -> Result<PostDetail> {
 }
 
 fn comment_to_value(comment: &CommentView) -> Value {
-    json!({ "id": comment.id.0, "post_id": comment.post_id.0, "content": comment.content, "creator_id": comment.creator_id.0, "creator_name": comment.creator_name, "score": comment.score })
+    json!({ "id": comment.id.0, "post_id": comment.post_id.0, "content": comment.content, "creator_id": comment.creator_id.0, "creator_name": comment.creator_name, "score": comment.score, "path": comment.path })
 }
 
 /// Decode a cached comment row (`{"items": [...]}`), tolerating entries that
@@ -934,7 +934,7 @@ fn comment_from_value(value: &Value) -> Result<CommentView> {
             .get("score")
             .and_then(Value::as_i64)
             .unwrap_or_default(),
-        path: None,
+        path: value.get("path").and_then(Value::as_str).map(str::to_owned),
     })
 }
 
@@ -1105,5 +1105,26 @@ mod tests {
         assert_eq!(round.post.score, 99, "decode reflects the stored score");
         assert_eq!(round.comments.len(), 1);
         assert_eq!(round.comments[0].content, "first");
+    }
+
+    #[test]
+    fn comment_round_trip_keeps_path_and_legacy_rows_decode() {
+        let comment = CommentView {
+            id: crate::CommentId(9),
+            post_id: crate::PostId(1),
+            content: "first".into(),
+            creator_id: crate::UserId(3),
+            creator_name: "alice".into(),
+            score: 1,
+            path: Some("0.9".into()),
+        };
+        let value = comment_to_value(&comment);
+        let round = comment_from_value(&value).expect("decode");
+        assert_eq!(round.path.as_deref(), Some("0.9"));
+        // Rows written before path existed must decode as top-level.
+        let mut legacy = value.clone();
+        legacy.as_object_mut().expect("object").remove("path");
+        let legacy_round = comment_from_value(&legacy).expect("legacy decode");
+        assert_eq!(legacy_round.path, None);
     }
 }
