@@ -11,6 +11,8 @@ use ratatui::{
 
 use super::help::{HelpIndex, contextual_help, mode_label};
 use super::state::{AppColors, CommunitiesModal, HelpModal, Modal, ThreadModal};
+use super::thread::CommentTree;
+use crate::api::CommentView;
 use super::{DownloadsRender, RenderModel};
 
 /// Largest feed size the Lemmy API accepts: `post/list` rejects any `limit`
@@ -270,11 +272,16 @@ fn render_thread(
     let (inner, surface) = modal_chrome(
         frame,
         area,
-        format!("Thread{depth} — j/k or Ctrl-d/u to scroll, Esc to close"),
+        format!("Thread{depth} — j/k: move, z: toggle thread, Ctrl-d/u: scroll, Esc to close"),
         colors,
     );
 
     let detail = &thread.post;
+    let tree = CommentTree::build(&detail.comments);
+    let visible = tree.visible_indices(&thread.collapsed);
+    let by_id: std::collections::HashMap<crate::CommentId, &CommentView> =
+        detail.comments.iter().map(|comment| (comment.id, comment)).collect();
+
     let mut lines = vec![Line::from(Span::styled(
         detail.post.title.as_str(),
         Style::default().add_modifier(Modifier::BOLD),
@@ -285,25 +292,50 @@ fn render_thread(
         lines.push(Line::from(""));
         lines.push(Line::from(body.as_str()));
     }
-    lines.push(Line::from(format!(
-        "Thread comments: {}",
-        detail.comments.len()
-    )));
-    // Blank lines separate comments; the score and author lead each comment
-    // so long content can never push them off the box, and server-side ids
-    // stay out of the UI.
-    for comment in &detail.comments {
+    let hidden = tree.rows.len().saturating_sub(visible.len());
+    let header = if hidden == 0 {
+        format!("Thread comments: {}", tree.rows.len())
+    } else {
+        format!("Thread comments: {} ({} hidden)", tree.rows.len(), hidden)
+    };
+    lines.push(Line::from(header));
+    for &position in &visible {
+        let row = &tree.rows[position];
+        let comment = by_id[&row.id];
+        let indent = (row.depth as usize * 2).min(16);
+        let selected = Some(row.id) == thread.selected;
+        let style = if selected {
+            Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            Style::default()
+        };
+        let marker = if tree.has_replies(row.id) {
+            let glyph = if thread.collapsed.contains(&row.id) { "▸" } else { "▾" };
+            let noun = if row.reply_count == 1 { "reply" } else { "replies" };
+            format!(" {glyph} {} {noun}", row.reply_count)
+        } else {
+            String::new()
+        };
         lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "[{}] {}:",
-            comment.score, comment.creator_name
-        )));
-        lines.push(Line::from(comment.content.as_str()));
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(
+                format!("[{}] {}:{marker}", comment.score, comment.creator_name),
+                style,
+            ),
+        ]));
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent + 2)),
+            Span::raw(comment.content.as_str()),
+        ]));
     }
     // Clamp the scroll offset so a short thread (or a very long scroll) can
     // never leave blank space under the box; wrapped lines are longer than
     // the line count, so reaching the absolute bottom of a deeply wrapped
-    // comment may need one more Ctrl-d.
+    // comment may need one more Ctrl-d. Cursor-following is the movement
+    // arms' job (`keep_thread_cursor_visible` in `App`): this render-side
+    // clamp must NOT react to the cursor, or a manual Ctrl-d scroll would
+    // snap back on the next frame.
     let scroll = thread
         .scroll
         .min(lines.len().saturating_sub(inner.height as usize)) as u16;
@@ -594,6 +626,7 @@ mod tests {
         domain::{Profile, ProfileContext, ProfileId},
         input::Mode,
     };
+    use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use url::Url;
 
@@ -1218,5 +1251,151 @@ mod tests {
             text.contains("Session downloads"),
             "closing help must restore the downloads panel"
         );
+    }
+
+    fn threaded_post() -> crate::api::PostDetail {
+        crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(1),
+                title: "Threaded post".into(),
+                body: None,
+                url: None,
+                community_id: crate::CommunityId(1),
+                creator_id: crate::UserId(1),
+                score: 0,
+                comments: 3,
+                published: None,
+            },
+            comments: vec![
+                crate::api::CommentView {
+                    id: crate::CommentId(1),
+                    post_id: crate::PostId(1),
+                    content: "top".into(),
+                    creator_id: crate::UserId(2),
+                    creator_name: "alice".into(),
+                    score: 3,
+                    path: Some("0.1".into()),
+                },
+                crate::api::CommentView {
+                    id: crate::CommentId(2),
+                    post_id: crate::PostId(1),
+                    content: "reply".into(),
+                    creator_id: crate::UserId(2),
+                    creator_name: "bob".into(),
+                    score: -1,
+                    path: Some("0.1.2".into()),
+                },
+                crate::api::CommentView {
+                    id: crate::CommentId(3),
+                    post_id: crate::PostId(1),
+                    content: "nested reply".into(),
+                    creator_id: crate::UserId(2),
+                    creator_name: "carol".into(),
+                    score: 0,
+                    path: Some("0.1.2.3".into()),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn thread_nests_replies_and_marks_threads() {
+        let mut model = model(None, false);
+        model
+            .modals
+            .push(Modal::Thread(ThreadModal::new(threaded_post())));
+        let text = rendered_at(&model, 140, 48);
+        assert!(
+            text.contains("[3] alice: ▾ 2 replies"),
+            "expanded thread marker with reply count; rendered: {text}"
+        );
+        assert!(
+            text.contains("  [-1] bob: ▾ 1 reply"),
+            "replies indent and carry their own marker; rendered: {text}"
+        );
+        assert!(
+            text.contains("    [0] carol:"),
+            "grandchildren indent deeper; rendered: {text}"
+        );
+        assert!(
+            text.contains("Thread comments: 3"),
+            "no hidden count when nothing is collapsed; rendered: {text}"
+        );
+    }
+
+    #[test]
+    fn collapsed_thread_hides_descendants_and_reports_hidden() {
+        let mut model = model(None, false);
+        let mut thread = ThreadModal::new(threaded_post());
+        thread.collapsed.insert(crate::CommentId(1));
+        thread.selected = Some(crate::CommentId(1));
+        model.modals.push(Modal::Thread(thread));
+        let text = rendered_at(&model, 140, 48);
+        assert!(
+            text.contains("[3] alice: ▸ 2 replies"),
+            "collapsed marker; rendered: {text}"
+        );
+        assert!(
+            !text.contains("nested reply") && !text.contains("reply"),
+            "descendant content is hidden; rendered: {text}"
+        );
+        assert!(
+            text.contains("Thread comments: 3 (2 hidden)"),
+            "the header reports hidden replies; rendered: {text}"
+        );
+    }
+
+    #[test]
+    fn thread_cursor_header_is_highlighted() {
+        let mut model = model(None, false);
+        let mut thread = ThreadModal::new(crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(1),
+                title: "Threaded post".into(),
+                body: None,
+                url: None,
+                community_id: crate::CommunityId(1),
+                creator_id: crate::UserId(1),
+                score: 0,
+                comments: 1,
+                published: None,
+            },
+            comments: vec![crate::api::CommentView {
+                id: crate::CommentId(1),
+                post_id: crate::PostId(1),
+                content: "body text".into(),
+                creator_id: crate::UserId(2),
+                creator_name: "alice".into(),
+                score: 3,
+                path: None,
+            }],
+        });
+        thread.selected = Some(crate::CommentId(1));
+        model.modals.push(Modal::Thread(thread));
+        let width = 140u16;
+        let height = 48u16;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test backend");
+        terminal.draw(|frame| render(frame, &model)).expect("render");
+        let buffer = terminal.backend().buffer();
+        let content = &buffer.content;
+        // Buffer cells hold one grapheme each; locate the header row by
+        // scanning joined row text, then check that row for the highlight.
+        let row = (0..height)
+            .find(|&row| {
+                let start = row as usize * width as usize;
+                let end = start + width as usize;
+                let text: String = content[start..end]
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect();
+                text.contains("[3] alice:")
+            })
+            .expect("comment header renders");
+        let start = row as usize * width as usize;
+        let end = start + width as usize;
+        let highlighted = content[start..end]
+            .iter()
+            .any(|cell| cell.style().add_modifier.contains(Modifier::REVERSED));
+        assert!(highlighted, "the focused comment header must be highlighted");
     }
 }
