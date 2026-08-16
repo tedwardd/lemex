@@ -101,7 +101,7 @@ In `src/api/http.rs`, `normalize_comment` (currently returns `CommentView { id, 
 
 - [ ] **Step 5: Fix every remaining `CommentView` literal**
 
-Every other `CommentView { ... }` construction must add `path: None,` (or a real path). Sites: `src/app/repository.rs:1087`, `src/app/render.rs:1095,1103,1138`, `tests/application.rs:754,850,1228,3647`, `src/app/repository.rs:913` (done in Task 2). Run `cargo build 2>&1 | grep -n "missing field"` to confirm none remain.
+Every other `CommentView { ... }` construction must add `path: None,` (or a real path). Sites: `src/app/repository.rs:1087` (test), `src/app/render.rs:1095,1103,1138`, `tests/application.rs:754,850,1228,3647`, and `src/app/repository.rs:913` (`comment_from_value`) — the cache decoder gets a placeholder `path: None` NOW so the crate compiles at this task boundary; Task 2 replaces that line with the parsed value. Run `cargo build 2>&1 | grep -n "missing field"` to confirm none remain.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -169,7 +169,7 @@ fn comment_to_value(comment: &CommentView) -> Value {
 }
 ```
 
-In `comment_from_value`, add exactly one line to the existing `Ok(CommentView { ... })` literal (after the `score:` line, keeping every existing field extraction verbatim):
+In `comment_from_value`, the literal already carries `path: None` from Task 1; replace that placeholder line with the real parse (keep every other field extraction verbatim):
 
 ```rust
         path: value.get("path").and_then(Value::as_str).map(str::to_owned),
