@@ -3,6 +3,7 @@ pub mod help;
 pub mod render;
 pub mod repository;
 pub mod state;
+pub mod thread;
 
 /// Lines the detail/thread pane scrolls per Ctrl-d / Ctrl-u press.
 const DETAIL_SCROLL_STEP: usize = 10;
@@ -14,7 +15,6 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{Arc, Mutex},
-    thread,
     time::Duration,
 };
 
@@ -67,7 +67,7 @@ async fn run_terminal_async(
 ) -> Result<()> {
     let (input_tx, mut input_rx) = mpsc::unbounded_channel::<Result<Event>>();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    let input_thread = thread::spawn(move || {
+    let input_thread = std::thread::spawn(move || {
         loop {
             if stop_rx.try_recv().is_ok() {
                 break;
