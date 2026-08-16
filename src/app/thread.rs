@@ -124,7 +124,10 @@ impl CommentTree {
     /// movement to keep the focused row on screen without duplicating the
     /// renderer's wrap math. Each row occupies a blank line, a header
     /// line, and the comment body wrapped at `width` columns (body text
-    /// may contain newlines — `clean_text` keeps them).
+    /// may contain newlines — `clean_text` keeps them). The row's indent
+    /// and the two-character header prefix join the content on the line,
+    /// mirroring the renderer wrapping the padded line at the full inner
+    /// width.
     pub fn visible_row_start(
         &self,
         comments: &[CommentView],
@@ -139,8 +142,7 @@ impl CommentTree {
             let row = &self.rows[p];
             let comment = comments.iter().find(|candidate| candidate.id == row.id)?;
             let indent = (row.depth as usize * 2).min(16);
-            let content_width = width.saturating_sub(indent + 2).max(1);
-            start += 2 + wrapped_line_count(comment.content.as_str(), content_width);
+            start += 2 + wrapped_line_count(comment.content.as_str(), width, indent);
         }
         Some(start)
     }
@@ -225,12 +227,15 @@ fn parse_path(path: &str, own_id: CommentId) -> (Option<CommentId>, u8) {
 }
 
 /// Rendered line count of a body at a given column width: one line per
-/// source line, wrapped when a line exceeds `width` columns.
-fn wrapped_line_count(content: &str, width: usize) -> usize {
+/// source line, wrapped when a line exceeds `width` columns. The row's
+/// `indent` plus the two-character header prefix pad the content, so the
+/// count matches the renderer wrapping the padded line at the full inner
+/// width.
+fn wrapped_line_count(content: &str, width: usize, indent: usize) -> usize {
     let width = width.max(1);
     content
         .lines()
-        .map(|line| line.chars().count().div_ceil(width).max(1))
+        .map(|line| (indent + 2 + line.chars().count()).div_ceil(width).max(1))
         .sum()
 }
 

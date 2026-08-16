@@ -211,6 +211,24 @@ fn modal_area(content: ratatui::layout::Rect, width: u16, height: u16) -> ratatu
     ratatui::layout::Rect::new(x, y, width, height)
 }
 
+/// The thread modal's inner (usable) size for a terminal of the given
+/// size: the 90%-of-content modal box (see `modal_area`) minus its
+/// borders. The cursor-follow scroll math in `App` mirrors this so `j`/`k`
+/// keep the focused comment on screen without duplicating layout.
+pub fn thread_inner_size(terminal_width: u16, terminal_height: u16) -> (u16, u16) {
+    let content_height = terminal_height.saturating_sub(3 + 5 + 6);
+    let modal_width = (terminal_width * 9 / 10)
+        .max(40)
+        .min(terminal_width.saturating_sub(2));
+    let modal_height = (content_height * 9 / 10)
+        .max(10)
+        .min(content_height.saturating_sub(2));
+    (
+        modal_width.saturating_sub(2),
+        modal_height.saturating_sub(2),
+    )
+}
+
 /// Paint a modal's surface and chrome (Clear, then a background-filled block
 /// with accent borders and title) and return the interior rect plus the
 /// surface style the content widget must carry so no holes show through.

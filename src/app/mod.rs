@@ -23,6 +23,7 @@ use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 use url::Url;
 
+use crate::app::thread::CommentTree;
 use crate::{
     api::{FeedQuery, LemmyApi, LoginRequest, MutationResult, Page, PostView},
     cache::Draft,
@@ -688,7 +689,11 @@ impl App {
             Command::MoveDown { count } => {
                 match self.state.view.top_modal_mut() {
                     Some(Modal::Thread(thread)) => {
-                        thread.scroll = thread.scroll.saturating_add(count as usize);
+                        let (width, height) = crate::app::render::thread_inner_size(
+                            self.terminal_width,
+                            self.terminal_height,
+                        );
+                        move_thread_cursor(thread, count as usize, true, width, height);
                         return Ok(());
                     }
                     Some(Modal::Communities(communities)) => {
@@ -707,7 +712,11 @@ impl App {
             Command::MoveUp { count } => {
                 match self.state.view.top_modal_mut() {
                     Some(Modal::Thread(thread)) => {
-                        thread.scroll = thread.scroll.saturating_sub(count as usize);
+                        let (width, height) = crate::app::render::thread_inner_size(
+                            self.terminal_width,
+                            self.terminal_height,
+                        );
+                        move_thread_cursor(thread, count as usize, false, width, height);
                         return Ok(());
                     }
                     Some(Modal::Communities(communities)) => {
@@ -784,11 +793,64 @@ impl App {
                 }
                 Ok(())
             }
-            // Placeholders for Task 5's new commands: the real handlers land
-            // in Task 6 (toggle/collapse/expand comment threads).
-            Command::ToggleCommentThread
-            | Command::CollapseAllCommentThreads
-            | Command::ExpandAllCommentThreads => Ok(()),
+            Command::ToggleCommentThread => {
+                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut()
+                    && let Some(id) = thread.selected
+                    && CommentTree::build(&thread.post.comments).has_replies(id)
+                {
+                    if !thread.collapsed.remove(&id) {
+                        thread.collapsed.insert(id);
+                    }
+                }
+                Ok(())
+            }
+            Command::CollapseAllCommentThreads => {
+                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                    let tree = CommentTree::build(&thread.post.comments);
+                    thread.collapsed = tree
+                        .rows
+                        .iter()
+                        .filter(|row| row.reply_count > 0)
+                        .map(|row| row.id)
+                        .collect();
+                    if let Some(selected) = thread.selected {
+                        let visible = tree.visible_indices(&thread.collapsed);
+                        let hidden = !visible.contains(&tree.row_index(selected).unwrap_or(usize::MAX));
+                        if hidden {
+                            thread.selected =
+                                Some(tree.nearest_visible_ancestor(selected, &thread.collapsed));
+                        }
+                    }
+                    // Collapsing shrinks the content, so re-anchor the scroll
+                    // on the (possibly clamped) cursor; a deep view can
+                    // otherwise stay scrolled past the now-shorter thread.
+                    if let Some(id) = thread.selected {
+                        let (width, height) = crate::app::render::thread_inner_size(
+                            self.terminal_width,
+                            self.terminal_height,
+                        );
+                        keep_thread_cursor_visible(thread, &tree, id, width as usize, height as usize);
+                    }
+                }
+                Ok(())
+            }
+            Command::ExpandAllCommentThreads => {
+                if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                    thread.collapsed.clear();
+                    // Expanding grows the content, so re-anchor the scroll on
+                    // the focused cursor; it can otherwise sit below the fold
+                    // until the next move.
+                    if let Some(id) = thread.selected {
+                        let (width, height) = crate::app::render::thread_inner_size(
+                            self.terminal_width,
+                            self.terminal_height,
+                        );
+                        let tree = CommentTree::build(&thread.post.comments);
+                        keep_thread_cursor_visible(thread, &tree, id, width as usize, height as usize);
+                    }
+                }
+                Ok(())
+            }
             Command::EnterInsert => {
                 self.state.mode = Mode::Insert;
                 Ok(())
@@ -3180,6 +3242,75 @@ fn mutation_for_draft(
         _ => None,
     }
 }
+
+/// Move the thread modal's cursor to the next (`down`) or previous (`up`)
+/// visible comment, keeping the focused row on screen. Hidden replies
+/// (collapsed threads) are skipped; the cursor never leaves the visible
+/// rows.
+fn move_thread_cursor(
+    thread: &mut ThreadModal,
+    count: usize,
+    down: bool,
+    width: u16,
+    height: u16,
+) {
+    let tree = CommentTree::build(&thread.post.comments);
+    let visible = tree.visible_indices(&thread.collapsed);
+    if visible.is_empty() {
+        return;
+    }
+    let current = thread.selected.and_then(|id| tree.row_index(id));
+    let target = match visible.iter().position(|&row| Some(row) == current) {
+        // No selection yet: the first j or k lands on the first row.
+        None => 0,
+        Some(position) if down => (position + count).min(visible.len() - 1),
+        Some(position) => position.saturating_sub(count),
+    };
+    let id = tree.rows[visible[target]].id;
+    thread.selected = Some(id);
+    keep_thread_cursor_visible(thread, &tree, id, width as usize, height as usize);
+}
+
+/// Anchor the thread's scroll offset so the focused comment's header
+/// stays inside the viewport, using the same 90%-modal geometry the
+/// renderer uses (`thread_inner_size`). Wrap is estimated by
+/// `visible_row_start` plus the paragraph's pre-comment header, so deeply
+/// wrapped rows can still sit slightly off-screen until the next move.
+fn keep_thread_cursor_visible(
+    thread: &mut ThreadModal,
+    tree: &CommentTree,
+    id: crate::CommentId,
+    width: usize,
+    height: usize,
+) {
+    let Some(start) = tree.visible_row_start(&thread.post.comments, &thread.collapsed, id, width)
+    else {
+        return;
+    };
+    let start = start + thread_header_lines(&thread.post, width);
+    if start < thread.scroll {
+        thread.scroll = start;
+    } else if start >= thread.scroll + height {
+        thread.scroll = start.saturating_add(1).saturating_sub(height);
+    }
+}
+
+/// Paragraph lines before the first comment — title, optional blank +
+/// wrapped body, and the comment-count line — matching render_thread's
+/// line construction. Wrapped at `width` like the renderer.
+fn thread_header_lines(post: &crate::api::PostDetail, width: usize) -> usize {
+    let width = width.max(1);
+    let mut lines = 1usize; // title
+    if let Some(body) = &post.post.body
+        && !body.is_empty()
+    {
+        lines += 1 + body
+            .lines()
+            .map(|line| line.chars().count().div_ceil(width).max(1))
+            .sum::<usize>();
+    }
+    lines + 1 // comment-count line
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3688,6 +3819,22 @@ mod tests {
         )
     }
 
+    fn test_app() -> App {
+        App::new(
+            Arc::new(crate::api::fixtures::fixture_api("feed.json")),
+            Arc::new(crate::cache::MemoryCache::default()),
+            ProfileContext {
+                profile: Profile {
+                    id: ProfileId::from("fixture"),
+                    instance_url: Url::parse("http://127.0.0.1/").unwrap(),
+                    account_label: None,
+                },
+                session: None,
+            },
+            Arc::new(crate::profiles::MemoryCredentialStore::default()),
+        )
+    }
+
     #[tokio::test]
     async fn downloads_panel_routes_delete_and_search_before_feed_arms() {
         let mut app = completed_download_app();
@@ -3823,5 +3970,212 @@ mod tests {
             !app.state.view.downloads_active(),
             "bare `:downloads` must toggle the panel closed"
         );
+    }
+
+    fn thread_comment(id: i64, path: Option<&str>) -> crate::api::CommentView {
+        crate::api::CommentView {
+            id: crate::CommentId(id),
+            post_id: crate::PostId(1),
+            content: format!("comment {id}"),
+            creator_id: crate::UserId(1),
+            creator_name: "alice".into(),
+            score: 0,
+            path: path.map(str::to_owned),
+        }
+    }
+
+    fn open_thread(app: &mut App, comments: Vec<crate::api::CommentView>) {
+        app.state.view.modals.push(Modal::Thread(ThreadModal::new(
+            crate::api::PostDetail {
+                post: crate::api::PostView {
+                    id: crate::PostId(1),
+                    title: "Threaded post".into(),
+                    body: None,
+                    url: None,
+                    community_id: crate::CommunityId(1),
+                    creator_id: crate::UserId(1),
+                    score: 0,
+                    comments: comments.len() as i64,
+                    published: None,
+                },
+                comments,
+            },
+        )));
+    }
+
+    fn focused_thread(app: &App) -> &ThreadModal {
+        match app.state.view.top_modal().expect("thread modal open") {
+            Modal::Thread(thread) => thread,
+            _ => panic!("expected a thread modal"),
+        }
+    }
+
+    #[tokio::test]
+    async fn thread_cursor_moves_between_visible_comments_only() {
+        let mut app = test_app();
+        app.terminal_width = 100;
+        app.terminal_height = 40;
+        open_thread(
+            &mut app,
+            vec![
+                thread_comment(1, Some("0.1")),
+                thread_comment(2, Some("0.1.2")),
+                thread_comment(3, Some("0.3")),
+            ],
+        );
+
+        app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+            .await
+            .unwrap();
+        assert_eq!(focused_thread(&app).selected, Some(crate::CommentId(1)));
+        // Collapse comment 1: its reply becomes invisible and `j` skips it.
+        app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+            .await
+            .unwrap();
+        app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+            .await
+            .unwrap();
+        assert_eq!(
+            focused_thread(&app).selected,
+            Some(crate::CommentId(3)),
+            "hidden replies are skipped"
+        );
+
+        // `k` moves back up over the visible rows.
+        app.dispatch(AppAction::Input(Command::MoveUp { count: 1 }))
+            .await
+            .unwrap();
+        assert_eq!(focused_thread(&app).selected, Some(crate::CommentId(1)));
+
+        // Expand again: the reply is reachable once more.
+        app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+            .await
+            .unwrap();
+        app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+            .await
+            .unwrap();
+        assert_eq!(focused_thread(&app).selected, Some(crate::CommentId(2)));
+    }
+
+    #[tokio::test]
+    async fn toggle_thread_collapses_and_expands_only_threads_with_replies() {
+        let mut app = test_app();
+        open_thread(
+            &mut app,
+            vec![
+                thread_comment(1, Some("0.1")),
+                thread_comment(2, Some("0.1.2")),
+            ],
+        );
+        app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+            .await
+            .unwrap();
+        app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+            .await
+            .unwrap();
+        assert!(focused_thread(&app).collapsed.contains(&crate::CommentId(1)));
+        app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+            .await
+            .unwrap();
+        assert!(
+            focused_thread(&app).collapsed.is_empty(),
+            "toggling again expands the thread"
+        );
+
+        // A leaf comment has nothing to collapse.
+        app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+            .await
+            .unwrap();
+        app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+            .await
+            .unwrap();
+        assert!(
+            focused_thread(&app).collapsed.is_empty(),
+            "toggling a leaf is a noop"
+        );
+    }
+
+    #[tokio::test]
+    async fn collapse_all_clamps_a_hidden_cursor_to_its_visible_ancestor() {
+        let mut app = test_app();
+        open_thread(
+            &mut app,
+            vec![
+                thread_comment(1, Some("0.1")),
+                thread_comment(2, Some("0.1.2")),
+                thread_comment(3, Some("0.1.2.3")),
+                thread_comment(4, Some("0.4")),
+            ],
+        );
+        // Move down to the deepest comment (id 3).
+        for _ in 0..3 {
+            app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+                .await
+                .unwrap();
+        }
+        assert_eq!(focused_thread(&app).selected, Some(crate::CommentId(3)));
+
+        app.dispatch(AppAction::Input(Command::CollapseAllCommentThreads))
+            .await
+            .unwrap();
+        let thread = focused_thread(&app);
+        assert_eq!(
+            thread.collapsed,
+            HashSet::from([crate::CommentId(1), crate::CommentId(2)])
+        );
+        assert_eq!(
+            thread.selected,
+            Some(crate::CommentId(1)),
+            "a hidden cursor clamps to the nearest visible ancestor: comment 2 is itself hidden under collapsed comment 1"
+        );
+
+        app.dispatch(AppAction::Input(Command::ExpandAllCommentThreads))
+            .await
+            .unwrap();
+        assert!(
+            focused_thread(&app).collapsed.is_empty(),
+            "expand-all clears every collapsed thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn thread_movement_follows_cursor_below_the_fold() {
+        let mut app = test_app();
+        app.terminal_width = 100;
+        app.terminal_height = 40;
+        let comments: Vec<crate::api::CommentView> =
+            (1..=30).map(|id| thread_comment(id, None)).collect();
+        open_thread(&mut app, comments.clone());
+        // Give the post a body so the paragraph header is four lines
+        // (title, blank, body, comment-count).
+        if let Some(Modal::Thread(thread)) = app.state.view.top_modal_mut() {
+            thread.post.post.body = Some("body text".into());
+        }
+        for _ in 0..30 {
+            app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+                .await
+                .unwrap();
+        }
+        let thread = focused_thread(&app);
+        assert_eq!(thread.selected, Some(crate::CommentId(30)));
+        assert!(thread.scroll > 0, "the cursor must scroll the view");
+        let tree = CommentTree::build(&thread.post.comments);
+        let real_start = 4 + tree
+            .visible_row_start(
+                &thread.post.comments,
+                &thread.collapsed,
+                crate::CommentId(30),
+                88,
+            )
+            .expect("comment 30 is visible");
+        assert!(
+            thread.scroll <= real_start && thread.scroll + 21 > real_start,
+            "the focused header must sit inside the viewport: scroll {} shows {}..{}, header at {}",
+            thread.scroll,
+            thread.scroll,
+            thread.scroll + 21,
+            real_start
+        );
+        assert!(thread.scroll >= 4, "the view must scroll past the header");
     }
 }
