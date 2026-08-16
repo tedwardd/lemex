@@ -11,7 +11,7 @@ use crate::{
     api::{CommentView, PostView},
     cache::{CacheStore, Draft, DraftId},
     config::ColorsConfig,
-    domain::{DownloadId, DownloadRecord, PostId, ProfileContext, ProfileId},
+    domain::{CommentId, DownloadId, DownloadRecord, PostId, ProfileContext, ProfileId},
     error::Result,
     input::Mode,
 };
@@ -116,11 +116,21 @@ pub struct ThreadModal {
     pub post: crate::api::PostDetail,
     /// Scroll offset (in lines) of the thread's content.
     pub scroll: usize,
+    /// Focused comment (cursor), by id so collapse changes never
+    /// invalidate it. `None` when the thread has no comments.
+    pub selected: Option<CommentId>,
+    /// Comment ids whose reply subtree is collapsed; empty = all expanded.
+    pub collapsed: HashSet<CommentId>,
 }
 
 impl ThreadModal {
     pub fn new(post: crate::api::PostDetail) -> Self {
-        Self { post, scroll: 0 }
+        Self {
+            post,
+            scroll: 0,
+            selected: None,
+            collapsed: HashSet::new(),
+        }
     }
 
     /// Placeholder for the post being opened, carrying the REAL post id so
@@ -682,5 +692,36 @@ impl AppState {
             modals: self.view.modals.clone(),
             colors: AppColors::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn thread_modal_starts_without_cursor_or_collapsed_threads() {
+        let thread = ThreadModal::new(crate::api::PostDetail {
+            post: crate::api::PostView {
+                id: crate::PostId(1),
+                title: "t".into(),
+                body: None,
+                url: None,
+                community_id: crate::CommunityId(1),
+                creator_id: crate::UserId(1),
+                score: 0,
+                comments: 0,
+                published: None,
+            },
+            comments: Vec::new(),
+        });
+        assert_eq!(thread.selected, None);
+        assert!(thread.collapsed.is_empty());
+        assert_eq!(thread.scroll, 0);
+
+        let placeholder = ThreadModal::for_post(crate::PostId(7));
+        assert_eq!(placeholder.post.post.id, crate::PostId(7));
+        assert_eq!(placeholder.selected, None);
+        assert!(placeholder.collapsed.is_empty());
     }
 }
