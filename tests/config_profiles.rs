@@ -245,6 +245,26 @@ fn http_instance_urls_require_explicit_opt_in() {
 }
 
 #[test]
+fn default_collapsed_threads_round_trips_and_defaults_to_expanded() {
+    let absent = AppConfig::from_toml(
+        "[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n",
+    )
+    .unwrap();
+    assert!(
+        !absent.default_collapsed_threads,
+        "threads open expanded unless the option says otherwise"
+    );
+
+    let source = "default_collapsed_threads = true\n[[profiles]]\nid = 'main'\ninstance_url = 'https://example.test'\n";
+    let config = AppConfig::from_toml(source).unwrap();
+    assert!(config.default_collapsed_threads);
+
+    let encoded = config.to_toml().unwrap();
+    assert!(encoded.contains("default_collapsed_threads"));
+    assert_eq!(AppConfig::from_toml(&encoded).unwrap(), config);
+}
+
+#[test]
 fn cache_size_defaults_to_a_bounded_cap() {
     // The feed cache must not grow without bound: the default config applies
     // a byte cap (drafts are never evicted; the cap only bounds cached feeds).

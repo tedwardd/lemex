@@ -180,6 +180,10 @@ pub struct AppConfig {
     /// password, session JWT) must not travel in cleartext unless the user
     /// explicitly opts in.
     pub allow_insecure_http: bool,
+    /// Open comment threads collapsed instead of expanded. Off by default.
+    /// Threads still toggle individually with `z` and `Z` per session; the
+    /// default applies only when a thread first opens.
+    pub default_collapsed_threads: bool,
 }
 
 impl AppConfig {
@@ -262,6 +266,7 @@ impl AppConfig {
             colors,
             http,
             allow_insecure_http: raw.allow_insecure_http,
+            default_collapsed_threads: raw.default_collapsed_threads,
         })
     }
 
@@ -317,6 +322,7 @@ impl AppConfig {
             colors: RawColorsConfig::from_config(&self.colors),
             http: RawHttpConfig::from_config(&self.http),
             allow_insecure_http: self.allow_insecure_http,
+            default_collapsed_threads: self.default_collapsed_threads,
         };
         toml::to_string_pretty(&raw)
             .map_err(|error| AppError::Configuration(format!("cannot encode TOML: {error}")))
@@ -358,6 +364,9 @@ struct RawConfig {
     /// Opt-in to `http://` instance URLs (credentials travel in cleartext).
     #[serde(default)]
     allow_insecure_http: bool,
+    /// Open comment threads collapsed by default.
+    #[serde(default)]
+    default_collapsed_threads: bool,
 }
 
 /// Startup actions the client will run once at launch. Empty means the

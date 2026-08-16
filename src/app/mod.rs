@@ -273,6 +273,10 @@ pub struct App {
     /// fixed default limit.
     terminal_width: u16,
     terminal_height: u16,
+    /// Open comment threads collapsed instead of expanded (config
+    /// `default_collapsed_threads`). Applies when a thread's comments first
+    /// land; refreshes keep the user's per-session toggle state.
+    default_collapsed_threads: bool,
     quit: bool,
 }
 
@@ -343,6 +347,7 @@ impl App {
             colors: state::AppColors::default(),
             terminal_width: 0,
             terminal_height: 0,
+            default_collapsed_threads: false,
             quit: false,
         }
     }
@@ -350,6 +355,14 @@ impl App {
     /// Apply the `[colors]` palette from configuration.
     pub fn with_colors(mut self, colors: state::AppColors) -> Self {
         self.colors = colors;
+        self
+    }
+
+    /// Open comment threads collapsed instead of expanded (config
+    /// `default_collapsed_threads`). The default applies when a thread's
+    /// comments first land; refreshes keep the user's toggle state.
+    pub fn with_default_threads_collapsed(mut self, collapsed: bool) -> Self {
+        self.default_collapsed_threads = collapsed;
         self
     }
 
@@ -807,12 +820,7 @@ impl App {
             Command::CollapseAllCommentThreads => {
                 if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
                     let tree = CommentTree::build(&thread.post.comments);
-                    thread.collapsed = tree
-                        .rows
-                        .iter()
-                        .filter(|row| row.reply_count > 0)
-                        .map(|row| row.id)
-                        .collect();
+                    thread.collapsed = tree.collapsible_ids();
                     if let Some(selected) = thread.selected {
                         let visible = tree.visible_indices(&thread.collapsed);
                         let hidden = !visible.contains(&tree.row_index(selected).unwrap_or(usize::MAX));
@@ -1757,6 +1765,7 @@ impl App {
     fn apply_runtime_config(&mut self, config: &AppConfig) {
         self.media_policy = MediaPolicyConfig::from_config(&config.media);
         self.collision_policy = CollisionPolicy::from_config(&config.media.collision_policy);
+        self.default_collapsed_threads = config.default_collapsed_threads;
         if let Some(directory) = &config.media.download_directory {
             self.downloads.set_directory(directory.clone());
         }
@@ -3073,7 +3082,18 @@ impl App {
                     match result {
                         Ok(comments) => {
                             if let Some(Modal::Thread(thread)) = self.state.view.top_modal_mut() {
+                                // The default-collapsed option applies only
+                                // when the comments first land (the open
+                                // placeholder is empty); a refresh refilling
+                                // existing comments must not clobber the
+                                // user's per-session toggle state.
+                                let first_fill = thread.post.comments.is_empty();
                                 thread.post.comments = comments;
+                                if first_fill && self.default_collapsed_threads {
+                                    thread.collapsed =
+                                        CommentTree::build(&thread.post.comments)
+                                            .collapsible_ids();
+                                }
                             }
                             self.state.status.stale = stale;
                             self.state.status.success("comments loaded");
@@ -4138,6 +4158,118 @@ mod tests {
         assert!(
             focused_thread(&app).collapsed.is_empty(),
             "expand-all clears every collapsed thread"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_collapsed_threads_fills_the_collapsed_set_on_open() {
+        let mut app = test_app().with_default_threads_collapsed(true);
+        app.terminal_width = 100;
+        app.terminal_height = 40;
+        app.state
+            .view
+            .modals
+            .push(Modal::Thread(ThreadModal::for_post(crate::PostId(1))));
+        let request = app.begin_request(RequestIdentity::Comments(crate::PostId(1)));
+        app.apply_api_result(ApiResult::Comments {
+            profile: ProfileId::from("fixture"),
+            request,
+            post: crate::PostId(1),
+            result: Ok(vec![
+                thread_comment(1, Some("0.1")),
+                thread_comment(2, Some("0.1.2")),
+                thread_comment(3, Some("0.1.2.3")),
+            ]),
+            stale: false,
+        });
+        let Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+            panic!("thread modal stays open");
+        };
+        assert_eq!(thread.post.comments.len(), 3);
+        assert_eq!(
+            thread.collapsed,
+            HashSet::from([crate::CommentId(1), crate::CommentId(2)]),
+            "every reply-bearing comment starts collapsed"
+        );
+        assert_eq!(
+            thread.selected,
+            None,
+            "the cursor starts unset regardless of the default"
+        );
+    }
+
+    #[tokio::test]
+    async fn default_expanded_leaves_threads_open() {
+        let mut app = test_app(); // default_collapsed_threads is off
+        app.terminal_width = 100;
+        app.terminal_height = 40;
+        app.state
+            .view
+            .modals
+            .push(Modal::Thread(ThreadModal::for_post(crate::PostId(1))));
+        let request = app.begin_request(RequestIdentity::Comments(crate::PostId(1)));
+        app.apply_api_result(ApiResult::Comments {
+            profile: ProfileId::from("fixture"),
+            request,
+            post: crate::PostId(1),
+            result: Ok(vec![
+                thread_comment(1, Some("0.1")),
+                thread_comment(2, Some("0.1.2")),
+            ]),
+            stale: false,
+        });
+        let Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+            panic!("thread modal stays open");
+        };
+        assert!(
+            thread.collapsed.is_empty(),
+            "threads open expanded when the option is off"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_does_not_reapply_the_collapsed_default() {
+        let mut app = test_app().with_default_threads_collapsed(true);
+        app.terminal_width = 100;
+        app.terminal_height = 40;
+        app.state
+            .view
+            .modals
+            .push(Modal::Thread(ThreadModal::for_post(crate::PostId(1))));
+        let comments = vec![
+            thread_comment(1, Some("0.1")),
+            thread_comment(2, Some("0.1.2")),
+        ];
+        let request = app.begin_request(RequestIdentity::Comments(crate::PostId(1)));
+        app.apply_api_result(ApiResult::Comments {
+            profile: ProfileId::from("fixture"),
+            request,
+            post: crate::PostId(1),
+            result: Ok(comments.clone()),
+            stale: false,
+        });
+        let Modal::Thread(thread) = app.state.view.top_modal_mut().unwrap() else {
+            panic!("thread modal stays open");
+        };
+        assert_eq!(thread.collapsed, HashSet::from([crate::CommentId(1)]));
+        // The user expands the thread during the session.
+        thread.collapsed.clear();
+        // A refresh refills the same comments: the default must not re-apply
+        // over the user's toggle state.
+        let request = app.begin_request(RequestIdentity::Comments(crate::PostId(1)));
+        app.apply_api_result(ApiResult::Comments {
+            profile: ProfileId::from("fixture"),
+            request,
+            post: crate::PostId(1),
+            result: Ok(comments),
+            stale: false,
+        });
+        let Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
+            panic!("thread modal stays open");
+        };
+        assert!(
+            thread.collapsed.is_empty(),
+            "refresh keeps the user's toggle state"
         );
     }
 

@@ -99,6 +99,16 @@ impl CommentTree {
         self.index.get(&id).copied()
     }
 
+    /// Comment ids that can collapse: every comment with at least one
+    /// descendant. Shared by collapse-all and the default-collapsed option.
+    pub fn collapsible_ids(&self) -> HashSet<CommentId> {
+        self.rows
+            .iter()
+            .filter(|row| row.reply_count > 0)
+            .map(|row| row.id)
+            .collect()
+    }
+
     /// The nearest ancestor of `id` whose own subtree is visible (itself
     /// not under a collapsed ancestor). Used to keep the cursor on screen
     /// when a collapse-all hides the selection.

@@ -149,7 +149,8 @@ async fn build_app() -> Result<(App, HashMap<String, String>, String)> {
         credentials,
         media,
     )
-    .with_colors(levim::AppColors::from_config(&config.colors));
+    .with_colors(levim::AppColors::from_config(&config.colors))
+    .with_default_threads_collapsed(config.default_collapsed_threads);
     match (first_run_note, logging_note) {
         (Some(first), Some(logging)) => {
             app.state.status.message = format!("{first} | {logging}");

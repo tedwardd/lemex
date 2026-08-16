@@ -26,6 +26,13 @@ Instance URLs must use `https`. An `http://` URL is rejected unless the
 config explicitly opts in with a top-level `allow_insecure_http = true`
 (credentials would otherwise travel in cleartext).
 
+Comment threads open fully expanded. To start every thread collapsed —
+handy on comment-heavy posts — set the top-level
+`default_collapsed_threads = true`. Threads still toggle individually with
+`z` (collapse/expand the focused thread) and `Z` (collapse all) per
+session, and a refresh keeps your current toggles; the default applies
+only when a thread first opens.
+
 ## Profiles — never store secrets here
 
 A profile is one instance/account pairing. Secrets — passwords and session
