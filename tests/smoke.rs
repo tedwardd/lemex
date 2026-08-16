@@ -49,6 +49,11 @@ fn profile_context(instance_url: Url) -> ProfileContext {
 /// A fixture body that serves both a post and one thread comment.
 const POST_THREAD_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Fixture post","body":"Fixture body","url":"https://example.com/fixture","community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z","score":3},"counts":{"score":3,"comments":1}},"comments":[{"comment":{"id":1,"post_id":1,"content":"Fixture comment","creator_id":1},"creator":{"id":1,"name":"alice"},"counts":{"score":1}}]}"#;
 
+/// A fixture body whose thread contains one reply, so the smoke test can
+/// prove nested threads arrive and collapse.
+const NESTED_THREAD_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Fixture post","body":"Fixture body","url":"https://example.com/fixture","community_id":1,"creator_id":1,"published":"2026-01-01T00:00:00Z","score":3},"counts":{"score":3,"comments":2}},"comments":[{"comment":{"id":1,"post_id":1,"content":"Top comment","creator_id":1,"path":"0.1"},"creator":{"id":1,"name":"alice"},"counts":{"score":1}},{"comment":{"id":2,"post_id":1,"content":"Nested reply","creator_id":1,"path":"0.1.2"},"creator":{"id":1,"name":"alice"},"counts":{"score":1}}]}"#;
+
+
 /// A fixture body that reports a successful post mutation.
 const MUTATION_BODY: &str = r#"{"post_view":{"post":{"id":1,"name":"Voted post","body":null,"community_id":1,"creator_id":1,"score":5},"counts":{"score":5,"comments":0}}}"#;
 
@@ -294,6 +299,62 @@ fn opening_post_shows_thread_and_back_preserves_feed_position() {
         0,
         "feed position is preserved"
     );
+}
+
+/// Nested threads: the reply arrives in the same fetch, and `z` collapses
+/// the focused thread's subtree.
+#[test]
+fn nested_thread_arrives_and_collapses_with_z() {
+    let runtime = support::runtime();
+    let api = support::api(&runtime, || fixture_api_with_body(NESTED_THREAD_BODY));
+    let mut app = FixtureApp::with_runtime(
+        runtime,
+        "post",
+        api,
+        anonymous_context(),
+        MediaConfig::default(),
+        &[],
+    );
+    app.app.state.view.posts = vec![post_view(1, "Fixture post", None)];
+    app.app.state.view.selected = Some(0);
+
+    app.dispatch(AppAction::OpenSelected)
+        .expect("open selected post");
+    let levim::app::Modal::Thread(thread) =
+        app.app.state.view.top_modal().expect("thread modal opens")
+    else {
+        panic!("opening a post must push a thread modal");
+    };
+    assert_eq!(thread.post.comments.len(), 2, "the nested reply arrives in one fetch");
+    assert_eq!(
+        thread.post.comments[1].path.as_deref(),
+        Some("0.1.2"),
+        "the reply keeps its tree position"
+    );
+
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+        .expect("focus the top comment");
+    app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+        .expect("toggle the focused thread");
+    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+        panic!("thread modal still open");
+    };
+    assert!(
+        thread.collapsed.contains(&levim::CommentId(1)),
+        "z collapses the focused comment's thread"
+    );
+    assert_eq!(
+        thread.selected,
+        Some(levim::CommentId(1)),
+        "the cursor stays on the collapsed root"
+    );
+
+    app.dispatch(AppAction::Input(Command::ToggleCommentThread))
+        .expect("expand again");
+    let levim::app::Modal::Thread(thread) = app.app.state.view.top_modal().unwrap() else {
+        panic!("thread modal still open");
+    };
+    assert!(thread.collapsed.is_empty(), "z expands the thread again");
 }
 
 /// Draft preservation: drafts persist to the on-disk cache, survive a

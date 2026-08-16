@@ -22,12 +22,14 @@ command/search line.
 | Key | Command | Purpose |
 | --- | --- | --- |
 | `h` / `l` | (bound, inert) | bound to `left`/`right`; no horizontal panes use them today, so they are no-ops |
-| `j` / `k` | move / scroll | move the feed selection; with a thread modal open, scroll the thread instead (the focused modal takes the keys) |
+| `j` / `k` | move / move cursor | move the feed selection; with a thread modal open, move the comment cursor (collapsed threads are skipped) |
 | `gg` / `G` | jump | jump to the top / bottom of the feed (`N gg` / `N G` jump to row N) |
 | `Enter` | open | open the selected post (or download) |
 | `o` | open media | open the selected post's media through the configured handler |
 | `C` | communities | open the community list (shortcut for `:communities`) |
 | `Ctrl-d` / `Ctrl-u` | scroll detail | scroll the open thread down/up (10 lines, counts apply) |
+| `z` | toggle thread | collapse or expand the focused comment's reply thread |
+| `Z` | collapse all threads | collapse every comment thread in the open thread |
 | `n` | next page | flip to the next feed page (inert while a modal is open) |
 | `p` | previous page | flip back to the previous feed page |
 
@@ -85,6 +87,7 @@ is being typed the password (the third token) is echoed as asterisks.
 | `:search <query>` | search posts (filters download history with the panel open) |
 | `:open` | open the selected post |
 | `:close` | pop the focused modal (thread, communities, or help) |
+| `:expand-all-threads` | expand every collapsed comment thread (no default key) |
 | `:refresh` | refresh the current view |
 | `:reply <text>` | reply to the selected post |
 | `:edit <title>` | retitle the selected post |
