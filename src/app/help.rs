@@ -157,7 +157,7 @@ static HELP_ENTRIES: &[HelpEntry] = &[
     },
     HelpEntry {
         command: "j/k",
-        description: "move down/up the selection; with the detail/thread pane open, scroll the thread (the pane takes focus)",
+        description: "move down/up the selection; with a thread modal open, move the comment cursor (the pane takes focus)",
         group: "navigation",
     },
     HelpEntry {
@@ -189,6 +189,27 @@ static HELP_ENTRIES: &[HelpEntry] = &[
         command: "Esc",
         description: "back / cancel; also closes the detail/thread pane",
         group: "navigation",
+    },
+    // Threads
+    HelpEntry {
+        command: "j / k",
+        description: "move the comment cursor in the open thread (collapsed threads are skipped)",
+        group: "thread",
+    },
+    HelpEntry {
+        command: "z",
+        description: "collapse or expand the focused comment's reply thread",
+        group: "thread",
+    },
+    HelpEntry {
+        command: "Z",
+        description: "collapse every comment thread in the open thread",
+        group: "thread",
+    },
+    HelpEntry {
+        command: ":expand-all-threads",
+        description: "expand every collapsed comment thread",
+        group: "thread",
     },
     // Media
     HelpEntry {

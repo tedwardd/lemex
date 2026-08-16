@@ -784,6 +784,11 @@ impl App {
                 }
                 Ok(())
             }
+            // Placeholders for Task 5's new commands: the real handlers land
+            // in Task 6 (toggle/collapse/expand comment threads).
+            Command::ToggleCommentThread
+            | Command::CollapseAllCommentThreads
+            | Command::ExpandAllCommentThreads => Ok(()),
             Command::EnterInsert => {
                 self.state.mode = Mode::Insert;
                 Ok(())

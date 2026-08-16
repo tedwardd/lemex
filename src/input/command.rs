@@ -48,6 +48,14 @@ pub enum Command {
     ScrollDetailUp {
         count: u32,
     },
+    /// Collapse or expand the focused comment's reply thread (default
+    /// key: `z`).
+    ToggleCommentThread,
+    /// Collapse every comment thread in the open thread modal (default
+    /// key: `Z`).
+    CollapseAllCommentThreads,
+    /// Expand every collapsed comment thread (command: `:expand-all-threads`).
+    ExpandAllCommentThreads,
     /// Collapse the detail/thread pane, returning to the content-only view
     /// (command: `:close`, rebindable as `close-pane`).
     ClosePane,
@@ -99,6 +107,9 @@ impl Command {
             "quit" => Some(Command::Quit),
             "scroll-detail-down" => Some(Command::ScrollDetailDown { count: 1 }),
             "scroll-detail-up" => Some(Command::ScrollDetailUp { count: 1 }),
+            "toggle-thread" => Some(Command::ToggleCommentThread),
+            "collapse-all-threads" => Some(Command::CollapseAllCommentThreads),
+            "expand-all-threads" => Some(Command::ExpandAllCommentThreads),
             "confirm" => Some(Command::Confirm),
             "cancel" => Some(Command::Cancel),
             _ => None,

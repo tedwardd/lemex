@@ -45,6 +45,11 @@ impl InputEngine {
         mappings.insert('?', Command::EnterSearch { backward: true });
         // Uppercase `C` — Communities: a one-key shortcut for `:communities`.
         mappings.insert('C', Command::Communities);
+        // Thread folds: `z` toggles the focused comment's thread, `Z`
+        // collapses every thread at once (`:expand-all-threads` has no
+        // default key).
+        mappings.insert('z', Command::ToggleCommentThread);
+        mappings.insert('Z', Command::CollapseAllCommentThreads);
         mappings.insert(KeyCode::Esc, Command::Back);
         mappings.insert(KeyCode::Enter, Command::Open);
 

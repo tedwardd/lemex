@@ -405,3 +405,10 @@ fn tab_does_nothing_without_completions_configured() {
     assert_eq!(command, Command::CompleteLine("feed".into()));
     assert_eq!(line, "feed", "no completions: the line is untouched");
 }
+
+#[test]
+fn z_and_Z_toggle_comment_threads() {
+    let mut engine = InputEngine::default();
+    assert_eq!(engine.handle(key('z')), Command::ToggleCommentThread);
+    assert_eq!(engine.handle(key('Z')), Command::CollapseAllCommentThreads);
+}
