@@ -15,13 +15,18 @@ ratatui terminal shell.
 - **Authenticated interaction** — `:login` (password masked while typing),
   `:logout`, `:whoami`, voting, saving, subscribing, replying, editing, and
   deleting — each destructive action requires confirmation.
-- **Cache and drafts** — profile-scoped SQLite cache and drafts survive
-  restarts; failed submissions keep your draft.
+- **Cache and drafts** — profile-scoped SQLite cache covers feeds (each
+  page), community lists, post details, and comment threads; drafts survive
+  restarts and failed submissions keep your draft.
 - **Media** — mailcap (or a configured handler) opens media externally;
   `:download-media` fetches asynchronously with per-session download
   history, reusing already-downloaded files within the session.
 - **Resilience** — bounded retries on transient network failures, stale-cache
   reads while refreshing, and clean terminal restoration on every exit path.
+- **Non-blocking loads** — fetching a feed, page, thread, or community list
+  never freezes the interface: loads run in the background, cached content
+  paints instantly, and the UI stays interactive (navigate, scroll, `Esc` to
+  cancel) while a refresh is in flight.
 
 ## Building and running
 

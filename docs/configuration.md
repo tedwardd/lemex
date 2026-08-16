@@ -17,10 +17,10 @@ no profiles is still rejected at launch.
 | Download directory | `<cache directory>/downloads` | `media.download_directory` |
 | Cache database | `<cache directory>/cache.sqlite3` | — |
 
-The cache holds profile-scoped feed entries and your in-progress drafts.
-Feed entries are capped by `cache.max_size_bytes` (a 64 MiB default applies
-when the key is absent; oldest entries are evicted first); drafts are never
-evicted.
+The cache holds profile-scoped feed pages, community lists, post details,
+comment threads, and your in-progress drafts. All cached content is capped
+by `cache.max_size_bytes` (a 64 MiB default applies when the key is absent;
+oldest entries are evicted first); drafts are never evicted.
 
 Instance URLs must use `https`. An `http://` URL is rejected unless the
 config explicitly opts in with a top-level `allow_insecure_http = true`
@@ -125,9 +125,15 @@ max_size_bytes = 268435456
 ```
 
 `directory` relocates the cache (including drafts). `max_size_bytes` caps the
-total feed payload; a single entry larger than the cap is evicted too, and
+total cached payload; a single entry larger than the cap is evicted too, and
 drafts are exempt. When the key is absent a 64 MiB default applies, so the
 cache is bounded out of the box.
+
+Cached content is always shown instantly: a load never blocks the interface.
+When the cache has an entry, it paints immediately (marked stale while a
+background refresh revalidates it); when it does not, the pane shows a
+loading row until the fetch lands. `Esc` cancels an in-flight load, and
+navigation, scrolling, and other keys stay responsive throughout.
 
 ## Colors
 

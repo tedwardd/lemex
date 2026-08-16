@@ -39,7 +39,7 @@ fixed 20-post default is used.
 | `r` | refresh | refresh the current view |
 | `q` | quit | quit the client |
 | `y` | confirm | confirm the pending destructive action |
-| `Esc` | back / cancel | pop the focused modal, cancel the pending action, or back out |
+| `Esc` | back / cancel | pop the focused modal, cancel the pending action, cancel an in-flight load, or back out |
 | `i` | insert | enter Insert mode |
 | `v` | visual | enter Visual mode |
 | `:` | command | enter Command mode |
@@ -49,8 +49,11 @@ fixed 20-post default is used.
 Motions accept numeric counts: `3j` moves down three positions (clamped to
 the list). A digit that begins a registered keymap sequence is part of that
 mapping, not a count (for example with a `2r` mapping, `2r` fires the mapped
-command instead of counting two refreshes). Keys pressed while a network
-action is in flight are queued and applied when the action completes.
+command instead of counting two refreshes). Page loads never block the
+interface: fetching runs in the background, cached content paints instantly,
+and keys apply immediately while a refresh is in flight — `[PENDING]` (and
+`[STALE]` for cached content being revalidated) marks the load, and `Esc`
+cancels it.
 
 ## Command line
 
