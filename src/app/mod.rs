@@ -3288,10 +3288,13 @@ fn keep_thread_cursor_visible(
         return;
     };
     let start = start + thread_header_lines(&thread.post, width);
-    if start < thread.scroll {
-        thread.scroll = start;
-    } else if start >= thread.scroll + height {
-        thread.scroll = start.saturating_add(1).saturating_sub(height);
+    // `visible_row_start` points at the row's blank separator line; the
+    // header (the highlighted `[score] name:` line) is one line later.
+    let header = start.saturating_add(1);
+    if header < thread.scroll {
+        thread.scroll = header;
+    } else if header >= thread.scroll + height {
+        thread.scroll = header.saturating_add(1).saturating_sub(height);
     }
 }
 
@@ -4168,14 +4171,22 @@ mod tests {
                 88,
             )
             .expect("comment 30 is visible");
+        let header = real_start + 1;
         assert!(
-            thread.scroll <= real_start && thread.scroll + 21 > real_start,
-            "the focused header must sit inside the viewport: scroll {} shows {}..{}, header at {}",
-            thread.scroll,
-            thread.scroll,
-            thread.scroll + 21,
-            real_start
+            thread.scroll > 0,
+            "the cursor-follow must engage below the fold"
         );
-        assert!(thread.scroll >= 4, "the view must scroll past the header");
+        assert!(
+            thread.scroll >= 4,
+            "the viewport must scroll past the paragraph header"
+        );
+        assert!(
+            thread.scroll <= header,
+            "the focused header must be at or below the top of the viewport"
+        );
+        assert!(
+            thread.scroll + 21 > header,
+            "the focused header must be inside the viewport"
+        );
     }
 }

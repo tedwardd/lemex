@@ -1608,7 +1608,7 @@ async fn detail_scroll_commands_move_and_clamp_the_offset() {
 }
 
 #[tokio::test]
-async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_closed() {
+async fn jk_move_the_thread_cursor_when_the_pane_is_open_and_move_selection_when_closed() {
     let api = Arc::new(ThreadApi::default());
     let mut app = App::new(
         api.clone(),
@@ -1629,27 +1629,59 @@ async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_clos
         .unwrap();
     assert_eq!(app.state.selected_index(), 0);
 
-    // Opening the thread focuses the pane: j/k scroll it and leave the
-    // feed selection untouched.
+    // Opening the thread focuses the pane: j/k move the comment cursor and
+    // leave the feed selection untouched.
     app.dispatch(AppAction::OpenSelected).await.unwrap();
     assert!(
         app.state.view.has_modals(),
         "opening a post focuses the thread modal"
     );
+    // Inject the comments directly: the fixture's comments land
+    // asynchronously and are not present at dispatch time.
+    if let levim::app::Modal::Thread(thread) = app.state.view.top_modal_mut().unwrap() {
+        thread.post.comments = vec![
+            CommentView {
+                id: levim::CommentId(10),
+                post_id: PostId(1),
+                content: "ten".into(),
+                creator_id: levim::UserId(1),
+                creator_name: "alice".into(),
+                score: 0,
+                path: Some("0.10".into()),
+            },
+            CommentView {
+                id: levim::CommentId(11),
+                post_id: PostId(1),
+                content: "eleven".into(),
+                creator_id: levim::UserId(1),
+                creator_name: "alice".into(),
+                score: 0,
+                path: Some("0.10.11".into()),
+            },
+        ];
+    }
     let selection_before = app.state.selected_index();
-    fn thread_scroll(app: &App) -> usize {
+    fn selected_comment(app: &App) -> Option<levim::CommentId> {
         let levim::app::Modal::Thread(thread) = app.state.view.top_modal().unwrap() else {
             panic!("expected a thread modal");
         };
-        thread.scroll
+        thread.selected
     }
-    app.dispatch(AppAction::Input(Command::MoveDown { count: 2 }))
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
         .await
         .unwrap();
     assert_eq!(
-        thread_scroll(&app),
-        2,
-        "j scrolls the thread down one line per count"
+        selected_comment(&app),
+        Some(levim::CommentId(10)),
+        "the first j lands on the first comment"
+    );
+    app.dispatch(AppAction::Input(Command::MoveDown { count: 1 }))
+        .await
+        .unwrap();
+    assert_eq!(
+        selected_comment(&app),
+        Some(levim::CommentId(11)),
+        "j moves the comment cursor down"
     );
     assert_eq!(
         app.state.selected_index(),
@@ -1660,9 +1692,9 @@ async fn jk_scroll_the_thread_when_the_pane_is_open_and_move_selection_when_clos
         .await
         .unwrap();
     assert_eq!(
-        thread_scroll(&app),
-        0,
-        "k scrolls back up and clamps at zero"
+        selected_comment(&app),
+        Some(levim::CommentId(10)),
+        "k moves the comment cursor up and clamps at the top"
     );
     assert_eq!(app.state.selected_index(), selection_before);
 

@@ -1131,10 +1131,14 @@ fn keep_thread_cursor_visible(
     else {
         return;
     };
-    if start < thread.scroll {
-        thread.scroll = start;
-    } else if start >= thread.scroll + height {
-        thread.scroll = start.saturating_add(1).saturating_sub(height);
+    let start = start + thread_header_lines(&thread.post, width);
+    // `visible_row_start` points at the row's blank separator line; the
+    // header (the highlighted `[score] name:` line) is one line later.
+    let header = start.saturating_add(1);
+    if header < thread.scroll {
+        thread.scroll = header;
+    } else if header >= thread.scroll + height {
+        thread.scroll = header.saturating_add(1).saturating_sub(height);
     }
 }
 ```
@@ -1588,6 +1592,7 @@ cargo test --lib
 cargo test --test api_adapter
 cargo test --test input_engine
 cargo test --test smoke
+cargo test --test application
 ```
 Expected: all pass.
 
